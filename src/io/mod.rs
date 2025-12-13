@@ -11,6 +11,6 @@ mod ply;
 mod obj;
 
 // Re-export public types and functions
-pub use colmap::{ColmapScene, load_colmap_scene, LoadError};
-pub use ply::{save_ply, load_ply};
+pub use colmap::{ColmapScene, load_colmap_scene, LoadError, Point3D, ImageInfo};
+pub use ply::{save_ply, load_ply, save_colmap_points_ply};
 pub use obj::save_obj;

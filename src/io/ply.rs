@@ -6,8 +6,45 @@
 //! - Export extracted meshes (M12)
 
 use crate::core::GaussianCloud;
-use crate::io::LoadError;
+use crate::io::{colmap::Point3D, LoadError};
+use std::fs::File;
+use std::io::Write;
 use std::path::Path;
+
+/// Save COLMAP 3D points to PLY format (for M1 visualization).
+///
+/// This exports a simple point cloud with positions and colors.
+pub fn save_colmap_points_ply(points: &[Point3D], path: &Path) -> Result<(), LoadError> {
+    let mut file = File::create(path)?;
+
+    // Write PLY header
+    writeln!(file, "ply")?;
+    writeln!(file, "format ascii 1.0")?;
+    writeln!(file, "element vertex {}", points.len())?;
+    writeln!(file, "property float x")?;
+    writeln!(file, "property float y")?;
+    writeln!(file, "property float z")?;
+    writeln!(file, "property uchar red")?;
+    writeln!(file, "property uchar green")?;
+    writeln!(file, "property uchar blue")?;
+    writeln!(file, "end_header")?;
+
+    // Write vertex data
+    for point in points {
+        writeln!(
+            file,
+            "{} {} {} {} {} {}",
+            point.position.x,
+            point.position.y,
+            point.position.z,
+            point.color[0],
+            point.color[1],
+            point.color[2]
+        )?;
+    }
+
+    Ok(())
+}
 
 /// Save a Gaussian cloud to PLY format.
 ///
@@ -16,10 +53,9 @@ use std::path::Path;
 ///
 /// Later (M10), we'll extend this to save full Gaussian parameters.
 pub fn save_ply(cloud: &GaussianCloud, path: &Path) -> Result<(), LoadError> {
-    // TODO: Implement for M1
-    // For M1, just save positions and DC colors as a point cloud
+    // TODO: Implement for M10
     // For M10, save full Gaussian parameters (scale, rotation, opacity, SH)
-    unimplemented!("See M1 - PLY export for visualization")
+    unimplemented!("See M10 - PLY export for Gaussian clouds")
 }
 
 /// Load a Gaussian cloud from PLY format.

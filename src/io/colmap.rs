@@ -8,7 +8,10 @@
 //! Format spec: https://colmap.github.io/format.html
 
 use crate::core::Camera;
-use nalgebra::Vector3;
+use byteorder::{LittleEndian, ReadBytesExt};
+use nalgebra::{Matrix3, UnitQuaternion, Vector3, Vector4};
+use std::fs::File;
+use std::io::{BufReader, Read};
 use std::path::Path;
 use thiserror::Error;
 
@@ -81,17 +84,20 @@ pub struct Point3D {
 ///   points3D.bin
 /// ```
 pub fn load_colmap_scene(sparse_dir: &Path) -> Result<ColmapScene, LoadError> {
-    // TODO: Implement for M1
-    // This is the first real milestone!
-    //
-    // Steps:
-    // 1. Read cameras.bin (parse camera intrinsics)
-    // 2. Read images.bin (parse camera poses)
-    // 3. Read points3D.bin (parse 3D points)
-    // 4. Match images to cameras by camera_id
-    // 5. Return ColmapScene
+    let cameras_path = sparse_dir.join("cameras.bin");
+    let images_path = sparse_dir.join("images.bin");
+    let points_path = sparse_dir.join("points3D.bin");
 
-    unimplemented!("See M1 - COLMAP binary parser")
+    // Parse each binary file
+    let cameras = read_cameras_bin(&cameras_path)?;
+    let images = read_images_bin(&images_path)?;
+    let points = read_points3d_bin(&points_path)?;
+
+    Ok(ColmapScene {
+        cameras,
+        images,
+        points,
+    })
 }
 
 /// Read cameras.bin file.
@@ -105,8 +111,89 @@ pub fn load_colmap_scene(sparse_dir: &Path) -> Result<ColmapScene, LoadError> {
 ///   - height: u64
 ///   - params: [f64; N] (N depends on model, typically 4 for PINHOLE)
 fn read_cameras_bin(path: &Path) -> Result<Vec<Camera>, LoadError> {
-    // TODO: Implement for M1
-    unimplemented!("See M1 - cameras.bin parser")
+    let file = File::open(path)?;
+    let mut reader = BufReader::new(file);
+
+    let num_cameras = reader.read_u64::<LittleEndian>()?;
+    let mut cameras = Vec::with_capacity(num_cameras as usize);
+
+    for _ in 0..num_cameras {
+        let camera_id = reader.read_u32::<LittleEndian>()?;
+        let model_id = reader.read_i32::<LittleEndian>()?;
+        let width = reader.read_u64::<LittleEndian>()?;
+        let height = reader.read_u64::<LittleEndian>()?;
+
+        // Parse parameters based on camera model
+        // Model IDs: 0=SIMPLE_PINHOLE, 1=PINHOLE, 2=SIMPLE_RADIAL, 3=RADIAL, etc.
+        let camera = match model_id {
+            0 => {
+                // SIMPLE_PINHOLE: f, cx, cy
+                let f = reader.read_f64::<LittleEndian>()? as f32;
+                let cx = reader.read_f64::<LittleEndian>()? as f32;
+                let cy = reader.read_f64::<LittleEndian>()? as f32;
+
+                Camera::new(
+                    f, f, // fx = fy for simple pinhole
+                    cx, cy,
+                    width as u32,
+                    height as u32,
+                    Matrix3::identity(), // Will be filled from images.bin
+                    Vector3::zeros(),
+                )
+            }
+            1 => {
+                // PINHOLE: fx, fy, cx, cy
+                let fx = reader.read_f64::<LittleEndian>()? as f32;
+                let fy = reader.read_f64::<LittleEndian>()? as f32;
+                let cx = reader.read_f64::<LittleEndian>()? as f32;
+                let cy = reader.read_f64::<LittleEndian>()? as f32;
+
+                Camera::new(
+                    fx, fy, cx, cy,
+                    width as u32,
+                    height as u32,
+                    Matrix3::identity(),
+                    Vector3::zeros(),
+                )
+            }
+            2 | 3 | 4 | 5 => {
+                // RADIAL models: fx, cx, cy, k1, [k2]
+                // For now, just read the focal length and principal point
+                // TODO: Handle distortion parameters properly
+                let fx = reader.read_f64::<LittleEndian>()? as f32;
+                let cx = reader.read_f64::<LittleEndian>()? as f32;
+                let cy = reader.read_f64::<LittleEndian>()? as f32;
+
+                // Skip distortion parameters
+                let num_params = match model_id {
+                    2 => 4, // SIMPLE_RADIAL: f, cx, cy, k
+                    3 => 5, // RADIAL: f, cx, cy, k1, k2
+                    4 => 8, // OPENCV: fx, fy, cx, cy, k1, k2, p1, p2
+                    5 => 12, // OPENCV_FISHEYE: fx, fy, cx, cy, k1, k2, k3, k4
+                    _ => return Err(LoadError::UnsupportedCameraModel(model_id)),
+                };
+
+                // Skip remaining parameters (we've already read 3 for radial)
+                for _ in 3..num_params {
+                    reader.read_f64::<LittleEndian>()?;
+                }
+
+                Camera::new(
+                    fx, fx, // Assume fy = fx for simple radial
+                    cx, cy,
+                    width as u32,
+                    height as u32,
+                    Matrix3::identity(),
+                    Vector3::zeros(),
+                )
+            }
+            _ => return Err(LoadError::UnsupportedCameraModel(model_id)),
+        };
+
+        cameras.push(camera);
+    }
+
+    Ok(cameras)
 }
 
 /// Read images.bin file.
@@ -121,8 +208,66 @@ fn read_cameras_bin(path: &Path) -> Result<Vec<Camera>, LoadError> {
 ///   - name: null-terminated string
 ///   - (keypoints data - we can skip for now)
 fn read_images_bin(path: &Path) -> Result<Vec<ImageInfo>, LoadError> {
-    // TODO: Implement for M1
-    unimplemented!("See M1 - images.bin parser")
+    let file = File::open(path)?;
+    let mut reader = BufReader::new(file);
+
+    let num_images = reader.read_u64::<LittleEndian>()?;
+    let mut images = Vec::with_capacity(num_images as usize);
+
+    for _ in 0..num_images {
+        let image_id = reader.read_u32::<LittleEndian>()?;
+
+        // Read quaternion (qw, qx, qy, qz)
+        let qw = reader.read_f64::<LittleEndian>()? as f32;
+        let qx = reader.read_f64::<LittleEndian>()? as f32;
+        let qy = reader.read_f64::<LittleEndian>()? as f32;
+        let qz = reader.read_f64::<LittleEndian>()? as f32;
+
+        // Read translation (tx, ty, tz)
+        let tx = reader.read_f64::<LittleEndian>()? as f32;
+        let ty = reader.read_f64::<LittleEndian>()? as f32;
+        let tz = reader.read_f64::<LittleEndian>()? as f32;
+
+        let camera_id = reader.read_u32::<LittleEndian>()?;
+
+        // Read null-terminated image name
+        let mut name_bytes = Vec::new();
+        loop {
+            let byte = reader.read_u8()?;
+            if byte == 0 {
+                break;
+            }
+            name_bytes.push(byte);
+        }
+        let name = String::from_utf8(name_bytes)
+            .map_err(|e| LoadError::InvalidFormat(format!("Invalid UTF-8 in image name: {}", e)))?;
+
+        // Read 2D points (we skip these for now, but need to read them to advance the file pointer)
+        let num_points2d = reader.read_u64::<LittleEndian>()?;
+        // Each 2D point is: x (f64), y (f64), point3d_id (u64) = 24 bytes
+        for _ in 0..num_points2d {
+            reader.read_f64::<LittleEndian>()?; // x
+            reader.read_f64::<LittleEndian>()?; // y
+            reader.read_u64::<LittleEndian>()?; // point3d_id
+        }
+
+        // Create quaternion (nalgebra uses (w, x, y, z) order internally)
+        let rotation = UnitQuaternion::from_quaternion(
+            nalgebra::Quaternion::new(qw, qx, qy, qz).normalize()
+        );
+
+        let translation = Vector3::new(tx, ty, tz);
+
+        images.push(ImageInfo {
+            id: image_id,
+            camera_id,
+            name,
+            rotation,
+            translation,
+        });
+    }
+
+    Ok(images)
 }
 
 /// Read points3D.bin file.
@@ -136,8 +281,45 @@ fn read_images_bin(path: &Path) -> Result<Vec<ImageInfo>, LoadError> {
 ///   - error: f64 (reprojection error)
 ///   - (track data - we can skip for now)
 fn read_points3d_bin(path: &Path) -> Result<Vec<Point3D>, LoadError> {
-    // TODO: Implement for M1
-    unimplemented!("See M1 - points3D.bin parser")
+    let file = File::open(path)?;
+    let mut reader = BufReader::new(file);
+
+    let num_points = reader.read_u64::<LittleEndian>()?;
+    let mut points = Vec::with_capacity(num_points as usize);
+
+    for _ in 0..num_points {
+        let point_id = reader.read_u64::<LittleEndian>()?;
+
+        // Read position (x, y, z)
+        let x = reader.read_f64::<LittleEndian>()? as f32;
+        let y = reader.read_f64::<LittleEndian>()? as f32;
+        let z = reader.read_f64::<LittleEndian>()? as f32;
+
+        // Read color (r, g, b)
+        let r = reader.read_u8()?;
+        let g = reader.read_u8()?;
+        let b = reader.read_u8()?;
+
+        // Read error
+        let error = reader.read_f64::<LittleEndian>()? as f32;
+
+        // Read track (list of image observations)
+        let track_length = reader.read_u64::<LittleEndian>()?;
+        // Each track element is: image_id (u32), point2d_idx (u32) = 8 bytes
+        for _ in 0..track_length {
+            reader.read_u32::<LittleEndian>()?; // image_id
+            reader.read_u32::<LittleEndian>()?; // point2d_idx
+        }
+
+        points.push(Point3D {
+            id: point_id,
+            position: Vector3::new(x, y, z),
+            color: [r, g, b],
+            error,
+        });
+    }
+
+    Ok(points)
 }
 
 #[cfg(test)]
