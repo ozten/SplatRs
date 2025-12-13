@@ -11,9 +11,11 @@ mod gaussian;
 mod camera;
 mod sh;
 mod math;
+pub mod init;
 
 // Re-export public types
 pub use gaussian::{Gaussian, Gaussian2D, GaussianCloud};
 pub use camera::Camera;
 pub use sh::{evaluate_sh, sh_basis};
 pub use math::{quaternion_to_matrix, sigmoid, inverse_sigmoid};
+pub use init::init_from_colmap_points;

@@ -7,7 +7,12 @@
 //!
 //! No gradients computed here - see `diff` module for backward passes.
 
-// TODO: Implement for M3-M5
+pub mod simple;
+
+// Re-export
+pub use simple::SimpleRenderer;
+
+// TODO: Implement full renderer for M4-M5
 // mod project;
 // mod rasterize;
 // mod blend;
