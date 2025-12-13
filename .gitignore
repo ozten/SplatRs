@@ -1,0 +1,25 @@
+# Rust build artifacts
+/target/
+Cargo.lock
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test outputs
+test_output/
+*.ply
+*.obj
+*.png
+*.jpg
+
+# Checkpoints
+checkpoints/
+*.ckpt
