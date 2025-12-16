@@ -29,6 +29,7 @@ fn create_camera_with_pose(
 }
 
 #[test]
+#[ignore] // Slow E2E test - renders full dataset (use `cargo test -- --ignored`)
 fn test_render_calipers_fixed_size() {
     // Paths
     let colmap_path = PathBuf::from(
@@ -68,7 +69,7 @@ fn test_render_calipers_fixed_size() {
 
     for i in 0..num_renders {
         let image_info = &scene.images[i];
-        let base_camera = &scene.cameras[0]; // Single camera setup
+        let base_camera = scene.cameras.values().next().expect("No cameras found");
 
         // Create camera with this viewpoint's pose
         let rotation = image_info.rotation.to_rotation_matrix().into_inner();

@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use sugar_rs::io::{load_colmap_scene, save_colmap_points_ply};
 
 #[test]
+#[ignore] // E2E test - requires external dataset (use `cargo test -- --ignored`)
 fn test_load_calipers_colmap() {
     // Path to the COLMAP sparse reconstruction
     let colmap_path = PathBuf::from(
@@ -35,7 +36,7 @@ fn test_load_calipers_colmap() {
     assert!(scene.points.len() > 0, "No 3D points loaded");
 
     // Print first camera details
-    if let Some(cam) = scene.cameras.first() {
+    if let Some(cam) = scene.cameras.values().next() {
         println!("\nFirst camera:");
         println!("  Resolution: {}x{}", cam.width, cam.height);
         println!("  Focal length: fx={:.2}, fy={:.2}", cam.fx, cam.fy);
@@ -75,6 +76,7 @@ fn test_load_calipers_colmap() {
 }
 
 #[test]
+#[ignore] // E2E test - requires external dataset (use `cargo test -- --ignored`)
 fn test_colmap_camera_details() {
     let colmap_path = PathBuf::from(
         "/Users/ozten/Projects/GuassianPlay/digital_calipers2_project/colmap_workspace/sparse/0",
@@ -88,8 +90,8 @@ fn test_colmap_camera_details() {
     let scene = load_colmap_scene(&colmap_path).expect("Failed to load scene");
 
     // Print detailed camera information
-    for (i, camera) in scene.cameras.iter().enumerate() {
-        println!("Camera {}:", i);
+    for (camera_id, camera) in scene.cameras.iter() {
+        println!("Camera ID {}:", camera_id);
         println!("  Resolution: {}x{}", camera.width, camera.height);
         println!(
             "  Intrinsics: fx={:.2}, fy={:.2}, cx={:.2}, cy={:.2}",

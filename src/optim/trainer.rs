@@ -90,7 +90,11 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
     let image_index = cfg.image_index.min(scene.images.len() - 1);
     let image_info = &scene.images[image_index];
 
-    let base_camera = &scene.cameras[0];
+    // Use the correct camera for this image (not just cameras[0])
+    let base_camera = scene
+        .cameras
+        .get(&image_info.camera_id)
+        .ok_or_else(|| anyhow::anyhow!("Camera {} not found", image_info.camera_id))?;
     let rotation = image_info.rotation.to_rotation_matrix().into_inner();
     let camera_full = camera_with_pose(base_camera, rotation, image_info.translation);
     let camera = downsample_camera(&camera_full, cfg.downsample_factor);

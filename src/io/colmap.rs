@@ -9,9 +9,10 @@
 
 use crate::core::Camera;
 use byteorder::{LittleEndian, ReadBytesExt};
-use nalgebra::{Matrix3, UnitQuaternion, Vector3, Vector4};
+use nalgebra::{Matrix3, UnitQuaternion, Vector3};
+use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufReader, Read};
+use std::io::BufReader;
 use std::path::Path;
 use thiserror::Error;
 
@@ -31,8 +32,8 @@ pub enum LoadError {
 /// A complete COLMAP scene with cameras, images, and 3D points.
 #[derive(Debug, Clone)]
 pub struct ColmapScene {
-    /// Camera parameters (intrinsics)
-    pub cameras: Vec<Camera>,
+    /// Camera parameters (intrinsics), indexed by camera_id
+    pub cameras: HashMap<u32, Camera>,
 
     /// Image metadata (file paths, camera poses)
     pub images: Vec<ImageInfo>,
@@ -110,12 +111,12 @@ pub fn load_colmap_scene(sparse_dir: &Path) -> Result<ColmapScene, LoadError> {
 ///   - width: u64
 ///   - height: u64
 ///   - params: [f64; N] (N depends on model, typically 4 for PINHOLE)
-fn read_cameras_bin(path: &Path) -> Result<Vec<Camera>, LoadError> {
+fn read_cameras_bin(path: &Path) -> Result<HashMap<u32, Camera>, LoadError> {
     let file = File::open(path)?;
     let mut reader = BufReader::new(file);
 
     let num_cameras = reader.read_u64::<LittleEndian>()?;
-    let mut cameras = Vec::with_capacity(num_cameras as usize);
+    let mut cameras = HashMap::with_capacity(num_cameras as usize);
 
     for _ in 0..num_cameras {
         let camera_id = reader.read_u32::<LittleEndian>()?;
@@ -197,7 +198,7 @@ fn read_cameras_bin(path: &Path) -> Result<Vec<Camera>, LoadError> {
             _ => return Err(LoadError::UnsupportedCameraModel(model_id)),
         };
 
-        cameras.push(camera);
+        cameras.insert(camera_id, camera);
     }
 
     Ok(cameras)

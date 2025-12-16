@@ -32,6 +32,7 @@ fn create_camera_with_pose(base_camera: &Camera, image_info: &ImageInfo) -> Came
 }
 
 #[test]
+#[ignore] // E2E test - requires external dataset and loads images (use `cargo test -- --ignored`)
 fn test_project_points_to_images() {
     // Paths
     let colmap_path = PathBuf::from(
@@ -66,9 +67,11 @@ fn test_project_points_to_images() {
     for i in 0..num_test_images {
         let image_info = &scene.images[i];
 
-        // For now, just use the first camera (most COLMAP scenes have 1 camera)
-        // TODO: Properly handle multiple cameras by camera_id
-        let base_camera = &scene.cameras[0];
+        // Use the correct camera for this image
+        let base_camera = scene
+            .cameras
+            .get(&image_info.camera_id)
+            .expect("Camera not found");
 
         // Create camera with pose
         let camera = create_camera_with_pose(base_camera, image_info);

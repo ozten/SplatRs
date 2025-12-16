@@ -30,9 +30,11 @@ impl AdamVec3 {
 
     pub fn ensure_len(&mut self, len: usize) {
         if self.m.len() != len {
-            self.m = vec![Vector3::zeros(); len];
-            self.v = vec![Vector3::zeros(); len];
-            self.t = 0;
+            // Resize to new length, preserving existing state and zeroing new elements
+            self.m.resize(len, Vector3::zeros());
+            self.v.resize(len, Vector3::zeros());
+            // Don't reset t! Keep the current timestep for proper bias correction.
+            // New parameters start with zero momentum, which is correct.
         }
     }
 
@@ -61,5 +63,95 @@ impl AdamVec3 {
             params[i].y -= self.lr * m_hat.y / (v_hat.y.sqrt() + self.eps);
             params[i].z -= self.lr * m_hat.z / (v_hat.z.sqrt() + self.eps);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_adam_preserves_timestep_on_resize() {
+        let mut opt = AdamVec3::new(0.001, 0.9, 0.999, 1e-8);
+
+        // Start with 2 parameters
+        let mut params = vec![Vector3::new(1.0, 2.0, 3.0), Vector3::new(4.0, 5.0, 6.0)];
+        let grads = vec![Vector3::new(0.1, 0.2, 0.3), Vector3::new(0.4, 0.5, 0.6)];
+
+        // Run a few steps
+        opt.step(&mut params, &grads);
+        opt.step(&mut params, &grads);
+        opt.step(&mut params, &grads);
+
+        assert_eq!(opt.t, 3, "Should have timestep 3 after 3 steps");
+
+        // Now resize to 3 parameters (simulating adding a Gaussian)
+        let mut params3 = vec![
+            Vector3::new(1.0, 2.0, 3.0),
+            Vector3::new(4.0, 5.0, 6.0),
+            Vector3::new(7.0, 8.0, 9.0),
+        ];
+        let grads3 = vec![
+            Vector3::new(0.1, 0.2, 0.3),
+            Vector3::new(0.4, 0.5, 0.6),
+            Vector3::new(0.7, 0.8, 0.9),
+        ];
+
+        // Take another step with new size
+        opt.step(&mut params3, &grads3);
+
+        // Timestep should NOT be reset!
+        assert_eq!(
+            opt.t, 4,
+            "Timestep should be 4 (not reset to 1) after resize"
+        );
+
+        // Momentum vectors should be the right size
+        assert_eq!(opt.m.len(), 3, "Momentum vectors should have length 3");
+        assert_eq!(opt.v.len(), 3, "Velocity vectors should have length 3");
+
+        // First two elements should have non-zero momentum (from previous steps)
+        assert_ne!(
+            opt.m[0],
+            Vector3::zeros(),
+            "First parameter should have momentum"
+        );
+        assert_ne!(
+            opt.m[1],
+            Vector3::zeros(),
+            "Second parameter should have momentum"
+        );
+
+        // Third element should have accumulated some momentum from the last step
+        assert_ne!(
+            opt.m[2],
+            Vector3::zeros(),
+            "Third parameter should have momentum after one step"
+        );
+    }
+
+    #[test]
+    fn test_adam_basic_update() {
+        let mut opt = AdamVec3::new(0.01, 0.9, 0.999, 1e-8);
+
+        let mut params = vec![Vector3::new(1.0, 1.0, 1.0)];
+        let grads = vec![Vector3::new(1.0, 1.0, 1.0)];
+
+        let initial = params[0];
+        opt.step(&mut params, &grads);
+
+        // Parameters should have moved in the opposite direction of gradient
+        assert!(
+            params[0].x < initial.x,
+            "Parameter should decrease with positive gradient"
+        );
+        assert!(
+            params[0].y < initial.y,
+            "Parameter should decrease with positive gradient"
+        );
+        assert!(
+            params[0].z < initial.z,
+            "Parameter should decrease with positive gradient"
+        );
     }
 }

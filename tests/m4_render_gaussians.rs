@@ -57,6 +57,7 @@ fn downsample_camera(camera: &Camera, factor: f32) -> Camera {
 }
 
 #[test]
+#[ignore] // Slow E2E test - renders multiple viewpoints (use `cargo test -- --ignored`)
 fn test_m4_render_calipers_projected_covariance() {
     let colmap_path = PathBuf::from(CALIPERS_COLMAP_PATH);
     if !colmap_path.exists() {
@@ -89,7 +90,7 @@ fn test_m4_render_calipers_projected_covariance() {
 
     for i in 0..num_renders {
         let image_info = &scene.images[i];
-        let base_camera = &scene.cameras[0]; // Single-camera dataset setup
+        let base_camera = scene.cameras.values().next().expect("No cameras found");
 
         let rotation = image_info.rotation.to_rotation_matrix().into_inner();
         let camera_full = camera_with_pose(base_camera, rotation, image_info.translation);

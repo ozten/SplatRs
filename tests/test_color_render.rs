@@ -7,6 +7,7 @@ use sugar_rs::io::{load_colmap_scene, Point3D};
 use sugar_rs::render::SimpleRenderer;
 
 #[test]
+#[ignore] // E2E test - requires external dataset (use `cargo test -- --ignored`)
 fn test_render_only_colorful_points() {
     let colmap_path = PathBuf::from(
         "/Users/ozten/Projects/GuassianPlay/digital_calipers2_project/colmap_workspace/sparse/0",
@@ -43,7 +44,7 @@ fn test_render_only_colorful_points() {
 
     // Use first viewpoint
     let image_info = &scene.images[0];
-    let base_camera = &scene.cameras[0];
+    let base_camera = scene.cameras.values().next().expect("No cameras found");
 
     let rotation = image_info.rotation.to_rotation_matrix().into_inner();
     let camera = Camera::new(
