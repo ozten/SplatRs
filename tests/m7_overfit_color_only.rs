@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use sugar_rs::optim::trainer::{
     guess_images_dir_from_sparse, train_single_image_color_only, TrainConfig,
 };
+use sugar_rs::optim::loss::LossKind;
 
 #[test]
 #[ignore]
@@ -35,6 +36,7 @@ fn test_m7_overfit_color_only_calipers() {
         lr: 0.05,
         learn_background: true,
         learn_opacity: false,
+        loss: LossKind::L2,
     };
 
     let _out = train_single_image_color_only(&cfg).expect("Training failed");

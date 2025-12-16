@@ -7,6 +7,7 @@
 //! The longer "quality" check is marked `#[ignore]` since it can be slow.
 
 use std::path::PathBuf;
+use sugar_rs::optim::loss::LossKind;
 use sugar_rs::optim::trainer::{train_multiview_color_only, MultiViewTrainConfig};
 
 #[test]
@@ -28,6 +29,7 @@ fn test_m8_multiview_train_smoke_tandt() {
         lr: 0.01,
         learn_background: true,
         learn_opacity: false,
+        loss: LossKind::L2,
         train_fraction: 0.8,
         val_interval: 1000, // Only validates at the end (iters=5)
         max_test_views_for_metrics: 2,
@@ -90,6 +92,7 @@ fn test_m8_multiview_train_quality_tandt() {
         lr: 0.02,
         learn_background: true,
         learn_opacity: false,
+        loss: LossKind::L2,
         train_fraction: 0.8,
         val_interval: 50,
         max_test_views_for_metrics: 0, // Evaluate all held-out views

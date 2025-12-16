@@ -16,7 +16,9 @@
 use crate::core::{init_from_colmap_points_visible_stratified, Camera, Gaussian};
 use crate::io::load_colmap_scene;
 use crate::optim::adam::{AdamF32, AdamVec3};
-use crate::optim::loss::l2_image_loss_and_grad_weighted;
+use crate::optim::loss::{
+    l1_dssim_image_loss_and_grad_weighted, l2_image_loss_and_grad_weighted, LossKind,
+};
 use crate::render::full_diff::{
     coverage_mask_bool, debug_contrib_count, debug_coverage_mask, debug_final_transmittance,
     debug_overlay_means, downsample_rgb_nearest, linear_vec_to_rgb8_img, render_full_color_grads,
@@ -37,6 +39,7 @@ pub struct TrainConfig {
     pub lr: f32,
     pub learn_background: bool,
     pub learn_opacity: bool,
+    pub loss: LossKind,
 }
 
 pub struct TrainOutputs {
@@ -204,8 +207,18 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
 
         // Forward (linear) and loss.
         let rendered_linear = render_full_linear(&gaussians, &camera, &bg);
-        let (loss, d_image) =
-            l2_image_loss_and_grad_weighted(&rendered_linear, &target_linear, &weights);
+        let (loss, d_image) = match cfg.loss {
+            crate::optim::loss::LossKind::L2 => {
+                l2_image_loss_and_grad_weighted(&rendered_linear, &target_linear, &weights)
+            }
+            crate::optim::loss::LossKind::L1Dssim => l1_dssim_image_loss_and_grad_weighted(
+                &rendered_linear,
+                &target_linear,
+                &weights,
+                camera.width,
+                camera.height,
+            ),
+        };
 
         // Backward: get dL/d(color_i) and dL/d(opacity_logit_i) per Gaussian.
         let (_img_u8, d_color, d_opacity_logits, d_bg) =
@@ -339,6 +352,7 @@ pub struct MultiViewTrainConfig {
     pub lr: f32,
     pub learn_background: bool,
     pub learn_opacity: bool,
+    pub loss: LossKind,
     pub train_fraction: f32, // Fraction of images for training (rest for testing)
     pub val_interval: usize,  // Validate every N iterations
     /// Limit how many held-out views are used for PSNR reporting.
@@ -557,8 +571,20 @@ pub fn train_multiview_color_only(
 
         // Forward and loss
         let rendered_linear = render_full_linear(&gaussians, &train_camera, &bg);
-        let (loss, d_image) =
-            l2_image_loss_and_grad_weighted(&rendered_linear, &train_target_linear, &weights);
+        let (loss, d_image) = match cfg.loss {
+            crate::optim::loss::LossKind::L2 => l2_image_loss_and_grad_weighted(
+                &rendered_linear,
+                &train_target_linear,
+                &weights,
+            ),
+            crate::optim::loss::LossKind::L1Dssim => l1_dssim_image_loss_and_grad_weighted(
+                &rendered_linear,
+                &train_target_linear,
+                &weights,
+                train_camera.width,
+                train_camera.height,
+            ),
+        };
         train_loss = loss; // Track most recent loss
 
         // Backward

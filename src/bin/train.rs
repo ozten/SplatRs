@@ -19,6 +19,7 @@ fn main() {
     let mut image_index: usize = 0;
     let mut learn_background: bool = true;
     let mut learn_opacity: bool = false;
+    let mut loss: sugar_rs::optim::loss::LossKind = sugar_rs::optim::loss::LossKind::L2;
     let mut dataset_root: Option<std::path::PathBuf> = None;
     let mut multiview: bool = false;
     let mut train_fraction: f32 = 0.8;
@@ -38,6 +39,17 @@ fn main() {
             "--image-index" => image_index = args.next().unwrap().parse().unwrap(),
             "--no-learn-bg" => learn_background = false,
             "--learn-opacity" => learn_opacity = true,
+            "--loss" => {
+                let v = args.next().unwrap();
+                loss = match v.as_str() {
+                    "l2" => sugar_rs::optim::loss::LossKind::L2,
+                    "l1-dssim" | "l1_dssim" | "l1dssim" => sugar_rs::optim::loss::LossKind::L1Dssim,
+                    other => {
+                        eprintln!("Unknown --loss {other} (expected: l2 | l1-dssim)");
+                        return;
+                    }
+                };
+            }
             "--multiview" => multiview = true,
             "--train-fraction" => train_fraction = args.next().unwrap().parse().unwrap(),
             "--val-interval" => val_interval = args.next().unwrap().parse().unwrap(),
@@ -46,10 +58,10 @@ fn main() {
             "--help" | "-h" => {
                 eprintln!("Usage:");
                 eprintln!("  # M7 (single-view / overfit)");
-                eprintln!("  sugar-train --scene <sparse/0> [--images <dir>] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--image-index I] [--no-learn-bg] [--learn-opacity] [--out-dir DIR]");
+                eprintln!("  sugar-train --scene <sparse/0> [--images <dir>] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--image-index I] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--out-dir DIR]");
                 eprintln!();
                 eprintln!("  # M8 (multi-view)");
-                eprintln!("  sugar-train --multiview --scene <sparse/0> [--images <dir>] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--train-fraction F] [--val-interval N] [--max-test-views N] [--no-learn-bg] [--learn-opacity] [--out-dir DIR]");
+                eprintln!("  sugar-train --multiview --scene <sparse/0> [--images <dir>] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--train-fraction F] [--val-interval N] [--max-test-views N] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--out-dir DIR]");
                 eprintln!();
                 eprintln!("  # Auto-detect paths");
                 eprintln!("  sugar-train [--multiview] --dataset-root <root> [--iters N] ...   (auto-detects sparse/0 + images/)");
@@ -89,6 +101,7 @@ fn main() {
             lr,
             learn_background,
             learn_opacity,
+            loss,
             train_fraction,
             val_interval,
             max_test_views_for_metrics,
@@ -119,6 +132,7 @@ fn main() {
             lr,
             learn_background,
             learn_opacity,
+            loss,
         };
 
         let out =

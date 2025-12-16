@@ -13,6 +13,7 @@ use sugar_rs::optim::trainer::{
     guess_images_dir_from_sparse, guess_sparse0_from_dataset_root, train_single_image_color_only,
     TrainConfig,
 };
+use sugar_rs::optim::loss::LossKind;
 
 #[test]
 #[ignore]
@@ -38,6 +39,7 @@ fn test_m7_overfit_color_only_tandt_train() {
         lr: 0.05,
         learn_background: true,
         learn_opacity: false,
+        loss: LossKind::L2,
     };
 
     let _out = train_single_image_color_only(&cfg).expect("Training failed");
