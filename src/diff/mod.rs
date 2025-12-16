@@ -8,3 +8,5 @@
 // mod rasterize_grad;
 // mod blend_grad;
 pub mod sh_grad;
+pub mod math_grad;
+pub mod gaussian2d_grad;

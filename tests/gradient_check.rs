@@ -14,7 +14,9 @@ mod tests {
     use rand::rngs::StdRng;
     use rand::{Rng, SeedableRng};
 
-    use sugar_rs::core::{evaluate_sh, sh_basis};
+    use sugar_rs::core::{evaluate_sh, inverse_sigmoid, sh_basis, sigmoid};
+    use sugar_rs::diff::math_grad::{inverse_sigmoid_grad, sigmoid_grad_from_sigmoid};
+    use sugar_rs::diff::gaussian2d_grad::gaussian2d_evaluate_with_grads;
     use sugar_rs::diff::sh_grad::evaluate_sh_grad_coeffs;
 
     // These tests are NON-NEGOTIABLE - bugs in gradients cause silent failures.
@@ -24,9 +26,50 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Remove when implementing
     fn test_sigmoid_gradient() {
-        // TODO: Test sigmoid and inverse_sigmoid gradients
+        // Gradient check for:
+        // - sigmoid(x) w.r.t x
+        // - inverse_sigmoid(p) w.r.t p  (away from clamp)
+        let mut rng = StdRng::seed_from_u64(0x51C1_01D_u64);
+
+        // Sigmoid: choose x in a moderate range to avoid saturation.
+        for _ in 0..200 {
+            let x = rng.gen_range(-4.0..4.0);
+            let eps = 1e-2f32;
+
+            let f = |v: f32| sigmoid(v);
+            let f_plus = f(x + eps) as f64;
+            let f_minus = f(x - eps) as f64;
+            let num = ((f_plus - f_minus) / (2.0 * eps as f64)) as f32;
+
+            let s = sigmoid(x);
+            let ana = sigmoid_grad_from_sigmoid(s);
+
+            let abs_err = (num - ana).abs();
+            assert!(
+                rel_err(num, ana) < 1e-4 || abs_err < 1e-5,
+                "sigmoid grad mismatch: x={x} num={num} ana={ana} abs_err={abs_err} rel_err={}",
+                rel_err(num, ana)
+            );
+        }
+
+        // inverse_sigmoid (logit): choose p safely away from clamp and 0/1.
+        // Near 0/1 the derivative explodes, which makes finite differences noisy in f32.
+        for _ in 0..200 {
+            let p = rng.gen_range(0.1..0.9);
+            let eps = 1e-3f32;
+
+            let f = |v: f32| inverse_sigmoid(v);
+            let num = ((f(p + eps) as f64 - f(p - eps) as f64) / (2.0 * eps as f64)) as f32;
+            let ana = inverse_sigmoid_grad(p);
+
+            let abs_err = (num - ana).abs();
+            assert!(
+                rel_err(num, ana) < 1e-4 || abs_err < 1e-5,
+                "inverse_sigmoid grad mismatch: p={p} num={num} ana={ana} abs_err={abs_err} rel_err={}",
+                rel_err(num, ana)
+            );
+        }
     }
 
     #[test]
@@ -42,9 +85,105 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_gaussian_2d_evaluation_gradient() {
-        // TODO: Test 2D Gaussian evaluation gradients
+        // Gradient check for 2D Gaussian evaluation w.r.t mean and covariance entries.
+        //
+        // This test uses a well-conditioned covariance to avoid any stabilization branches.
+        let mut rng = StdRng::seed_from_u64(0xD00D_2D_u64);
+        let tol = 5e-4f32;
+
+        for _ in 0..200 {
+            // Random mean and pixel within a modest range.
+            let mean = Vector3::new(
+                rng.gen_range(-1.0..1.0),
+                rng.gen_range(-1.0..1.0),
+                0.0,
+            );
+            let pixel = Vector3::new(
+                rng.gen_range(-1.0..1.0),
+                rng.gen_range(-1.0..1.0),
+                0.0,
+            );
+
+            // SPD covariance with controlled off-diagonal.
+            let cov_xx = rng.gen_range(0.5f32..2.0f32);
+            let cov_yy = rng.gen_range(0.5f32..2.0f32);
+            let max_b = 0.25 * (cov_xx * cov_yy).sqrt();
+            let cov_xy = rng.gen_range(-max_b..max_b);
+
+            let det = cov_xx * cov_yy - cov_xy * cov_xy;
+            assert!(det > 0.1, "det too small for stable test: {det}");
+
+            let grads = gaussian2d_evaluate_with_grads(
+                nalgebra::Vector2::new(mean.x, mean.y),
+                cov_xx,
+                cov_xy,
+                cov_yy,
+                nalgebra::Vector2::new(pixel.x, pixel.y),
+            );
+
+            // Mean gradients (finite difference on mx, my).
+            for (which, ana) in [("mx", grads.d_mean.x), ("my", grads.d_mean.y)] {
+                let eps = 1e-3f32;
+                let f = |mx: f32, my: f32| -> f32 {
+                    gaussian2d_evaluate_with_grads(
+                        nalgebra::Vector2::new(mx, my),
+                        cov_xx,
+                        cov_xy,
+                        cov_yy,
+                        nalgebra::Vector2::new(pixel.x, pixel.y),
+                    )
+                    .value
+                };
+
+                let (plus, minus) = match which {
+                    "mx" => (f(mean.x + eps, mean.y), f(mean.x - eps, mean.y)),
+                    "my" => (f(mean.x, mean.y + eps), f(mean.x, mean.y - eps)),
+                    _ => unreachable!(),
+                };
+                let num = ((plus as f64 - minus as f64) / (2.0 * eps as f64)) as f32;
+
+                let abs_err = (num - ana).abs();
+                assert!(
+                    rel_err(num, ana) < tol || abs_err < 2e-4,
+                    "2D eval mean grad mismatch {which}: num={num} ana={ana} abs_err={abs_err} rel_err={}",
+                    rel_err(num, ana)
+                );
+            }
+
+            // Covariance gradients (finite difference on a,b,c).
+            let eps = 1e-2f32;
+            let f = |a: f32, b: f32, c: f32| -> f32 {
+                gaussian2d_evaluate_with_grads(
+                    nalgebra::Vector2::new(mean.x, mean.y),
+                    a,
+                    b,
+                    c,
+                    nalgebra::Vector2::new(pixel.x, pixel.y),
+                )
+                .value
+            };
+
+            let num_a = ((f(cov_xx + eps, cov_xy, cov_yy) as f64 - f(cov_xx - eps, cov_xy, cov_yy) as f64)
+                / (2.0 * eps as f64)) as f32;
+            let num_b = ((f(cov_xx, cov_xy + eps, cov_yy) as f64 - f(cov_xx, cov_xy - eps, cov_yy) as f64)
+                / (2.0 * eps as f64)) as f32;
+            let num_c = ((f(cov_xx, cov_xy, cov_yy + eps) as f64 - f(cov_xx, cov_xy, cov_yy - eps) as f64)
+                / (2.0 * eps as f64)) as f32;
+
+            for (name, num, ana) in [
+                ("cov_xx", num_a, grads.d_cov_xx),
+                ("cov_xy", num_b, grads.d_cov_xy),
+                ("cov_yy", num_c, grads.d_cov_yy),
+            ] {
+                let abs_err = (num - ana).abs();
+                assert!(
+                    rel_err(num, ana) < tol || abs_err < 2e-4,
+                    "2D eval cov grad mismatch {name}: num={num} ana={ana} abs_err={abs_err} rel_err={}",
+                    rel_err(num, ana)
+                );
+            }
+        }
     }
 
     #[test]
