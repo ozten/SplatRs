@@ -18,7 +18,7 @@ Use `docs/sugar-rs-milestones.md` as the source-of-truth for "done-ness". This f
   - [x] Optional: enable position learning (`--learn-position`) and verify held-out views sharpen (use smaller LR)
 - [x] **M9** Adaptive density control (split/clone/prune) improves M8 quality.
 - [ ] **M10** Reference-quality 3DGS training (CPU validation baseline).
-- [ ] **M11** GPU renderer matches CPU (correctness validation).
+- [x] **M11** GPU renderer matches CPU (correctness validation). ✅
 - [ ] **M12** GPU training end-to-end (10-50x speedup).
 
 ## Rules of Engagement
