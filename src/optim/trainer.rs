@@ -28,6 +28,8 @@ use crate::render::full_diff::{
 use image::RgbImage;
 use nalgebra::{Matrix3, Vector3};
 use rand::Rng;
+use rand::SeedableRng;
+use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -45,8 +47,11 @@ pub struct TrainConfig {
     pub learn_opacity: bool,
     pub loss: LossKind,
     pub learn_position: bool,
+    pub learn_scale: bool,
     /// Print per-iteration timing every N iterations (0 disables).
     pub log_interval: usize,
+    /// Optional RNG seed for deterministic runs.
+    pub rng_seed: Option<u64>,
 }
 
 pub struct TrainOutputs {
@@ -186,6 +191,7 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
     let mut adam = AdamVec3::new(cfg.lr, 0.9, 0.999, 1e-8);
     let mut opacity_opt = AdamF32::new(cfg.lr, 0.9, 0.999, 1e-8);
     let mut position_opt = AdamVec3::new(cfg.lr, 0.9, 0.999, 1e-8);
+    let mut scale_opt = AdamVec3::new(cfg.lr, 0.9, 0.999, 1e-8);
 
     // Pull initial params.
     let sh0_basis = crate::core::sh_basis(&Vector3::new(0.0, 0.0, 1.0))[0]; // = C0
@@ -195,6 +201,7 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
         .collect();
     let mut opacity_logits: Vec<f32> = gaussians.iter().map(|g| g.opacity).collect();
     let mut positions: Vec<Vector3<f32>> = gaussians.iter().map(|g| g.position).collect();
+    let mut log_scales: Vec<Vector3<f32>> = gaussians.iter().map(|g| g.scale).collect();
 
     // Initial render for output.
     let initial_render_u8 = linear_vec_to_rgb8_img(
@@ -217,6 +224,7 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
             // (fixed) parameter vectors so downstream logic has one source of truth.
             g.opacity = opacity_logits[i].clamp(-10.0, 10.0);
             g.position = positions[i];
+            g.scale = log_scales[i];
         }
 
         // Forward (linear) and loss.
@@ -247,7 +255,7 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
 
         // Backward: get dL/d(color_i) and dL/d(opacity_logit_i) per Gaussian.
         let t1 = Instant::now();
-        let (_img_u8, d_color, d_opacity_logits, d_positions, d_bg) =
+        let (_img_u8, d_color, d_opacity_logits, d_positions, d_log_scales, d_bg) =
             render_full_color_grads(&gaussians, &camera, &d_image, &bg);
         let t_backward = t1.elapsed();
 
@@ -261,6 +269,9 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
         }
         if cfg.learn_position {
             position_opt.step(&mut positions, &d_positions);
+        }
+        if cfg.learn_scale {
+            scale_opt.step(&mut log_scales, &d_log_scales);
         }
         if cfg.learn_background {
             // AdamVec3 expects slices; update a single bg vector.
@@ -292,6 +303,7 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
             g.sh_coeffs[0][2] = params[i].z;
             g.opacity = opacity_logits[i].clamp(-10.0, 10.0);
             g.position = positions[i];
+            g.scale = log_scales[i];
         }
         linear_vec_to_rgb8_img(
             &render_full_linear(&gaussians, &camera, &bg),
@@ -390,8 +402,11 @@ pub struct MultiViewTrainConfig {
     pub learn_opacity: bool,
     pub loss: LossKind,
     pub learn_position: bool,
+    pub learn_scale: bool,
     /// If non-zero, only use the first N images from `images.bin` (for faster iteration).
     pub max_images: usize,
+    /// Optional RNG seed for deterministic train/test splits and view sampling.
+    pub rng_seed: Option<u64>,
     pub train_fraction: f32, // Fraction of images for training (rest for testing)
     pub val_interval: usize,  // Validate every N iterations
     /// Limit how many held-out views are used for PSNR reporting.
@@ -417,6 +432,9 @@ pub struct MultiViewTrainOutputs {
     pub train_loss: f32,
     pub num_train_views: usize,
     pub num_test_views: usize,
+    pub initial_num_gaussians: usize,
+    pub final_num_gaussians: usize,
+    pub densify_events: usize,
     pub test_view_sample: RgbImage, // One test view rendering for visual check
     pub test_view_target: RgbImage,
 }
@@ -496,6 +514,7 @@ fn densify_and_prune<R: Rng + ?Sized>(
     params: &mut Vec<Vector3<f32>>,
     opacity_logits: &mut Vec<f32>,
     positions: &mut Vec<Vector3<f32>>,
+    log_scales: &mut Vec<Vector3<f32>>,
     grad_accum: &mut Vec<f32>,
     rng: &mut R,
     iters_in_window: usize,
@@ -532,6 +551,7 @@ fn densify_and_prune<R: Rng + ?Sized>(
     let mut new_params = Vec::with_capacity(params.len());
     let mut new_opacity_logits = Vec::with_capacity(opacity_logits.len());
     let mut new_positions = Vec::with_capacity(positions.len());
+    let mut new_log_scales = Vec::with_capacity(log_scales.len());
     let mut new_grad_accum = Vec::with_capacity(grad_accum.len());
 
     let mut kept = 0usize;
@@ -559,10 +579,12 @@ fn densify_and_prune<R: Rng + ?Sized>(
         keep.sh_coeffs[0][2] = params[i].z;
         keep.opacity = opacity_logits[i].clamp(-10.0, 10.0);
         keep.position = positions[i];
+        keep.scale = log_scales[i];
         new_gaussians.push(keep);
         new_params.push(params[i]);
         new_opacity_logits.push(opacity_logits[i]);
         new_positions.push(positions[i]);
+        new_log_scales.push(log_scales[i]);
         new_grad_accum.push(0.0);
         kept += 1;
 
@@ -602,11 +624,12 @@ fn densify_and_prune<R: Rng + ?Sized>(
             g2.sh_coeffs[0][2] = params[i].z;
             g2.opacity = child_opacity_logit;
             g2.position = new_pos;
-            g2.scale = g2.scale - Vector3::new(0.2, 0.2, 0.2);
+            g2.scale = log_scales[i] - Vector3::new(0.2, 0.2, 0.2);
             new_gaussians.push(g2);
             new_params.push(params[i]);
             new_opacity_logits.push(child_opacity_logit);
             new_positions.push(new_pos);
+            new_log_scales.push(log_scales[i] - Vector3::new(0.2, 0.2, 0.2));
             new_grad_accum.push(0.0);
             split += 1;
         } else {
@@ -617,10 +640,12 @@ fn densify_and_prune<R: Rng + ?Sized>(
             g2.sh_coeffs[0][2] = params[i].z;
             g2.opacity = child_opacity_logit;
             g2.position = new_pos;
+            g2.scale = log_scales[i];
             new_gaussians.push(g2);
             new_params.push(params[i]);
             new_opacity_logits.push(child_opacity_logit);
             new_positions.push(new_pos);
+            new_log_scales.push(log_scales[i]);
             new_grad_accum.push(0.0);
             cloned += 1;
         }
@@ -630,6 +655,7 @@ fn densify_and_prune<R: Rng + ?Sized>(
     *params = new_params;
     *opacity_logits = new_opacity_logits;
     *positions = new_positions;
+    *log_scales = new_log_scales;
     *grad_accum = new_grad_accum;
 
     kept_avg_grads.sort_by(|a, b| a.total_cmp(b));
@@ -684,7 +710,11 @@ pub fn train_multiview_color_only(
 
     // Split images into train/test sets
     let mut image_indices: Vec<usize> = (0..available_images).collect();
-    let mut rng = rand::thread_rng();
+    let mut rng = if let Some(seed) = cfg.rng_seed {
+        StdRng::seed_from_u64(seed)
+    } else {
+        StdRng::from_entropy()
+    };
     image_indices.shuffle(&mut rng);
 
     let num_train = ((available_images as f32) * cfg.train_fraction).max(1.0) as usize;
@@ -783,6 +813,7 @@ pub fn train_multiview_color_only(
     }
 
     eprintln!("Initialized {} Gaussians", gaussians.len());
+    let initial_num_gaussians = gaussians.len();
 
     // Initialize background color (using first view's mean)
     let first_target_linear = if let Some(v) = view_cache.get(&first_train_idx) {
@@ -806,6 +837,7 @@ pub fn train_multiview_color_only(
     let mut adam = AdamVec3::new(cfg.lr, 0.9, 0.999, 1e-8);
     let mut opacity_opt = AdamF32::new(cfg.lr, 0.9, 0.999, 1e-8);
     let mut position_opt = AdamVec3::new(cfg.lr, 0.9, 0.999, 1e-8);
+    let mut scale_opt = AdamVec3::new(cfg.lr, 0.9, 0.999, 1e-8);
 
     // Pull initial params
     let sh0_basis = crate::core::sh_basis(&Vector3::new(0.0, 0.0, 1.0))[0]; // = C0
@@ -815,6 +847,7 @@ pub fn train_multiview_color_only(
         .collect();
     let mut opacity_logits: Vec<f32> = gaussians.iter().map(|g| g.opacity).collect();
     let mut positions: Vec<Vector3<f32>> = gaussians.iter().map(|g| g.position).collect();
+    let mut log_scales: Vec<Vector3<f32>> = gaussians.iter().map(|g| g.scale).collect();
     let mut grad_accum_pos_norm: Vec<f32> = vec![0.0; gaussians.len()];
     let mut grad_window_iters: usize = 0;
 
@@ -855,6 +888,7 @@ pub fn train_multiview_color_only(
 
     // Training loop: sample random views
     let mut train_loss = 0.0f32;
+    let mut densify_events: usize = 0;
     for iter in 0..cfg.iters {
         let should_log =
             cfg.log_interval > 0 && (iter == 0 || iter % cfg.log_interval == 0 || iter + 1 == cfg.iters);
@@ -891,6 +925,7 @@ pub fn train_multiview_color_only(
             g.sh_coeffs[0][2] = params[i].z;
             g.opacity = opacity_logits[i].clamp(-10.0, 10.0);
             g.position = positions[i];
+            g.scale = log_scales[i];
         }
 
         // Coverage weighting (use current params)
@@ -932,7 +967,7 @@ pub fn train_multiview_color_only(
 
         // Backward
         let t1 = Instant::now();
-        let (_img_u8, d_color, d_opacity_logits, d_positions, d_bg) =
+        let (_img_u8, d_color, d_opacity_logits, d_positions, d_log_scales, d_bg) =
             render_full_color_grads(&gaussians, &train_camera, &d_image, &bg);
         let t_backward = t1.elapsed();
 
@@ -946,6 +981,9 @@ pub fn train_multiview_color_only(
         }
         if cfg.learn_position {
             position_opt.step(&mut positions, &d_positions);
+        }
+        if cfg.learn_scale {
+            scale_opt.step(&mut log_scales, &d_log_scales);
         }
         if cfg.learn_background {
             let mut bg_param = vec![bg];
@@ -1028,6 +1066,7 @@ pub fn train_multiview_color_only(
                 &mut params,
                 &mut opacity_logits,
                 &mut positions,
+                &mut log_scales,
                 &mut grad_accum_pos_norm,
                 &mut rng,
                 grad_window_iters,
@@ -1041,7 +1080,9 @@ pub fn train_multiview_color_only(
             adam.reset_moments_keep_t(params.len());
             opacity_opt.reset_moments_keep_t(opacity_logits.len());
             position_opt.reset_moments_keep_t(positions.len());
+            scale_opt.reset_moments_keep_t(log_scales.len());
             grad_window_iters = 0;
+            densify_events += 1;
             eprintln!(
                 "densify @iter {}: gaussians {} -> {} (kept={} pruned={} split={} cloned={} cap_hit={} grad_p50={:.4} grad_p90={:.4})",
                 iter + 1,
@@ -1069,6 +1110,7 @@ pub fn train_multiview_color_only(
         g.sh_coeffs[0][2] = params[i].z;
         g.opacity = opacity_logits[i].clamp(-10.0, 10.0);
         g.position = positions[i];
+        g.scale = log_scales[i];
     }
 
     for (i, &test_idx) in test_indices_for_metrics.iter().enumerate() {
@@ -1120,6 +1162,9 @@ pub fn train_multiview_color_only(
         train_loss,
         num_train_views: train_indices.len(),
         num_test_views: test_indices.len(),
+        initial_num_gaussians,
+        final_num_gaussians: gaussians.len(),
+        densify_events,
         test_view_sample: test_view_sample.unwrap(),
         test_view_target: test_view_target.unwrap(),
     })
@@ -1157,6 +1202,7 @@ mod tests {
         let mut params = vec![Vector3::new(0.1, 0.2, 0.3), Vector3::new(0.4, 0.5, 0.6)];
         let mut opacity_logits = vec![2.0, -10.0];
         let mut positions = vec![g1.position, Vector3::new(1.0, 0.0, 1.0)];
+        let mut log_scales: Vec<Vector3<f32>> = gaussians.iter().map(|g| g.scale).collect();
         let mut grad_accum = vec![2.0, 0.0]; // avg_grad=0.2 if window=10
 
         let mut rng = StdRng::seed_from_u64(123);
@@ -1165,6 +1211,7 @@ mod tests {
             &mut params,
             &mut opacity_logits,
             &mut positions,
+            &mut log_scales,
             &mut grad_accum,
             &mut rng,
             10,
@@ -1179,6 +1226,7 @@ mod tests {
         assert_eq!(params.len(), 2);
         assert_eq!(opacity_logits.len(), 2);
         assert_eq!(positions.len(), 2);
+        assert_eq!(log_scales.len(), 2);
         assert_eq!(grad_accum, vec![0.0, 0.0]);
 
         // First is the original, second is the split copy.

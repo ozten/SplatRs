@@ -44,7 +44,7 @@ fn test_position_grads_are_finite_for_simple_scene() {
         .map(|(r, t)| (*r - *t) * 2.0)
         .collect();
 
-    let (_img, _d_color, _d_opacity, d_pos, _d_bg) =
+    let (_img, _d_color, _d_opacity, d_pos, _d_log_scales, _d_bg) =
         render_full_color_grads(&gaussians, &camera, &d_image, &bg);
 
     assert_eq!(d_pos.len(), gaussians.len());

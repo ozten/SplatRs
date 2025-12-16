@@ -16,6 +16,9 @@
 
 use crate::core::{Camera, Gaussian, Gaussian2D};
 use crate::diff::blend_grad::{blend_backward_with_bg, blend_forward_with_bg};
+use crate::diff::covariance_grad::{
+    project_covariance_2d_grad_log_scale, project_covariance_2d_grad_point_cam,
+};
 use crate::diff::gaussian2d_grad::gaussian2d_evaluate_with_grads;
 use crate::diff::project_grad::project_point_grad_point_cam;
 use image::RgbImage;
@@ -173,6 +176,7 @@ pub fn render_full_color_grads(
     Vec<Vector3<f32>>,
     Vec<f32>,
     Vec<Vector3<f32>>,
+    Vec<Vector3<f32>>,
     Vector3<f32>,
 ) {
     let width = camera.width as i32;
@@ -193,6 +197,7 @@ pub fn render_full_color_grads(
     let mut d_colors = vec![Vector3::<f32>::zeros(); gaussians.len()];
     let mut d_opacity_logits = vec![0.0f32; gaussians.len()];
     let mut d_mean_px = vec![Vector2::<f32>::zeros(); gaussians.len()];
+    let mut d_cov_2d = vec![Vector3::<f32>::zeros(); gaussians.len()]; // (xx, xy, yy)
     let mut d_bg = Vector3::<f32>::zeros();
 
     for py in 0..height {
@@ -205,6 +210,7 @@ pub fn render_full_color_grads(
             let mut d_alpha_d_logits: Vec<f32> = Vec::new();
             let mut d_alpha_d_weights: Vec<f32> = Vec::new();
             let mut d_weight_d_means: Vec<Vector2<f32>> = Vec::new();
+            let mut d_weight_d_covs: Vec<Vector3<f32>> = Vec::new();
             let mut colors: Vec<Vector3<f32>> = Vec::new();
             let mut indices: Vec<usize> = Vec::new();
 
@@ -240,6 +246,11 @@ pub fn render_full_color_grads(
                 d_alpha_d_logits.push(d_alpha_d_logit);
                 d_alpha_d_weights.push(d_alpha_d_weight);
                 d_weight_d_means.push(w_grads.d_mean);
+                d_weight_d_covs.push(Vector3::new(
+                    w_grads.d_cov_xx,
+                    w_grads.d_cov_xy,
+                    w_grads.d_cov_yy,
+                ));
                 colors.push(g.color);
                 indices.push(g.gaussian_idx);
             }
@@ -267,25 +278,59 @@ pub fn render_full_color_grads(
                 d_opacity_logits[gi] += grads.d_alphas[k] * d_alpha_d_logits[k];
                 let d_weight = grads.d_alphas[k] * d_alpha_d_weights[k];
                 d_mean_px[gi] += d_weight_d_means[k] * d_weight;
+                d_cov_2d[gi] += d_weight_d_covs[k] * d_weight;
             }
             d_bg += grads.d_bg;
         }
     }
 
     let mut d_positions = vec![Vector3::<f32>::zeros(); gaussians.len()];
+    let mut d_log_scales = vec![Vector3::<f32>::zeros(); gaussians.len()];
     for g in &prepared {
         let gi = g.gaussian_idx;
+        let mut d_point_cam_total = Vector3::<f32>::zeros();
+
         let d_uv = d_mean_px[gi];
-        if d_uv == Vector2::zeros() {
-            continue;
+        if d_uv != Vector2::zeros() {
+            d_point_cam_total +=
+                project_point_grad_point_cam(&g.point_cam, camera.fx, camera.fy, &d_uv);
         }
-        let d_point_cam =
-            project_point_grad_point_cam(&g.point_cam, camera.fx, camera.fy, &d_uv);
+
+        let d_cov = d_cov_2d[gi];
+        if d_cov != Vector3::zeros() {
+            // Backprop through Σ₂d = J(point_cam) Σ_cam Jᵀ into:
+            // - point_cam (via Jacobian dependence on depth)
+            // - log_scale (via Σ reconstruction)
+            let d_sigma2d = Matrix2::new(d_cov.x, d_cov.y, d_cov.y, d_cov.z);
+
+            let gaussian_r = crate::core::quaternion_to_matrix(&gaussians[gi].rotation);
+            let log_scale = gaussians[gi].scale;
+
+            d_point_cam_total += project_covariance_2d_grad_point_cam(
+                &g.point_cam,
+                camera.fx,
+                camera.fy,
+                &camera.rotation,
+                &gaussian_r,
+                &log_scale,
+                &d_sigma2d,
+            );
+
+            let j = camera.projection_jacobian(&g.point_cam);
+            d_log_scales[gi] = project_covariance_2d_grad_log_scale(
+                &camera.rotation,
+                &j,
+                &gaussian_r,
+                &log_scale,
+                &d_sigma2d,
+            );
+        }
+
         // point_cam = R * p_world + t  =>  dL/dp_world = R^T * dL/dpoint_cam
-        d_positions[gi] = camera.rotation.transpose() * d_point_cam;
+        d_positions[gi] = camera.rotation.transpose() * d_point_cam_total;
     }
 
-    (img, d_colors, d_opacity_logits, d_positions, d_bg)
+    (img, d_colors, d_opacity_logits, d_positions, d_log_scales, d_bg)
 }
 
 /// Forward render that returns linear RGB pixels in [0,1] (no quantization).

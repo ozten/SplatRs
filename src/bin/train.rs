@@ -21,6 +21,7 @@ fn main() {
     let mut learn_background: bool = true;
     let mut learn_opacity: bool = false;
     let mut learn_position: bool = false;
+    let mut learn_scale: bool = false;
     let mut loss: sugar_rs::optim::loss::LossKind = sugar_rs::optim::loss::LossKind::L2;
     let mut dataset_root: Option<std::path::PathBuf> = None;
     let mut multiview: bool = false;
@@ -34,6 +35,7 @@ fn main() {
     let mut densify_grad_threshold: f32 = 0.1;
     let mut prune_opacity_threshold: f32 = 0.01;
     let mut split_sigma_threshold: f32 = 0.05;
+    let mut seed: Option<u64> = None;
 
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -49,6 +51,7 @@ fn main() {
             "--no-learn-bg" => learn_background = false,
             "--learn-opacity" => learn_opacity = true,
             "--learn-position" => learn_position = true,
+            "--learn-scale" => learn_scale = true,
             "--loss" => {
                 let v = args.next().unwrap();
                 loss = match v.as_str() {
@@ -71,13 +74,14 @@ fn main() {
             "--densify-grad-threshold" => densify_grad_threshold = args.next().unwrap().parse().unwrap(),
             "--prune-opacity-threshold" => prune_opacity_threshold = args.next().unwrap().parse().unwrap(),
             "--split-sigma-threshold" => split_sigma_threshold = args.next().unwrap().parse().unwrap(),
+            "--seed" => seed = Some(args.next().unwrap().parse().unwrap()),
             "--help" | "-h" => {
                 eprintln!("Usage:");
                 eprintln!("  # M7 (single-view / overfit)");
-                eprintln!("  sugar-train --scene <sparse/0> [--images <dir>] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--image-index I] [--log-interval N] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--learn-position] [--out-dir DIR]");
+                eprintln!("  sugar-train --scene <sparse/0> [--images <dir>] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--image-index I] [--log-interval N] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--learn-position] [--learn-scale] [--seed U64] [--out-dir DIR]");
                 eprintln!();
                 eprintln!("  # M8 (multi-view)");
-                eprintln!("  sugar-train --multiview --scene <sparse/0> [--images <dir>] [--max-images N] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--train-fraction F] [--val-interval N] [--max-test-views N] [--log-interval N] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--learn-position] [--densify-interval N] [--densify-max-gaussians N] [--densify-grad-threshold F] [--prune-opacity-threshold F] [--split-sigma-threshold F] [--out-dir DIR]");
+                eprintln!("  sugar-train --multiview --scene <sparse/0> [--images <dir>] [--max-images N] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--train-fraction F] [--val-interval N] [--max-test-views N] [--log-interval N] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--learn-position] [--learn-scale] [--densify-interval N] [--densify-max-gaussians N] [--densify-grad-threshold F] [--prune-opacity-threshold F] [--split-sigma-threshold F] [--seed U64] [--out-dir DIR]");
                 eprintln!();
                 eprintln!("  # Auto-detect paths");
                 eprintln!("  sugar-train [--multiview] --dataset-root <root> [--iters N] ...   (auto-detects sparse/0 + images/)");
@@ -118,12 +122,14 @@ fn main() {
             learn_background,
             learn_opacity,
             learn_position,
+            learn_scale,
             loss,
             max_images,
+            rng_seed: seed,
             train_fraction,
             val_interval,
-            max_test_views_for_metrics,
-            log_interval,
+                max_test_views_for_metrics,
+                log_interval,
             densify_interval,
             densify_max_gaussians,
             densify_grad_threshold,
@@ -135,8 +141,13 @@ fn main() {
             .expect("Multi-view training failed");
 
         eprintln!(
-            "M8 metrics: initial_psnr={:.2}dB final_psnr={:.2}dB train_loss={:.6}",
-            out.initial_psnr, out.final_psnr, out.train_loss
+            "M8 metrics: initial_psnr={:.2}dB final_psnr={:.2}dB train_loss={:.6} gaussians={}->{} densify_events={}",
+            out.initial_psnr,
+            out.final_psnr,
+            out.train_loss,
+            out.initial_num_gaussians,
+            out.final_num_gaussians,
+            out.densify_events
         );
 
         let rendered_path = out_dir.join("m8_test_view_rendered.png");
@@ -157,8 +168,10 @@ fn main() {
             learn_background,
             learn_opacity,
             learn_position,
+            learn_scale,
             loss,
             log_interval,
+            rng_seed: seed,
         };
 
         let out =

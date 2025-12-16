@@ -17,59 +17,23 @@
 
 ---
 
-## ⚠️ M8: Multi-View Training - ACTION REQUIRED
+## 🟡 M8: Multi-View Training - IMPLEMENTED (Quality Tuning Ongoing)
 
 ### What M8 Needs
 - Train on 10-20 images from different viewpoints
 - Multi-view consistency (gradients from multiple views)
 - Test view synthesis on held-out cameras
 
-### Critical Blockers
-1. **🔴 MUST FIX Bug #1**: Camera ID mapping
-   - Current code: Always uses `cameras[0]`
-   - Required: Map `image.camera_id` → correct camera
-   - **Impact if unfixed**: Wrong intrinsics → misalignment → training fails
-
-### Recommended Changes
-
-#### Fix #1: Proper Camera ID Mapping
-```rust
-// src/io/colmap.rs
-pub struct ColmapScene {
-    pub cameras: HashMap<u32, Camera>,  // Changed from Vec<Camera>
-    pub images: Vec<ImageInfo>,
-    pub points: Vec<Point3D>,
-}
-
-// In read_cameras_bin():
-let mut cameras = HashMap::new();
-for _ in 0..num_cameras {
-    let camera_id = reader.read_u32::<LittleEndian>()?;
-    // ... parse camera ...
-    cameras.insert(camera_id, camera);  // Use ID as key
-}
-```
-
-#### Fix #2: Trainer Update
-```rust
-// src/optim/trainer.rs:94
-// OLD: let base_camera = &scene.cameras[0];
-// NEW:
-let base_camera = scene.cameras.get(&image_info.camera_id)
-    .ok_or_else(|| anyhow::anyhow!("Camera {} not found", image_info.camera_id))?;
-```
-
 ### Testing Strategy
-1. Find or create a multi-camera dataset
-2. Verify different images use different camera IDs
-3. Train on subset, test camera ID lookup works
-4. Check that training converges with correct intrinsics
+1. Run the smoke test: `cargo test --test m8_multiview_train`
+2. For longer quality runs: `cargo test --test m8_multiview_train -- --ignored`
+3. For deterministic splits/sampling, pass `--seed 0` to `sugar-train` (see `docs/ROADMAP.md`)
 
-**Status**: 🔴 **BLOCKED** until Bug #1 is fixed
+**Status**: 🟡 **IN PROGRESS** (quality targets depend on dataset + runtime budget)
 
 ---
 
-## 🟡 M9: Adaptive Density Control - ACTION REQUIRED
+## 🟡 M9: Adaptive Density Control - IMPLEMENTED (Quality Tuning Ongoing)
 
 ### What M9 Needs
 - Gaussian splitting (high-gradient regions)
@@ -77,48 +41,12 @@ let base_camera = scene.cameras.get(&image_info.camera_id)
 - Gaussian pruning (low-opacity Gaussians)
 - Parameter count changes dynamically during training
 
-### Critical Blockers
-1. **🔴 MUST FIX Bug #2**: Adam optimizer state management
-   - Current: Resets `t=0` when parameter count changes
-   - Required: Preserve optimizer state or handle gracefully
-   - **Impact if unfixed**: Learning rate spikes → unstable training
-
-### Recommended Changes
-
-#### Fix: Adam State Preservation
-```rust
-// src/optim/adam.rs
-pub fn ensure_len(&mut self, len: usize) {
-    if self.m.len() != len {
-        // Preserve existing state, zero-init new parameters
-        self.m.resize(len, Vector3::zeros());
-        self.v.resize(len, Vector3::zeros());
-        // DON'T reset t!
-        // self.t stays at current value for bias correction
-    }
-}
-```
-
-**Alternative**: Per-parameter timesteps
-```rust
-pub struct AdamVec3 {
-    pub lr: f32,
-    pub beta1: f32,
-    pub beta2: f32,
-    pub eps: f32,
-    t: Vec<u32>,  // One timestep per parameter
-    m: Vec<Vector3<f32>>,
-    v: Vec<Vector3<f32>>,
-}
-```
-
 ### Testing Strategy
-1. Start with N Gaussians
-2. Add/remove Gaussians mid-training
-3. Verify loss continues to decrease (no spikes)
-4. Check that new Gaussians have correct learning rates
+1. Smoke test integration: `cargo test --test m9_adaptive_density_control`
+2. Manual/longer runs with densify enabled: see `docs/ROADMAP.md` “M9” command
+3. Watch logs for `densify @iter ... gaussians A -> B` and ensure PSNR doesn’t regress
 
-**Status**: 🔴 **BLOCKED** until Bug #2 is fixed
+**Status**: 🟡 **IN PROGRESS** (needs tuning to consistently improve quality vs M8)
 
 ---
 
@@ -170,29 +98,18 @@ Most gradient code is already written in `src/diff/`. Just need to:
 
 ### Before starting M8:
 ```bash
-# 1. Fix camera ID mapping
-- [ ] Change ColmapScene.cameras to HashMap<u32, Camera>
-- [ ] Update all camera lookups to use camera_id
-- [ ] Test with multi-camera dataset
-- [ ] Run: cargo test --test dataset_sanity_check
-
-# 2. Verify multi-view training
-- [ ] Train on 10+ images from different views
-- [ ] Check loss decreases across all views
-- [ ] Test novel view synthesis (PSNR > 20dB)
+# 1. Verify multi-view training
+- [ ] Run: cargo test --test m8_multiview_train
+- [ ] Optional (slow): cargo test --test m8_multiview_train -- --ignored
+- [ ] Manual: run `sugar-train --multiview ... --seed 0` and inspect outputs
 ```
 
 ### Before starting M9:
 ```bash
-# 1. Fix Adam optimizer state
-- [ ] Update ensure_len() to preserve timestep
-- [ ] Add test for parameter count changes
-- [ ] Run: cargo test adam_resize_test
-
-# 2. Implement density control
-- [ ] Gaussian splitting logic
-- [ ] Gaussian pruning logic
-- [ ] Verify training remains stable
+# 1. Verify density control plumbing
+- [ ] Run: cargo test --test m9_adaptive_density_control
+- [ ] Manual: run `sugar-train --multiview ... --densify-interval N ... --seed 0`
+- [ ] Tune `--prune-opacity-threshold` downward if repeated splits prune too aggressively
 ```
 
 ### Before starting M10:
