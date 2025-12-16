@@ -19,7 +19,9 @@ Use `docs/sugar-rs-milestones.md` as the source-of-truth for "done-ness". This f
 - [x] **M9** Adaptive density control (split/clone/prune) improves M8 quality.
 - [ ] **M10** Reference-quality 3DGS training (CPU validation baseline).
 - [x] **M11** GPU renderer matches CPU (correctness validation). ✅
-- [ ] **M12** GPU training end-to-end (10-50x speedup).
+- [~] **M12** GPU training end-to-end (10-50x speedup). 🟡 PARTIAL
+  - [x] GPU forward pass integrated (1.4-1.75x overall speedup)
+  - [ ] GPU backward pass (gradients) - needed for 10-50x target
 
 ## Rules of Engagement
 
