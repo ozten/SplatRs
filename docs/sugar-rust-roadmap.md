@@ -2,7 +2,9 @@
 
 ## Overview
 
-SuGaR (Surface-Aligned Gaussian Splatting) builds on top of 3D Gaussian Splatting (3DGS), so you need most of 3DGS working first. The core challenge is that the rendering pipeline must be **differentiable** — you need gradients flowing back through the rasterizer to the Gaussian parameters.
+SuGaR (Surface-Aligned Gaussian Splatting) builds on top of **vanilla 3D Gaussian Splatting (3DGS)**, so we should **finish 3DGS end-to-end (M1–M10)** before implementing SuGaR-specific pieces (M11+). The core challenge is that the rendering pipeline must be **differentiable** — you need gradients flowing back through the rasterizer to the Gaussian parameters.
+
+If you want the short “what are we doing next?” checklist, see `docs/ROADMAP.md`.
 
 ---
 

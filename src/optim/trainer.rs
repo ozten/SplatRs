@@ -1,15 +1,17 @@
-//! Training orchestration (M7).
+//! Training orchestration (M7 + M8).
 //!
-//! This is an intentionally minimal "single-image overfit" trainer that
-//! optimizes only the SH DC coefficient (color) for each Gaussian.
+//! M7: Single-image overfit trainer for validation
+//! M8: Multi-view training with train/test split
 //!
-//! Why:
+//! Both optimizers currently train only the SH DC coefficient (color) for each Gaussian.
+//!
+//! Why color-only for now:
 //! - Validates differentiable rendering end-to-end
 //! - Keeps the state space small and stable for early debugging
 //!
 //! Next:
 //! - Add opacity + 2D eval + projection gradients for full parameter training
-//! - Switch to multi-view sampling
+//! - Add Gaussian densification/pruning
 
 use crate::core::{init_from_colmap_points_visible_stratified, Camera, Gaussian};
 use crate::io::load_colmap_scene;
@@ -22,6 +24,7 @@ use crate::render::full_diff::{
 };
 use image::RgbImage;
 use nalgebra::{Matrix3, Vector3};
+use rand::seq::SliceRandom;
 use std::path::{Path, PathBuf};
 
 pub struct TrainConfig {
@@ -308,4 +311,344 @@ pub fn guess_sparse0_from_dataset_root(root: &Path) -> Option<PathBuf> {
     }
 
     None
+}
+
+// ============================================================================
+// M8: Multi-View Training
+// ============================================================================
+
+pub struct MultiViewTrainConfig {
+    pub sparse_dir: PathBuf,
+    pub images_dir: PathBuf,
+    pub max_gaussians: usize,
+    pub downsample_factor: f32,
+    pub iters: usize,
+    pub lr: f32,
+    pub learn_background: bool,
+    pub train_fraction: f32, // Fraction of images for training (rest for testing)
+    pub val_interval: usize,  // Validate every N iterations
+    /// Limit how many held-out views are used for PSNR reporting.
+    /// Use `0` to evaluate all test views (can be slow on large datasets).
+    pub max_test_views_for_metrics: usize,
+}
+
+pub struct MultiViewTrainOutputs {
+    pub initial_psnr: f32,
+    pub final_psnr: f32,
+    pub train_loss: f32,
+    pub num_train_views: usize,
+    pub num_test_views: usize,
+    pub test_view_sample: RgbImage, // One test view rendering for visual check
+    pub test_view_target: RgbImage,
+}
+
+/// Compute PSNR between two linear RGB images.
+fn compute_psnr(rendered: &[Vector3<f32>], target: &[Vector3<f32>]) -> f32 {
+    if rendered.len() != target.len() || rendered.is_empty() {
+        return 0.0;
+    }
+
+    let mse: f32 = rendered
+        .iter()
+        .zip(target.iter())
+        .map(|(r, t)| {
+            let diff = r - t;
+            diff.norm_squared()
+        })
+        .sum::<f32>()
+        / (rendered.len() as f32 * 3.0); // Divide by 3 for RGB channels
+
+    if mse < 1e-10 {
+        return 100.0; // Cap at very high PSNR for near-perfect match
+    }
+
+    // PSNR = 10 * log10(MAX^2 / MSE)
+    // For linear RGB in [0, 1], MAX = 1
+    10.0 * (1.0 / mse).log10()
+}
+
+/// M8: Train on multiple views with train/test split.
+///
+/// This extends M7 by:
+/// - Splitting images into train/test sets
+/// - Randomly sampling training views each iteration
+/// - Validating on held-out test views
+/// - Reporting PSNR metrics
+pub fn train_multiview_color_only(
+    cfg: &MultiViewTrainConfig,
+) -> anyhow::Result<MultiViewTrainOutputs> {
+    let scene = load_colmap_scene(&cfg.sparse_dir)?;
+    if scene.cameras.is_empty() || scene.images.is_empty() {
+        return Err(anyhow::anyhow!("Scene has no cameras/images"));
+    }
+    if cfg.iters == 0 {
+        return Err(anyhow::anyhow!("iters must be > 0"));
+    }
+    if cfg.val_interval == 0 {
+        return Err(anyhow::anyhow!("val_interval must be > 0"));
+    }
+
+    // Split images into train/test sets
+    let mut image_indices: Vec<usize> = (0..scene.images.len()).collect();
+    let mut rng = rand::thread_rng();
+    image_indices.shuffle(&mut rng);
+
+    let num_train = ((scene.images.len() as f32) * cfg.train_fraction).max(1.0) as usize;
+    let train_indices = &image_indices[..num_train];
+    let test_indices = &image_indices[num_train..];
+
+    eprintln!(
+        "Multi-view training: {} train views, {} test views",
+        train_indices.len(),
+        test_indices.len()
+    );
+
+    if test_indices.is_empty() {
+        return Err(anyhow::anyhow!(
+            "No test views available. Need at least 2 images for train/test split."
+        ));
+    }
+
+    let test_indices_for_metrics: &[usize] = if cfg.max_test_views_for_metrics == 0 {
+        test_indices
+    } else {
+        &test_indices[..cfg.max_test_views_for_metrics.min(test_indices.len())]
+    };
+
+    // Use first training view to initialize camera and Gaussians
+    let first_train_idx = train_indices[0];
+    let first_image_info = &scene.images[first_train_idx];
+    let base_camera = scene
+        .cameras
+        .get(&first_image_info.camera_id)
+        .ok_or_else(|| anyhow::anyhow!("Camera {} not found", first_image_info.camera_id))?;
+
+    let rotation = first_image_info.rotation.to_rotation_matrix().into_inner();
+    let camera_full = camera_with_pose(base_camera, rotation, first_image_info.translation);
+    let camera = downsample_camera(&camera_full, cfg.downsample_factor);
+
+    // Initialize Gaussians from visible points (using first view for now)
+    let cloud =
+        init_from_colmap_points_visible_stratified(&scene.points, &camera, cfg.max_gaussians, 8);
+    let mut gaussians: Vec<Gaussian> = cloud.gaussians;
+
+    // Set per-point isotropic 3D sigma for consistent pixel-space footprint
+    let desired_sigma_px = 1.5f32;
+    let f_mean = 0.5 * (camera.fx + camera.fy).max(1.0);
+    for g in &mut gaussians {
+        let z = camera.world_to_camera(&g.position).z;
+        if z <= 0.0 {
+            continue;
+        }
+        let sigma_world = (desired_sigma_px * z / f_mean).clamp(1e-4, 1.0);
+        let log_sigma = sigma_world.ln();
+        g.scale = Vector3::new(log_sigma, log_sigma, log_sigma);
+    }
+
+    eprintln!("Initialized {} Gaussians", gaussians.len());
+
+    // Initialize background color (using first view's mean)
+    let first_target = load_target_image(&cfg.images_dir, &first_image_info.name)?;
+    let first_target_ds = downsample_rgb_nearest(&first_target, camera.width, camera.height);
+    let first_target_linear = rgb8_to_linear_vec(&first_target_ds);
+
+    let mut bg = {
+        let mut acc = Vector3::<f32>::zeros();
+        for p in &first_target_linear {
+            acc += *p;
+        }
+        acc / (first_target_linear.len() as f32).max(1.0)
+    };
+    let mut bg_opt = AdamVec3::new(cfg.lr, 0.9, 0.999, 1e-8);
+
+    // Optimizer state for SH DC coeffs (RGB)
+    let mut adam = AdamVec3::new(cfg.lr, 0.9, 0.999, 1e-8);
+
+    // Pull initial params
+    let sh0_basis = crate::core::sh_basis(&Vector3::new(0.0, 0.0, 1.0))[0]; // = C0
+    let mut params: Vec<Vector3<f32>> = gaussians
+        .iter()
+        .map(|g| Vector3::new(g.sh_coeffs[0][0], g.sh_coeffs[0][1], g.sh_coeffs[0][2]))
+        .collect();
+
+    // Compute initial PSNR on test views
+    let initial_psnr = {
+        let mut psnr_sum = 0.0f32;
+        for &test_idx in test_indices_for_metrics {
+            let test_image_info = &scene.images[test_idx];
+            let test_base_camera = scene
+                .cameras
+                .get(&test_image_info.camera_id)
+                .ok_or_else(|| anyhow::anyhow!("Camera {} not found", test_image_info.camera_id))?;
+            let test_rotation = test_image_info.rotation.to_rotation_matrix().into_inner();
+            let test_camera_full =
+                camera_with_pose(test_base_camera, test_rotation, test_image_info.translation);
+            let test_camera = downsample_camera(&test_camera_full, cfg.downsample_factor);
+
+            let test_target = load_target_image(&cfg.images_dir, &test_image_info.name)?;
+            let test_target_ds =
+                downsample_rgb_nearest(&test_target, test_camera.width, test_camera.height);
+            let test_target_linear = rgb8_to_linear_vec(&test_target_ds);
+
+            let rendered = render_full_linear(&gaussians, &test_camera, &bg);
+            let psnr = compute_psnr(&rendered, &test_target_linear);
+            psnr_sum += psnr;
+        }
+        psnr_sum / (test_indices.len() as f32)
+    };
+
+    eprintln!("Initial test PSNR: {:.2} dB", initial_psnr);
+
+    // Training loop: sample random views
+    let mut train_loss = 0.0f32;
+    for iter in 0..cfg.iters {
+        // Sample a random training view
+        let train_idx = train_indices[iter % train_indices.len()];
+        let train_image_info = &scene.images[train_idx];
+        let train_base_camera = scene
+            .cameras
+            .get(&train_image_info.camera_id)
+            .ok_or_else(|| anyhow::anyhow!("Camera {} not found", train_image_info.camera_id))?;
+        let train_rotation = train_image_info.rotation.to_rotation_matrix().into_inner();
+        let train_camera_full =
+            camera_with_pose(train_base_camera, train_rotation, train_image_info.translation);
+        let train_camera = downsample_camera(&train_camera_full, cfg.downsample_factor);
+
+        // Load target image
+        let train_target = load_target_image(&cfg.images_dir, &train_image_info.name)?;
+        let train_target_ds =
+            downsample_rgb_nearest(&train_target, train_camera.width, train_camera.height);
+        let train_target_linear = rgb8_to_linear_vec(&train_target_ds);
+
+        // Coverage weighting
+        let coverage_bool = coverage_mask_bool(&gaussians, &train_camera);
+        let weights: Vec<f32> = coverage_bool
+            .iter()
+            .map(|&c| if c { 1.0 } else { 0.1 })
+            .collect();
+
+        // Write params back into gaussians
+        for (i, g) in gaussians.iter_mut().enumerate() {
+            g.sh_coeffs[0][0] = params[i].x;
+            g.sh_coeffs[0][1] = params[i].y;
+            g.sh_coeffs[0][2] = params[i].z;
+        }
+
+        // Forward and loss
+        let rendered_linear = render_full_linear(&gaussians, &train_camera, &bg);
+        let (loss, d_image) =
+            l2_image_loss_and_grad_weighted(&rendered_linear, &train_target_linear, &weights);
+        train_loss = loss; // Track most recent loss
+
+        // Backward
+        let (_img_u8, d_color, d_bg) =
+            render_full_color_grads(&gaussians, &train_camera, &d_image, &bg);
+
+        // Convert dL/d(color) -> dL/d(SH0 coeff)
+        let grads: Vec<Vector3<f32>> = d_color.iter().map(|dc| dc * sh0_basis).collect();
+
+        adam.step(&mut params, &grads);
+        if cfg.learn_background {
+            let mut bg_param = vec![bg];
+            let bg_grad = vec![d_bg];
+            bg_opt.step(&mut bg_param, &bg_grad);
+            bg = bg_param[0];
+        }
+
+        // Validation
+        if (iter + 1) % cfg.val_interval == 0 || iter + 1 == cfg.iters {
+            let mut test_psnr_sum = 0.0f32;
+            for &test_idx in test_indices_for_metrics {
+                let test_image_info = &scene.images[test_idx];
+                let test_base_camera = scene
+                    .cameras
+                    .get(&test_image_info.camera_id)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("Camera {} not found", test_image_info.camera_id)
+                    })?;
+                let test_rotation = test_image_info.rotation.to_rotation_matrix().into_inner();
+                let test_camera_full = camera_with_pose(
+                    test_base_camera,
+                    test_rotation,
+                    test_image_info.translation,
+                );
+                let test_camera = downsample_camera(&test_camera_full, cfg.downsample_factor);
+
+                let test_target = load_target_image(&cfg.images_dir, &test_image_info.name)?;
+                let test_target_ds =
+                    downsample_rgb_nearest(&test_target, test_camera.width, test_camera.height);
+                let test_target_linear = rgb8_to_linear_vec(&test_target_ds);
+
+                let rendered = render_full_linear(&gaussians, &test_camera, &bg);
+                let psnr = compute_psnr(&rendered, &test_target_linear);
+                test_psnr_sum += psnr;
+            }
+            let avg_test_psnr = test_psnr_sum / (test_indices.len() as f32);
+
+            eprintln!(
+                "iter {iter:4}  train_loss={loss:.6}  test_psnr={avg_test_psnr:.2} dB  bg=({:.3},{:.3},{:.3})",
+                bg.x, bg.y, bg.z
+            );
+        }
+    }
+
+    // Final validation
+    let mut final_psnr_sum = 0.0f32;
+    let mut test_view_sample = None;
+    let mut test_view_target = None;
+
+    for (i, &test_idx) in test_indices_for_metrics.iter().enumerate() {
+        let test_image_info = &scene.images[test_idx];
+        let test_base_camera = scene
+            .cameras
+            .get(&test_image_info.camera_id)
+            .ok_or_else(|| anyhow::anyhow!("Camera {} not found", test_image_info.camera_id))?;
+        let test_rotation = test_image_info.rotation.to_rotation_matrix().into_inner();
+        let test_camera_full =
+            camera_with_pose(test_base_camera, test_rotation, test_image_info.translation);
+        let test_camera = downsample_camera(&test_camera_full, cfg.downsample_factor);
+
+        let test_target = load_target_image(&cfg.images_dir, &test_image_info.name)?;
+        let test_target_ds =
+            downsample_rgb_nearest(&test_target, test_camera.width, test_camera.height);
+        let test_target_linear = rgb8_to_linear_vec(&test_target_ds);
+
+        // Write final params
+        for (i, g) in gaussians.iter_mut().enumerate() {
+            g.sh_coeffs[0][0] = params[i].x;
+            g.sh_coeffs[0][1] = params[i].y;
+            g.sh_coeffs[0][2] = params[i].z;
+        }
+
+        let rendered = render_full_linear(&gaussians, &test_camera, &bg);
+        let psnr = compute_psnr(&rendered, &test_target_linear);
+        final_psnr_sum += psnr;
+
+        // Save first test view for visual inspection
+        if i == 0 {
+            test_view_sample = Some(linear_vec_to_rgb8_img(
+                &rendered,
+                test_camera.width,
+                test_camera.height,
+            ));
+            test_view_target = Some(test_target_ds);
+        }
+    }
+
+    let final_psnr = final_psnr_sum / (test_indices_for_metrics.len() as f32);
+
+    eprintln!("\n✅ Multi-view training complete!");
+    eprintln!("Initial test PSNR: {:.2} dB", initial_psnr);
+    eprintln!("Final test PSNR:   {:.2} dB", final_psnr);
+    eprintln!("Improvement:       {:.2} dB", final_psnr - initial_psnr);
+
+    Ok(MultiViewTrainOutputs {
+        initial_psnr,
+        final_psnr,
+        train_loss,
+        num_train_views: train_indices.len(),
+        num_test_views: test_indices.len(),
+        test_view_sample: test_view_sample.unwrap(),
+        test_view_target: test_view_target.unwrap(),
+    })
 }

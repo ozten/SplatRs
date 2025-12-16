@@ -47,6 +47,9 @@ serde = { version = "1.0", features = ["derive"] }
 thiserror = "1.0"
 anyhow = "1.0"
 
+# Random number generation (for multi-view training)
+rand = "0.8"
+
 # KD-tree for neighbor queries (needed for SuGaR phase)
 # We'll add this later when we reach M11
 # kiddo = "2.0"
