@@ -18,4 +18,4 @@ pub use camera::Camera;
 pub use gaussian::{Gaussian, Gaussian2D, GaussianCloud};
 pub use init::{init_from_colmap_points, init_from_colmap_points_visible_stratified};
 pub use math::{inverse_sigmoid, perspective_jacobian, quaternion_to_matrix, sigmoid};
-pub use sh::{evaluate_sh, sh_basis};
+pub use sh::{evaluate_sh, evaluate_sh_unclamped, sh_basis};

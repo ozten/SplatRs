@@ -46,7 +46,7 @@ fn project_gaussian(
     Some(Gaussian2D {
         mean: Vector3::new(mean_px.x, mean_px.y, mean_cam.z),
         cov: Vector3::new(cov_xx, cov_xy, cov_yy),
-        color: crate::core::evaluate_sh(
+        color: crate::core::evaluate_sh_unclamped(
             &gaussian.sh_coeffs,
             &camera.view_direction(&gaussian.position),
         ),

@@ -103,6 +103,22 @@ pub fn evaluate_sh(sh_coeffs: &[[f32; 3]; 16], direction: &Vector3<f32>) -> Vect
     )
 }
 
+/// Evaluate SH without clamping the final color.
+///
+/// This is useful for differentiable rendering / training where hard clamping
+/// can zero-out gradients when coefficients drift out of range.
+pub fn evaluate_sh_unclamped(sh_coeffs: &[[f32; 3]; 16], direction: &Vector3<f32>) -> Vector3<f32> {
+    let dir = direction.normalize();
+    let basis = sh_basis(&dir);
+    let mut color = Vector3::<f32>::zeros();
+    for i in 0..16 {
+        color.x += basis[i] * sh_coeffs[i][0];
+        color.y += basis[i] * sh_coeffs[i][1];
+        color.z += basis[i] * sh_coeffs[i][2];
+    }
+    color
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

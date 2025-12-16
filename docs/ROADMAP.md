@@ -56,4 +56,4 @@ M9 (multi-view + densify/prune enabled):
 
 M10 (multi-view + opacity + position + scale enabled):
 
-- `cargo run --bin sugar-train -- --multiview --max-images 10 --max-gaussians 2000 --downsample 0.125 --iters 200 --val-interval 20 --max-test-views 2 --log-interval 1 --loss l1-dssim --learn-opacity --learn-position --learn-scale --lr 0.002 --seed 0 --dataset-root /Users/ozten/Projects/GuassianPlay/digital_calipers2_project --out-dir test_output`
+- `cargo run --bin sugar-train -- --multiview --max-images 10 --max-gaussians 2000 --downsample 0.125 --iters 200 --val-interval 20 --max-test-views 2 --log-interval 1 --loss l1-dssim --learn-opacity --learn-position --learn-scale --learn-rotation --learn-sh --lr 0.002 --seed 0 --dataset-root /Users/ozten/Projects/GuassianPlay/digital_calipers2_project --out-dir test_output`
