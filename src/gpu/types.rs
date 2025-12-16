@@ -1,0 +1,145 @@
+//! GPU-friendly data types for Gaussian splatting.
+//!
+//! These types are designed to be uploaded directly to GPU buffers:
+//! - Flat memory layout (no pointers)
+//! - Proper alignment (16-byte for vec3/vec4)
+//! - bytemuck Pod + Zeroable traits
+
+use crate::core::Gaussian;
+
+/// GPU representation of a Gaussian.
+///
+/// Memory layout matches what GPU shaders expect:
+/// - Aligned to 16 bytes per vec3/vec4
+/// - Total size: ~256 bytes per Gaussian
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GaussianGPU {
+    /// Position in world space (x, y, z, padding)
+    pub position: [f32; 4],
+
+    /// Log-space scale (x, y, z, padding)
+    pub scale: [f32; 4],
+
+    /// Rotation quaternion (x, y, z, w)
+    pub rotation: [f32; 4],
+
+    /// Opacity (logit-space) and padding
+    pub opacity_pad: [f32; 4],
+
+    /// SH coefficients: 16 RGB triplets = 48 floats
+    /// Laid out as: [r0,g0,b0,pad, r1,g1,b1,pad, ...]
+    pub sh_coeffs: [[f32; 4]; 16],
+}
+
+impl GaussianGPU {
+    /// Convert from CPU Gaussian to GPU format.
+    pub fn from_gaussian(g: &Gaussian) -> Self {
+        let mut sh_coeffs = [[0.0f32; 4]; 16];
+        for i in 0..16 {
+            sh_coeffs[i][0] = g.sh_coeffs[i][0]; // R
+            sh_coeffs[i][1] = g.sh_coeffs[i][1]; // G
+            sh_coeffs[i][2] = g.sh_coeffs[i][2]; // B
+            sh_coeffs[i][3] = 0.0; // Padding
+        }
+
+        Self {
+            position: [g.position.x, g.position.y, g.position.z, 0.0],
+            scale: [g.scale.x, g.scale.y, g.scale.z, 0.0],
+            rotation: [
+                g.rotation.i,
+                g.rotation.j,
+                g.rotation.k,
+                g.rotation.w,
+            ],
+            opacity_pad: [g.opacity, 0.0, 0.0, 0.0],
+            sh_coeffs,
+        }
+    }
+}
+
+/// GPU representation of a projected 2D Gaussian.
+///
+/// This is the output of the projection shader.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct Gaussian2DGPU {
+    /// 2D mean in pixel space (x, y, depth, padding)
+    pub mean: [f32; 4],
+
+    /// 2D covariance (xx, xy, yy, padding)
+    pub cov: [f32; 4],
+
+    /// Color in linear RGB (r, g, b, padding)
+    pub color: [f32; 4],
+
+    /// Opacity [0,1] and padding
+    pub opacity_pad: [f32; 4],
+
+    /// Source Gaussian index (for debugging) and padding
+    pub gaussian_idx_pad: [u32; 4],
+}
+
+/// Camera parameters for GPU shaders.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct CameraGPU {
+    /// Focal lengths (fx, fy, cx, cy)
+    pub focal: [f32; 4],
+
+    /// Image dimensions (width, height, padding, padding)
+    pub dims: [u32; 4],
+
+    /// Rotation matrix (row-major, 3×3 with padding)
+    pub rotation: [[f32; 4]; 3],
+
+    /// Translation (x, y, z, padding)
+    pub translation: [f32; 4],
+}
+
+impl CameraGPU {
+    /// Convert from CPU Camera to GPU format.
+    pub fn from_camera(camera: &crate::core::Camera) -> Self {
+        let r = camera.rotation;
+        Self {
+            focal: [camera.fx, camera.fy, camera.cx, camera.cy],
+            dims: [camera.width, camera.height, 0, 0],
+            rotation: [
+                [r[(0, 0)], r[(0, 1)], r[(0, 2)], 0.0],
+                [r[(1, 0)], r[(1, 1)], r[(1, 2)], 0.0],
+                [r[(2, 0)], r[(2, 1)], r[(2, 2)], 0.0],
+            ],
+            translation: [camera.translation.x, camera.translation.y, camera.translation.z, 0.0],
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nalgebra::{UnitQuaternion, Vector3};
+
+    #[test]
+    fn test_gaussian_gpu_size() {
+        // Verify alignment and size
+        assert_eq!(std::mem::size_of::<GaussianGPU>() % 16, 0);
+        println!("GaussianGPU size: {} bytes", std::mem::size_of::<GaussianGPU>());
+    }
+
+    #[test]
+    fn test_gaussian_gpu_conversion() {
+        let g = Gaussian::new(
+            Vector3::new(1.0, 2.0, 3.0),
+            Vector3::new(0.1, 0.2, 0.3),
+            UnitQuaternion::identity(),
+            -1.5,
+            [[0.5; 3]; 16],
+        );
+
+        let gpu = GaussianGPU::from_gaussian(&g);
+        assert_eq!(gpu.position[0], 1.0);
+        assert_eq!(gpu.scale[1], 0.2);
+        assert_eq!(gpu.opacity_pad[0], -1.5);
+        assert_eq!(gpu.sh_coeffs[0][0], 0.5);
+    }
+}

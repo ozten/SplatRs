@@ -14,6 +14,8 @@ mod context;
 #[cfg(feature = "gpu")]
 mod buffers;
 #[cfg(feature = "gpu")]
+mod types;
+#[cfg(feature = "gpu")]
 mod shaders;
 #[cfg(feature = "gpu")]
 mod renderer;
@@ -22,6 +24,8 @@ mod renderer;
 pub use context::GpuContext;
 #[cfg(feature = "gpu")]
 pub use renderer::GpuRenderer;
+#[cfg(feature = "gpu")]
+pub use types::{GaussianGPU, Gaussian2DGPU, CameraGPU};
 
 #[cfg(not(feature = "gpu"))]
 pub struct GpuRenderer;
