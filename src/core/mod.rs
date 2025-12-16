@@ -17,5 +17,5 @@ pub mod init;
 pub use gaussian::{Gaussian, Gaussian2D, GaussianCloud};
 pub use camera::Camera;
 pub use sh::{evaluate_sh, sh_basis};
-pub use math::{quaternion_to_matrix, sigmoid, inverse_sigmoid};
+pub use math::{inverse_sigmoid, perspective_jacobian, quaternion_to_matrix, sigmoid};
 pub use init::init_from_colmap_points;

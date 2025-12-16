@@ -14,11 +14,12 @@ mod tests {
     use rand::rngs::StdRng;
     use rand::{Rng, SeedableRng};
 
-    use sugar_rs::core::{evaluate_sh, inverse_sigmoid, sh_basis, sigmoid};
+    use sugar_rs::core::{evaluate_sh, inverse_sigmoid, perspective_jacobian, sh_basis, sigmoid};
     use sugar_rs::diff::math_grad::{inverse_sigmoid_grad, sigmoid_grad_from_sigmoid};
     use sugar_rs::diff::gaussian2d_grad::gaussian2d_evaluate_with_grads;
     use sugar_rs::diff::sh_grad::evaluate_sh_grad_coeffs;
     use sugar_rs::diff::blend_grad::{blend_backward, blend_forward};
+    use sugar_rs::diff::covariance_grad::project_covariance_2d_grad_log_scale;
 
     // These tests are NON-NEGOTIABLE - bugs in gradients cause silent failures.
     fn rel_err(a: f32, b: f32) -> f32 {
@@ -80,9 +81,111 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_covariance_projection_gradient() {
-        // TODO: Test 3D → 2D covariance projection gradients
+        // Gradient check for 3D -> 2D covariance projection w.r.t. log-scales (scale-only).
+        //
+        // This holds rotation and the perspective Jacobian fixed. We'll extend to rotation/J later.
+        let mut rng = StdRng::seed_from_u64(0xC0A2_D5CA_u64);
+        let tol = 5e-4f32;
+
+        for _ in 0..200 {
+            // Random camera rotation (orthonormal via nalgebra quaternion).
+            let cam_q = nalgebra::UnitQuaternion::from_euler_angles(
+                rng.gen_range(-1.0f32..1.0f32),
+                rng.gen_range(-1.0f32..1.0f32),
+                rng.gen_range(-1.0f32..1.0f32),
+            );
+            let w = cam_q.to_rotation_matrix().into_inner();
+
+            // Random gaussian rotation.
+            let g_q = nalgebra::UnitQuaternion::from_euler_angles(
+                rng.gen_range(-1.0f32..1.0f32),
+                rng.gen_range(-1.0f32..1.0f32),
+                rng.gen_range(-1.0f32..1.0f32),
+            );
+            let r = g_q.to_rotation_matrix().into_inner();
+
+            // Point in camera space for Jacobian.
+            let point_cam = nalgebra::Vector3::new(
+                rng.gen_range(-0.5f32..0.5f32),
+                rng.gen_range(-0.5f32..0.5f32),
+                rng.gen_range(1.0f32..4.0f32),
+            );
+            // Keep intrinsics modest to avoid huge loss magnitudes (which make finite differences noisy in f32).
+            let fx = rng.gen_range(100.0f32..400.0f32);
+            let fy = rng.gen_range(100.0f32..400.0f32);
+            let j = perspective_jacobian(&point_cam, fx, fy);
+
+            // Log-scales in a modest range.
+            let log_scale = nalgebra::Vector3::new(
+                rng.gen_range(-4.0f32..-0.5f32),
+                rng.gen_range(-4.0f32..-0.5f32),
+                rng.gen_range(-4.0f32..-0.5f32),
+            );
+
+            // Upstream gradient for Σ₂d: pick a symmetric matrix.
+            let g00 = rng.gen_range(-1.0f32..1.0f32);
+            let g01 = rng.gen_range(-1.0f32..1.0f32);
+            let g11 = rng.gen_range(-1.0f32..1.0f32);
+            let d_sigma2d = nalgebra::Matrix2::new(g00, g01, g01, g11);
+
+            // Compute production (f32) analytic gradient.
+            let d_log_scale_f32 =
+                project_covariance_2d_grad_log_scale(&w, &j, &r, &log_scale, &d_sigma2d);
+
+            // For a stable gradient check, compute forward + analytic gradient in f64.
+            let w64 = w.map(|x| x as f64);
+            let r64 = r.map(|x| x as f64);
+            let j64 = j.map(|x| x as f64);
+            let g64 = d_sigma2d.map(|x| x as f64);
+            let log_scale64 = log_scale.map(|x| x as f64);
+
+            let loss64 = |s: nalgebra::Vector3<f64>| -> f64 {
+                let sigma2d = {
+                    let v = nalgebra::Vector3::new((2.0 * s.x).exp(), (2.0 * s.y).exp(), (2.0 * s.z).exp());
+                    let d = nalgebra::Matrix3::from_diagonal(&v);
+                    let sigma = r64 * d * r64.transpose();
+                    let sigma_cam = w64 * sigma * w64.transpose();
+                    j64 * sigma_cam * j64.transpose()
+                };
+                (sigma2d.component_mul(&g64)).sum()
+            };
+
+            let grad64 = |s: nalgebra::Vector3<f64>| -> nalgebra::Vector3<f64> {
+                let v = nalgebra::Vector3::new((2.0 * s.x).exp(), (2.0 * s.y).exp(), (2.0 * s.z).exp());
+                let d_sigma_cam: nalgebra::Matrix3<f64> = j64.transpose() * g64 * j64;
+                let d_sigma = w64.transpose() * d_sigma_cam * w64;
+                let m = r64.transpose() * d_sigma * r64;
+                nalgebra::Vector3::new(m[(0, 0)] * 2.0 * v.x, m[(1, 1)] * 2.0 * v.y, m[(2, 2)] * 2.0 * v.z)
+            };
+
+            let ana64 = grad64(log_scale64);
+
+            // Finite differences for each scale component (f64).
+            for axis in 0..3 {
+                let eps = 1e-4f64;
+                let mut plus = log_scale64;
+                let mut minus = log_scale64;
+                plus[axis] += eps;
+                minus[axis] -= eps;
+
+                let num = (loss64(plus) - loss64(minus)) / (2.0 * eps);
+                let ana = ana64[axis];
+                let denom = num.abs().max(ana.abs()).max(1e-9);
+                let rel = (num - ana).abs() / denom;
+                assert!(rel < 1e-6, "cov proj grad mismatch axis={axis}: num={num} ana={ana} rel={rel}");
+
+                // Also ensure our f32 implementation matches the f64 analytic result.
+                let ana_f32_ref = ana as f32;
+                let got = d_log_scale_f32[axis];
+                let abs_err = (got - ana_f32_ref).abs();
+                assert!(
+                    rel_err(got, ana_f32_ref) < tol || abs_err < 5e-4,
+                    "cov proj f32 mismatch axis={axis}: got={got} ref={ana_f32_ref} abs_err={abs_err} rel_err={}",
+                    rel_err(got, ana_f32_ref)
+                );
+            }
+        }
     }
 
     #[test]
