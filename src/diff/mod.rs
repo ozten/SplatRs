@@ -7,4 +7,4 @@
 // mod project_grad;
 // mod rasterize_grad;
 // mod blend_grad;
-// mod sh_grad;
+pub mod sh_grad;
