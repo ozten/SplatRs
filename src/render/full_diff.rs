@@ -180,6 +180,9 @@ pub fn render_full_color_grads(
     Vec<Vector3<f32>>,
     Vector3<f32>,
 ) {
+    let enable_timing = std::env::var("SUGAR_BACKWARD_TIMING").is_ok();
+    let t_total = if enable_timing { Some(std::time::Instant::now()) } else { None };
+
     let width = camera.width as i32;
     let height = camera.height as i32;
     assert_eq!(d_image.len(), (width * height) as usize);

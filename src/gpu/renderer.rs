@@ -153,12 +153,16 @@ impl GpuRenderer {
     /// Render Gaussians from a camera viewpoint.
     ///
     /// Returns linear RGB pixel values (matching CPU renderer format).
+    ///
+    /// Set SUGAR_GPU_TIMING=1 environment variable for detailed timing.
     pub fn render(
         &self,
         gaussians: &[Gaussian],
         camera: &Camera,
         background: &Vector3<f32>,
     ) -> Vec<Vector3<f32>> {
+        let enable_timing = std::env::var("SUGAR_GPU_TIMING").is_ok();
+        let t_start = if enable_timing { Some(std::time::Instant::now()) } else { None };
         // Convert to GPU format
         let gaussians_gpu: Vec<GaussianGPU> =
             gaussians.iter().map(GaussianGPU::from_gaussian).collect();
@@ -232,6 +236,12 @@ impl GpuRenderer {
         self.ctx.queue.submit(Some(encoder.finish()));
 
         // Sort projected Gaussians by depth (CPU for now)
+        if enable_timing {
+            eprintln!("[GPU] Projection complete: {:?}", t_start.unwrap().elapsed());
+        }
+
+        let t_sort = if enable_timing { Some(std::time::Instant::now()) } else { None };
+
         let mut projected: Vec<Gaussian2DGPU> = buffers::read_buffer_blocking(
             &self.ctx.device,
             &self.ctx.queue,
@@ -240,7 +250,18 @@ impl GpuRenderer {
         )
         .expect("Failed to read projected Gaussians");
 
+        if enable_timing {
+            eprintln!("[GPU] Download projected: {:?}", t_sort.unwrap().elapsed());
+        }
+
+        let t_cpu_sort = if enable_timing { Some(std::time::Instant::now()) } else { None };
         projected.sort_by(|a, b| a.mean[2].partial_cmp(&b.mean[2]).unwrap());
+
+        if enable_timing {
+            eprintln!("[GPU] CPU sort: {:?}", t_cpu_sort.unwrap().elapsed());
+        }
+
+        let t_upload = if enable_timing { Some(std::time::Instant::now()) } else { None };
 
         // Upload sorted Gaussians
         let sorted_buffer = buffers::create_buffer_init(
@@ -249,6 +270,10 @@ impl GpuRenderer {
             &projected,
             BufferUsages::STORAGE,
         );
+
+        if enable_timing {
+            eprintln!("[GPU] Upload sorted: {:?}", t_upload.unwrap().elapsed());
+        }
 
         // Create render params
         #[repr(C)]
@@ -336,9 +361,15 @@ impl GpuRenderer {
         .expect("Failed to read output");
 
         // Convert to Vector3
-        output
+        let result = output
             .iter()
             .map(|rgba| Vector3::new(rgba[0], rgba[1], rgba[2]))
-            .collect()
+            .collect();
+
+        if enable_timing {
+            eprintln!("[GPU] Total render time: {:?}", t_start.unwrap().elapsed());
+        }
+
+        result
     }
 }

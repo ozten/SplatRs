@@ -1078,11 +1078,28 @@ pub fn train_multiview_color_only(
         }
 
         let t0 = Instant::now();
-        let coverage_bool = coverage_mask_bool(&gaussians, &train_camera);
-        let weights: Vec<f32> = coverage_bool
-            .iter()
-            .map(|&c| if c { 1.0 } else { 0.1 })
-            .collect();
+
+        // Skip coverage computation when using GPU (it's a full render pass!)
+        // With GPU rendering being fast, we can afford to weight all pixels equally
+        #[cfg(feature = "gpu")]
+        let weights: Vec<f32> = if cfg.use_gpu {
+            vec![1.0; (train_camera.width * train_camera.height) as usize]
+        } else {
+            let coverage_bool = coverage_mask_bool(&gaussians, &train_camera);
+            coverage_bool
+                .iter()
+                .map(|&c| if c { 1.0 } else { 0.1 })
+                .collect()
+        };
+
+        #[cfg(not(feature = "gpu"))]
+        let weights: Vec<f32> = {
+            let coverage_bool = coverage_mask_bool(&gaussians, &train_camera);
+            coverage_bool
+                .iter()
+                .map(|&c| if c { 1.0 } else { 0.1 })
+                .collect()
+        };
 
         // Forward and loss
         let rendered_linear = render(&gaussians, &train_camera, &bg);
