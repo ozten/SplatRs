@@ -248,6 +248,23 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
 ///
 /// For your calipers dataset, this typically is `.../digital_calipers2_project/input`.
 pub fn guess_images_dir_from_sparse(sparse_dir: &Path) -> Option<PathBuf> {
+    // Common COLMAP layout:
+    //   <root>/sparse/0
+    //   <root>/images
+    // Or:
+    //   <root>/sparse/0
+    //   <root>/input
+    if let Some(root) = sparse_dir.parent().and_then(|p| p.parent()) {
+        let candidate = root.join("input");
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+        let images = root.join("images");
+        if images.is_dir() {
+            return Some(images);
+        }
+    }
+
     // Try sibling "input" at the project root.
     // sparse_dir: <root>/colmap_workspace/sparse/0
     let root = sparse_dir.parent()?.parent()?.parent()?;
@@ -261,5 +278,30 @@ pub fn guess_images_dir_from_sparse(sparse_dir: &Path) -> Option<PathBuf> {
     if images.is_dir() {
         return Some(images);
     }
+    None
+}
+
+/// Given a dataset root, try to find a COLMAP `sparse/0` directory.
+///
+/// This supports layouts like:
+/// - `<root>/sparse/0`
+/// - `<root>/colmap_workspace/sparse/0`
+pub fn guess_sparse0_from_dataset_root(root: &Path) -> Option<PathBuf> {
+    let direct = root.join("sparse").join("0");
+    if direct.join("cameras.bin").is_file()
+        && direct.join("images.bin").is_file()
+        && direct.join("points3D.bin").is_file()
+    {
+        return Some(direct);
+    }
+
+    let ws = root.join("colmap_workspace").join("sparse").join("0");
+    if ws.join("cameras.bin").is_file()
+        && ws.join("images.bin").is_file()
+        && ws.join("points3D.bin").is_file()
+    {
+        return Some(ws);
+    }
+
     None
 }

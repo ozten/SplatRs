@@ -18,9 +18,11 @@ fn main() {
     let mut max_gaussians: usize = 20_000;
     let mut image_index: usize = 0;
     let mut learn_background: bool = true;
+    let mut dataset_root: Option<std::path::PathBuf> = None;
 
     while let Some(a) = args.next() {
         match a.as_str() {
+            "--dataset-root" => dataset_root = args.next().map(std::path::PathBuf::from),
             "--scene" => scene = args.next().map(std::path::PathBuf::from),
             "--images" => images = args.next().map(std::path::PathBuf::from),
             "--iters" => iters = args.next().unwrap().parse().unwrap(),
@@ -32,6 +34,7 @@ fn main() {
             "--help" | "-h" => {
                 eprintln!("Usage:");
                 eprintln!("  sugar-train --scene <sparse/0> [--images <dir>] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--image-index I] [--no-learn-bg]");
+                eprintln!("  sugar-train --dataset-root <root> [--iters N] ...   (auto-detects sparse/0 + images/)");
                 return;
             }
             other => {
@@ -41,10 +44,20 @@ fn main() {
         }
     }
 
-    let scene = scene.expect("Missing --scene <colmap sparse/0>");
-    let images_dir = images
-        .or_else(|| sugar_rs::optim::trainer::guess_images_dir_from_sparse(&scene))
-        .expect("Missing --images and couldn't guess images dir");
+    let (scene, images_dir) = if let Some(root) = dataset_root {
+        let sparse = sugar_rs::optim::trainer::guess_sparse0_from_dataset_root(&root)
+            .expect("Could not find sparse/0 under --dataset-root");
+        let imgs = images
+            .or_else(|| sugar_rs::optim::trainer::guess_images_dir_from_sparse(&sparse))
+            .expect("Missing --images and couldn't guess images dir");
+        (sparse, imgs)
+    } else {
+        let scene = scene.expect("Missing --scene <colmap sparse/0> (or use --dataset-root)");
+        let images_dir = images
+            .or_else(|| sugar_rs::optim::trainer::guess_images_dir_from_sparse(&scene))
+            .expect("Missing --images and couldn't guess images dir");
+        (scene, images_dir)
+    };
 
     let cfg = sugar_rs::optim::trainer::TrainConfig {
         sparse_dir: scene,
