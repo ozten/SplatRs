@@ -19,7 +19,9 @@ mod tests {
     use sugar_rs::diff::gaussian2d_grad::gaussian2d_evaluate_with_grads;
     use sugar_rs::diff::sh_grad::evaluate_sh_grad_coeffs;
     use sugar_rs::diff::blend_grad::{blend_backward, blend_forward};
-    use sugar_rs::diff::covariance_grad::project_covariance_2d_grad_log_scale;
+    use sugar_rs::diff::covariance_grad::{
+        project_covariance_2d_grad_log_scale, project_covariance_2d_grad_rotation_vector_at_r0,
+    };
 
     // These tests are NON-NEGOTIABLE - bugs in gradients cause silent failures.
     fn rel_err(a: f32, b: f32) -> f32 {
@@ -78,6 +80,105 @@ mod tests {
     #[ignore]
     fn test_quaternion_to_matrix_gradient() {
         // TODO: Test quaternion → rotation matrix gradients
+    }
+
+    #[test]
+    fn test_rotation_to_covariance_gradient() {
+        // Gradient check for local rotation-vector parameterization ω around a base rotation R0.
+        // This checks the rotation -> covariance -> projection chain without quaternions.
+        let mut rng = StdRng::seed_from_u64(0xA11C_E501_u64);
+        let tol_f32 = 5e-4f32;
+
+        for _ in 0..100 {
+            let cam_q = nalgebra::UnitQuaternion::from_euler_angles(
+                rng.gen_range(-1.0f32..1.0f32),
+                rng.gen_range(-1.0f32..1.0f32),
+                rng.gen_range(-1.0f32..1.0f32),
+            );
+            let w = cam_q.to_rotation_matrix().into_inner();
+
+            let g_q = nalgebra::UnitQuaternion::from_euler_angles(
+                rng.gen_range(-1.0f32..1.0f32),
+                rng.gen_range(-1.0f32..1.0f32),
+                rng.gen_range(-1.0f32..1.0f32),
+            );
+            let r0 = g_q.to_rotation_matrix().into_inner();
+
+            let point_cam = nalgebra::Vector3::new(
+                rng.gen_range(-0.5f32..0.5f32),
+                rng.gen_range(-0.5f32..0.5f32),
+                rng.gen_range(1.0f32..4.0f32),
+            );
+            let fx = rng.gen_range(100.0f32..400.0f32);
+            let fy = rng.gen_range(100.0f32..400.0f32);
+            let j = perspective_jacobian(&point_cam, fx, fy);
+
+            let log_scale = nalgebra::Vector3::new(
+                rng.gen_range(-4.0f32..-0.5f32),
+                rng.gen_range(-4.0f32..-0.5f32),
+                rng.gen_range(-4.0f32..-0.5f32),
+            );
+
+            let g00 = rng.gen_range(-1.0f32..1.0f32);
+            let g01 = rng.gen_range(-1.0f32..1.0f32);
+            let g11 = rng.gen_range(-1.0f32..1.0f32);
+            let d_sigma2d = nalgebra::Matrix2::new(g00, g01, g01, g11);
+
+            let grad_f32 =
+                project_covariance_2d_grad_rotation_vector_at_r0(&w, &j, &r0, &log_scale, &d_sigma2d);
+
+            // f64 forward for numeric gradient.
+            let w64 = w.map(|x| x as f64);
+            let j64 = j.map(|x| x as f64);
+            let d64 = d_sigma2d.map(|x| x as f64);
+            let log_scale64 = log_scale.map(|x| x as f64);
+            let r0_64 = r0.map(|x| x as f64);
+
+            let d_vec = nalgebra::Vector3::new(
+                (2.0 * log_scale64.x).exp(),
+                (2.0 * log_scale64.y).exp(),
+                (2.0 * log_scale64.z).exp(),
+            );
+            let d_mat = nalgebra::Matrix3::from_diagonal(&d_vec);
+
+            let loss64 = |r: nalgebra::Matrix3<f64>| -> f64 {
+                let sigma = r * d_mat * r.transpose();
+                let sigma_cam = w64 * sigma * w64.transpose();
+                let sigma2d = j64 * sigma_cam * j64.transpose();
+                (sigma2d.component_mul(&d64)).sum()
+            };
+
+            let rot_x = |theta: f64| -> nalgebra::Matrix3<f64> {
+                let (s, c) = theta.sin_cos();
+                nalgebra::Matrix3::new(1.0, 0.0, 0.0, 0.0, c, -s, 0.0, s, c)
+            };
+            let rot_y = |theta: f64| -> nalgebra::Matrix3<f64> {
+                let (s, c) = theta.sin_cos();
+                nalgebra::Matrix3::new(c, 0.0, s, 0.0, 1.0, 0.0, -s, 0.0, c)
+            };
+            let rot_z = |theta: f64| -> nalgebra::Matrix3<f64> {
+                let (s, c) = theta.sin_cos();
+                nalgebra::Matrix3::new(c, -s, 0.0, s, c, 0.0, 0.0, 0.0, 1.0)
+            };
+
+            let eps = 1e-4f64;
+            let num_x = (loss64(rot_x(eps) * r0_64) - loss64(rot_x(-eps) * r0_64)) / (2.0 * eps);
+            let num_y = (loss64(rot_y(eps) * r0_64) - loss64(rot_y(-eps) * r0_64)) / (2.0 * eps);
+            let num_z = (loss64(rot_z(eps) * r0_64) - loss64(rot_z(-eps) * r0_64)) / (2.0 * eps);
+
+            let num = nalgebra::Vector3::new(num_x as f32, num_y as f32, num_z as f32);
+
+            for axis in 0..3 {
+                let got = grad_f32[axis];
+                let reference = num[axis];
+                let abs_err = (got - reference).abs();
+                assert!(
+                    rel_err(got, reference) < tol_f32 || abs_err < 5e-4,
+                    "rot->cov grad mismatch axis={axis}: num={reference} ana={got} abs_err={abs_err} rel_err={}",
+                    rel_err(got, reference)
+                );
+            }
+        }
     }
 
     #[test]

@@ -80,3 +80,61 @@ pub fn project_covariance_2d_grad_log_scale(
     )
 }
 
+/// Gradient of the projected 2D covariance w.r.t. a *local* SO(3) rotation vector ω
+/// applied on the left: `R(ω) = exp([ω]×) R0`.
+///
+/// This returns dL/dω at ω = 0 (i.e. around the provided `gaussian_rotation_r0`).
+///
+/// This is useful for gradient checking the rotation→covariance path without
+/// dealing with quaternion normalization constraints yet.
+pub fn project_covariance_2d_grad_rotation_vector_at_r0(
+    camera_rotation: &Matrix3<f32>,
+    jacobian: &Matrix2x3<f32>,
+    gaussian_rotation_r0: &Matrix3<f32>,
+    log_scale: &Vector3<f32>,
+    d_sigma2d: &Matrix2<f32>,
+) -> Vector3<f32> {
+    let v = Vector3::new(
+        (2.0 * log_scale.x).exp(),
+        (2.0 * log_scale.y).exp(),
+        (2.0 * log_scale.z).exp(),
+    );
+    let d = Matrix3::from_diagonal(&v);
+
+    // dΣ_cam and dΣ as in the log-scale gradient.
+    let d_sigma_cam: Matrix3<f32> = jacobian.transpose() * d_sigma2d * jacobian;
+    let d_sigma = camera_rotation.transpose() * d_sigma_cam * camera_rotation;
+
+    // For Σ = R D Rᵀ and L = <G, Σ>, the gradient w.r.t. R is:
+    //   dL/dR = (G + Gᵀ) R D
+    // (For symmetric G, this is 2 G R D.)
+    let g = d_sigma;
+    let g_r = (g + g.transpose()) * gaussian_rotation_r0 * d;
+
+    // Basis skew matrices for ω = (ωx, ωy, ωz).
+    let kx = Matrix3::new(
+        0.0, 0.0, 0.0,
+        0.0, 0.0, -1.0,
+        0.0, 1.0, 0.0,
+    );
+    let ky = Matrix3::new(
+        0.0, 0.0, 1.0,
+        0.0, 0.0, 0.0,
+        -1.0, 0.0, 0.0,
+    );
+    let kz = Matrix3::new(
+        0.0, -1.0, 0.0,
+        1.0, 0.0, 0.0,
+        0.0, 0.0, 0.0,
+    );
+
+    let d_r_x = kx * gaussian_rotation_r0;
+    let d_r_y = ky * gaussian_rotation_r0;
+    let d_r_z = kz * gaussian_rotation_r0;
+
+    let grad_x = (g_r.component_mul(&d_r_x)).sum();
+    let grad_y = (g_r.component_mul(&d_r_y)).sum();
+    let grad_z = (g_r.component_mul(&d_r_z)).sum();
+
+    Vector3::new(grad_x, grad_y, grad_z)
+}
