@@ -16,8 +16,10 @@
 
 use crate::core::{Camera, Gaussian, Gaussian2D};
 use crate::diff::blend_grad::{blend_backward_with_bg, blend_forward_with_bg};
+use crate::diff::gaussian2d_grad::gaussian2d_evaluate_with_grads;
+use crate::diff::project_grad::project_point_grad_point_cam;
 use image::RgbImage;
-use nalgebra::{Matrix2, Vector3};
+use nalgebra::{Matrix2, Vector2, Vector3};
 
 fn srgb_u8_to_linear_f32(u: u8) -> f32 {
     let cs = (u as f32) / 255.0;
@@ -95,19 +97,23 @@ fn project_gaussian(
 struct Prepared {
     mean_x: f32,
     mean_y: f32,
+    cov_xx: f32,
+    cov_xy: f32,
+    cov_yy: f32,
     inv_xx: f32,
     inv_xy: f32,
     inv_yy: f32,
     opacity: f32,
     color: Vector3<f32>,
     gaussian_idx: usize,
+    point_cam: Vector3<f32>,
     min_x: i32,
     max_x: i32,
     min_y: i32,
     max_y: i32,
 }
 
-fn prepare(projected: &[Gaussian2D]) -> Vec<Prepared> {
+fn prepare(projected: &[Gaussian2D], gaussians: &[Gaussian], camera: &Camera) -> Vec<Prepared> {
     projected
         .iter()
         .map(|g| {
@@ -130,12 +136,16 @@ fn prepare(projected: &[Gaussian2D]) -> Vec<Prepared> {
             Prepared {
                 mean_x: g.mean.x,
                 mean_y: g.mean.y,
+                cov_xx: g.cov.x,
+                cov_xy: g.cov.y,
+                cov_yy: g.cov.z,
                 inv_xx,
                 inv_xy,
                 inv_yy,
                 opacity: g.opacity,
                 color: g.color,
                 gaussian_idx: g.gaussian_idx,
+                point_cam: camera.world_to_camera(&gaussians[g.gaussian_idx].position),
                 min_x,
                 max_x,
                 min_y,
@@ -158,7 +168,13 @@ pub fn render_full_color_grads(
     camera: &Camera,
     d_image: &[Vector3<f32>],
     bg: &Vector3<f32>,
-) -> (RgbImage, Vec<Vector3<f32>>, Vec<f32>, Vector3<f32>) {
+) -> (
+    RgbImage,
+    Vec<Vector3<f32>>,
+    Vec<f32>,
+    Vec<Vector3<f32>>,
+    Vector3<f32>,
+) {
     let width = camera.width as i32;
     let height = camera.height as i32;
     assert_eq!(d_image.len(), (width * height) as usize);
@@ -171,11 +187,12 @@ pub fn render_full_color_grads(
         .collect();
     projected.sort_by(|a, b| a.mean.z.partial_cmp(&b.mean.z).unwrap());
 
-    let prepared = prepare(&projected);
+    let prepared = prepare(&projected, gaussians, camera);
 
     let mut img = RgbImage::new(camera.width, camera.height);
     let mut d_colors = vec![Vector3::<f32>::zeros(); gaussians.len()];
     let mut d_opacity_logits = vec![0.0f32; gaussians.len()];
+    let mut d_mean_px = vec![Vector2::<f32>::zeros(); gaussians.len()];
     let mut d_bg = Vector3::<f32>::zeros();
 
     for py in 0..height {
@@ -186,6 +203,8 @@ pub fn render_full_color_grads(
             // Gather contributing gaussians in depth order for this pixel.
             let mut alphas: Vec<f32> = Vec::new();
             let mut d_alpha_d_logits: Vec<f32> = Vec::new();
+            let mut d_alpha_d_weights: Vec<f32> = Vec::new();
+            let mut d_weight_d_means: Vec<Vector2<f32>> = Vec::new();
             let mut colors: Vec<Vector3<f32>> = Vec::new();
             let mut indices: Vec<usize> = Vec::new();
 
@@ -194,19 +213,33 @@ pub fn render_full_color_grads(
                     continue;
                 }
 
-                let dx = pixel_x - g.mean_x;
-                let dy = pixel_y - g.mean_y;
-                let quad_form = g.inv_xx * dx * dx + 2.0 * g.inv_xy * dx * dy + g.inv_yy * dy * dy;
-                let weight = (-0.5 * quad_form).exp();
+                let det = g.cov_xx * g.cov_yy - g.cov_xy * g.cov_xy;
+                if det <= 1e-10 {
+                    continue;
+                }
+
+                let w_grads = gaussian2d_evaluate_with_grads(
+                    Vector2::new(g.mean_x, g.mean_y),
+                    g.cov_xx,
+                    g.cov_xy,
+                    g.cov_yy,
+                    Vector2::new(pixel_x, pixel_y),
+                );
+                let weight = w_grads.value;
 
                 let (alpha, d_alpha_d_logit) =
                     alpha_from_opacity_logit(gaussians[g.gaussian_idx].opacity, weight);
+                let opacity = crate::core::sigmoid(gaussians[g.gaussian_idx].opacity);
+                let alpha_raw = opacity * weight;
+                let d_alpha_d_weight = if alpha_raw < 0.99 { opacity } else { 0.0 };
                 if alpha < 1e-4 {
                     continue;
                 }
 
                 alphas.push(alpha);
                 d_alpha_d_logits.push(d_alpha_d_logit);
+                d_alpha_d_weights.push(d_alpha_d_weight);
+                d_weight_d_means.push(w_grads.d_mean);
                 colors.push(g.color);
                 indices.push(g.gaussian_idx);
             }
@@ -232,12 +265,27 @@ pub fn render_full_color_grads(
             for (k, &gi) in indices.iter().enumerate() {
                 d_colors[gi] += grads.d_colors[k];
                 d_opacity_logits[gi] += grads.d_alphas[k] * d_alpha_d_logits[k];
+                let d_weight = grads.d_alphas[k] * d_alpha_d_weights[k];
+                d_mean_px[gi] += d_weight_d_means[k] * d_weight;
             }
             d_bg += grads.d_bg;
         }
     }
 
-    (img, d_colors, d_opacity_logits, d_bg)
+    let mut d_positions = vec![Vector3::<f32>::zeros(); gaussians.len()];
+    for g in &prepared {
+        let gi = g.gaussian_idx;
+        let d_uv = d_mean_px[gi];
+        if d_uv == Vector2::zeros() {
+            continue;
+        }
+        let d_point_cam =
+            project_point_grad_point_cam(&g.point_cam, camera.fx, camera.fy, &d_uv);
+        // point_cam = R * p_world + t  =>  dL/dp_world = R^T * dL/dpoint_cam
+        d_positions[gi] = camera.rotation.transpose() * d_point_cam;
+    }
+
+    (img, d_colors, d_opacity_logits, d_positions, d_bg)
 }
 
 /// Forward render that returns linear RGB pixels in [0,1] (no quantization).
@@ -256,7 +304,7 @@ pub fn render_full_linear(
         .filter_map(|(i, g)| project_gaussian(g, camera, i))
         .collect();
     projected.sort_by(|a, b| a.mean.z.partial_cmp(&b.mean.z).unwrap());
-    let prepared = prepare(&projected);
+    let prepared = prepare(&projected, gaussians, camera);
 
     for py in 0..height {
         for px in 0..width {
@@ -491,7 +539,7 @@ pub fn coverage_mask_bool(gaussians: &[Gaussian], camera: &Camera) -> Vec<bool> 
         .filter_map(|(i, g)| project_gaussian(g, camera, i))
         .collect();
     projected.sort_by(|a, b| a.mean.z.partial_cmp(&b.mean.z).unwrap());
-    let prepared = prepare(&projected);
+    let prepared = prepare(&projected, gaussians, camera);
 
     let mut covered = vec![false; (width * height) as usize];
 
@@ -535,7 +583,7 @@ pub fn debug_final_transmittance(gaussians: &[Gaussian], camera: &Camera) -> Rgb
         .filter_map(|(i, g)| project_gaussian(g, camera, i))
         .collect();
     projected.sort_by(|a, b| a.mean.z.partial_cmp(&b.mean.z).unwrap());
-    let prepared = prepare(&projected);
+    let prepared = prepare(&projected, gaussians, camera);
 
     let mut img = RgbImage::new(camera.width, camera.height);
 
@@ -581,7 +629,7 @@ pub fn debug_contrib_count(gaussians: &[Gaussian], camera: &Camera, clamp_max: u
         .filter_map(|(i, g)| project_gaussian(g, camera, i))
         .collect();
     projected.sort_by(|a, b| a.mean.z.partial_cmp(&b.mean.z).unwrap());
-    let prepared = prepare(&projected);
+    let prepared = prepare(&projected, gaussians, camera);
 
     let mut img = RgbImage::new(camera.width, camera.height);
 

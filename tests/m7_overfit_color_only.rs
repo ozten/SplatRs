@@ -37,6 +37,7 @@ fn test_m7_overfit_color_only_calipers() {
         learn_background: true,
         learn_opacity: false,
         loss: LossKind::L2,
+        learn_position: false,
     };
 
     let _out = train_single_image_color_only(&cfg).expect("Training failed");
