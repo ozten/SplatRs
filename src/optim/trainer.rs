@@ -243,7 +243,9 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
         // Forward (linear) and loss.
         if should_log {
             eprintln!(
-                "iter {iter:4} start  gaussians={}  res={}x{}",
+                "iter {}/{} start  gaussians={}  res={}x{}",
+                iter + 1,
+                cfg.iters,
                 gaussians.len(),
                 camera.width,
                 camera.height
@@ -315,7 +317,9 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
         if should_log {
             let total = iter_start.unwrap().elapsed();
             eprintln!(
-                "iter {iter:4} done   loss={loss:.6}  forward={:.2?} backward={:.2?} step={:.2?} total={:.2?}  bg=({:.3},{:.3},{:.3})",
+                "iter {}/{} done   loss={loss:.6}  forward={:.2?} backward={:.2?} step={:.2?} total={:.2?}  bg=({:.3},{:.3},{:.3})",
+                iter + 1,
+                cfg.iters,
                 t_forward,
                 t_backward,
                 t_step,
@@ -992,7 +996,9 @@ pub fn train_multiview_color_only(
         // Coverage weighting (use current params)
         if should_log {
             eprintln!(
-                "iter {iter:4} start  view={}  gaussians={}  res={}x{}",
+                "iter {}/{} start  view={}  gaussians={}  res={}x{}",
+                iter + 1,
+                cfg.iters,
                 scene.images[train_idx].name,
                 gaussians.len(),
                 train_camera.width,
@@ -1117,13 +1123,17 @@ pub fn train_multiview_color_only(
             let avg_test_psnr = test_psnr_sum / (test_indices_for_metrics.len() as f32);
 
             eprintln!(
-                "iter {iter:4}  train_loss={loss:.6}  test_psnr={avg_test_psnr:.2} dB  bg=({:.3},{:.3},{:.3})",
+                "iter {}/{}  train_loss={loss:.6}  test_psnr={avg_test_psnr:.2} dB  bg=({:.3},{:.3},{:.3})",
+                iter + 1,
+                cfg.iters,
                 bg.x, bg.y, bg.z
             );
         } else if should_log {
             let total = iter_start.unwrap().elapsed();
             eprintln!(
-                "iter {iter:4} done   train_loss={loss:.6}  forward={:.2?} backward={:.2?} step={:.2?} total={:.2?}",
+                "iter {}/{} done   train_loss={loss:.6}  forward={:.2?} backward={:.2?} step={:.2?} total={:.2?}",
+                iter + 1,
+                cfg.iters,
                 t_forward,
                 t_backward,
                 t_step,
@@ -1164,8 +1174,9 @@ pub fn train_multiview_color_only(
             grad_window_iters = 0;
             densify_events += 1;
             eprintln!(
-                "densify @iter {}: gaussians {} -> {} (kept={} pruned={} split={} cloned={} cap_hit={} grad_p50={:.4} grad_p90={:.4})",
+                "densify @iter {}/{}: gaussians {} -> {} (kept={} pruned={} split={} cloned={} cap_hit={} grad_p50={:.4} grad_p90={:.4})",
                 iter + 1,
+                cfg.iters,
                 before,
                 gaussians.len(),
                 stats.kept,
