@@ -83,11 +83,14 @@ fn project_gaussians(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let g = gaussians_in[idx];
 
     // 1. Transform position to camera space
-    let rot_mat = mat3x3<f32>(
+    // Note: camera.rotation is stored row-major, but mat3x3<f32>() expects columns
+    // so we need to transpose to get the correct matrix
+    let rot_mat_T = mat3x3<f32>(
         camera.rotation[0].xyz,
         camera.rotation[1].xyz,
         camera.rotation[2].xyz
     );
+    let rot_mat = transpose(rot_mat_T);
     let pos_world = g.position.xyz;
     let pos_cam = rot_mat * pos_world + camera.translation.xyz;
 
@@ -120,6 +123,7 @@ fn project_gaussians(@builtin(global_invocation_id) global_id: vec3<u32>) {
     ) * transpose(R);
 
     // 4. Transform covariance to camera space
+    // Σ_cam = R * Σ_world * R^T
     let sigma_cam = rot_mat * sigma_world * transpose(rot_mat);
 
     // 5. Project covariance using Jacobian
