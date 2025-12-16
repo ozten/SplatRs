@@ -16,7 +16,7 @@ use nalgebra::Vector3;
 /// - Degree 1 (3 functions): Y_1^{-1}, Y_1^0, Y_1^1
 /// - Degree 2 (5 functions): Y_2^{-2}, Y_2^{-1}, Y_2^0, Y_2^1, Y_2^2
 /// - Degree 3 (7 functions): Y_3^{-3}, Y_3^{-2}, Y_3^{-1}, Y_3^0, Y_3^1, Y_3^2, Y_3^3
-pub fn sh_basis(direction: &Vector3<f32>) -> [f32; 16] {
+pub fn sh_basis(_direction: &Vector3<f32>) -> [f32; 16] {
     // TODO: Implement for M5
     // This is standard SH math - can reference Wikipedia or the 3DGS paper appendix
     //

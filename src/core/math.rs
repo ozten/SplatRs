@@ -45,10 +45,24 @@ pub fn inverse_sigmoid(p: f32) -> f32 {
 ///     |  0     fy/z    -fy*y/z² |
 ///
 /// This is critical for projecting 3D covariance to 2D.
-pub fn perspective_jacobian(point_camera: &nalgebra::Vector3<f32>, fx: f32, fy: f32) -> nalgebra::Matrix2x3<f32> {
-    // TODO: Implement for M4
-    // This is where the covariance projection magic happens!
-    unimplemented!("See M4 - perspective projection Jacobian")
+pub fn perspective_jacobian(
+    point_camera: &nalgebra::Vector3<f32>,
+    fx: f32,
+    fy: f32,
+) -> nalgebra::Matrix2x3<f32> {
+    let x = point_camera.x;
+    let y = point_camera.y;
+    let z = point_camera.z;
+
+    let z_inv = 1.0 / z;
+    let z_inv_sq = z_inv * z_inv;
+
+    // J = | fx/z    0      -fx*x/z² |
+    //     |  0     fy/z    -fy*y/z² |
+    nalgebra::Matrix2x3::new(
+        fx * z_inv,  0.0,         -fx * x * z_inv_sq,
+        0.0,         fy * z_inv,  -fy * y * z_inv_sq,
+    )
 }
 
 #[cfg(test)]
@@ -74,16 +88,16 @@ mod tests {
     #[test]
     fn test_quaternion_to_matrix_identity() {
         let q = UnitQuaternion::identity();
-        let R = quaternion_to_matrix(&q);
-        assert_relative_eq!(R, Matrix3::identity(), epsilon = 1e-6);
+        let r = quaternion_to_matrix(&q);
+        assert_relative_eq!(r, Matrix3::identity(), epsilon = 1e-6);
     }
 
     #[test]
     fn test_quaternion_to_matrix_orthogonal() {
         // Any rotation matrix should be orthogonal: R * R^T = I
         let q = UnitQuaternion::from_euler_angles(0.1, 0.2, 0.3);
-        let R = quaternion_to_matrix(&q);
-        let product = R * R.transpose();
+        let r = quaternion_to_matrix(&q);
+        let product = r * r.transpose();
         assert_relative_eq!(product, Matrix3::identity(), epsilon = 1e-5);
     }
 
@@ -91,7 +105,7 @@ mod tests {
     fn test_quaternion_to_matrix_determinant() {
         // Rotation matrices have determinant +1
         let q = UnitQuaternion::from_euler_angles(0.5, -0.3, 1.2);
-        let R = quaternion_to_matrix(&q);
-        assert_relative_eq!(R.determinant(), 1.0, epsilon = 1e-5);
+        let r = quaternion_to_matrix(&q);
+        assert_relative_eq!(r.determinant(), 1.0, epsilon = 1e-5);
     }
 }

@@ -8,9 +8,11 @@
 //! No gradients computed here - see `diff` module for backward passes.
 
 pub mod simple;
+pub mod full;
 
 // Re-export
 pub use simple::SimpleRenderer;
+pub use full::FullRenderer;
 
 // TODO: Implement full renderer for M4-M5
 // mod project;

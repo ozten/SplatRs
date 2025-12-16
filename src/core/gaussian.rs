@@ -56,12 +56,36 @@ impl Gaussian {
     }
 
     /// Compute the 3D covariance matrix Σ = R · S · S^T · R^T
+    ///
+    /// The covariance is stored factorized for numerical stability:
+    /// - Scale in log-space: actual_scale = exp(self.scale)
+    /// - Rotation as unit quaternion
+    ///
+    /// Reconstruction:
+    /// 1. R = quaternion_to_matrix(rotation)
+    /// 2. S = diag(exp(scale.x), exp(scale.y), exp(scale.z))
+    /// 3. Σ = R · S · S^T · R^T
     pub fn covariance_matrix(&self) -> Matrix3<f32> {
-        // TODO: Implement for M3
-        // 1. Convert quaternion to rotation matrix R
-        // 2. Compute S = diag(exp(scale))
-        // 3. Return R · S · S^T · R^T
-        unimplemented!("See M3 - covariance reconstruction")
+        use crate::core::quaternion_to_matrix;
+
+        // Get rotation matrix from quaternion
+        let rotation_matrix = quaternion_to_matrix(&self.rotation);
+
+        // Get scale matrix S (diagonal)
+        // Scale is stored in log-space, so exp() to get actual values
+        let sx = self.scale.x.exp();
+        let sy = self.scale.y.exp();
+        let sz = self.scale.z.exp();
+
+        // S · S^T for diagonal matrix is just diag(sx², sy², sz²)
+        let s_squared = Matrix3::from_diagonal(&nalgebra::Vector3::new(
+            sx * sx,
+            sy * sy,
+            sz * sz,
+        ));
+
+        // Σ = R · S · S^T · R^T = R · S² · R^T
+        rotation_matrix * s_squared * rotation_matrix.transpose()
     }
 
     /// Get the actual opacity value (sigmoid of stored logit value)
@@ -109,17 +133,47 @@ impl Gaussian2D {
     /// inv = 1/det * [cov_yy, -cov_xy]
     ///               [-cov_xy, cov_xx]
     pub fn inverse_covariance(&self) -> (f32, f32, f32) {
-        // TODO: Implement for M4
-        // Returns (inv_xx, inv_xy, inv_yy)
-        unimplemented!("See M4 - 2D covariance inverse")
+        let mut cov_xx = self.cov.x;
+        let cov_xy = self.cov.y;
+        let mut cov_yy = self.cov.z;
+
+        // det([a b; b c]) = a*c - b*b
+        let mut det = cov_xx * cov_yy - cov_xy * cov_xy;
+
+        // Add a small diagonal term if the covariance is near-singular.
+        // This keeps the renderer numerically stable and matches common practice
+        // in splatting implementations (tiny blur in degenerate cases).
+        if det.abs() < 1e-12 {
+            let eps = 1e-6;
+            cov_xx += eps;
+            cov_yy += eps;
+            det = cov_xx * cov_yy - cov_xy * cov_xy;
+        }
+
+        // inv = 1/det * [ c  -b]
+        //               [-b   a]
+        let inv_det = 1.0 / det;
+        let inv_xx = cov_yy * inv_det;
+        let inv_xy = -cov_xy * inv_det;
+        let inv_yy = cov_xx * inv_det;
+
+        (inv_xx, inv_xy, inv_yy)
     }
 
     /// Evaluate the 2D Gaussian at a given pixel position.
     ///
     /// Returns exp(-0.5 * (p - μ)^T Σ^{-1} (p - μ))
     pub fn evaluate_at(&self, pixel: Vector3<f32>) -> f32 {
-        // TODO: Implement for M4
-        unimplemented!("See M4 - 2D Gaussian evaluation")
+        let dx = pixel.x - self.mean.x;
+        let dy = pixel.y - self.mean.y;
+
+        let (inv_xx, inv_xy, inv_yy) = self.inverse_covariance();
+
+        // For a symmetric 2×2 inverse covariance:
+        // q = [dx dy] * [inv_xx inv_xy; inv_xy inv_yy] * [dx; dy]
+        //   = inv_xx*dx² + 2*inv_xy*dx*dy + inv_yy*dy²
+        let quad_form = inv_xx * dx * dx + 2.0 * inv_xy * dx * dy + inv_yy * dy * dy;
+        (-0.5 * quad_form).exp()
     }
 }
 
@@ -174,5 +228,56 @@ impl GaussianCloud {
 impl Default for GaussianCloud {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    #[test]
+    fn test_gaussian2d_inverse_covariance_identity() {
+        let g = Gaussian2D {
+            mean: Vector3::new(0.0, 0.0, 1.0),
+            cov: Vector3::new(1.0, 0.0, 1.0),
+            color: Vector3::new(1.0, 1.0, 1.0),
+            opacity: 1.0,
+            gaussian_idx: 0,
+        };
+
+        let (inv_xx, inv_xy, inv_yy) = g.inverse_covariance();
+        assert_relative_eq!(inv_xx, 1.0, epsilon = 1e-6);
+        assert_relative_eq!(inv_xy, 0.0, epsilon = 1e-6);
+        assert_relative_eq!(inv_yy, 1.0, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn test_gaussian2d_evaluate_at_mean_is_one() {
+        let g = Gaussian2D {
+            mean: Vector3::new(3.0, -2.0, 1.0),
+            cov: Vector3::new(2.0, 0.0, 2.0),
+            color: Vector3::new(0.0, 0.0, 0.0),
+            opacity: 1.0,
+            gaussian_idx: 0,
+        };
+
+        let v = g.evaluate_at(Vector3::new(3.0, -2.0, 0.0));
+        assert_relative_eq!(v, 1.0, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn test_gaussian2d_evaluate_at_one_sigma() {
+        // With Σ = I, moving by 1 in x gives exp(-0.5).
+        let g = Gaussian2D {
+            mean: Vector3::new(0.0, 0.0, 1.0),
+            cov: Vector3::new(1.0, 0.0, 1.0),
+            color: Vector3::new(0.0, 0.0, 0.0),
+            opacity: 1.0,
+            gaussian_idx: 0,
+        };
+
+        let v = g.evaluate_at(Vector3::new(1.0, 0.0, 0.0));
+        assert_relative_eq!(v, (-0.5f32).exp(), epsilon = 1e-6);
     }
 }

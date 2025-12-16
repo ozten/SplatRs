@@ -5,7 +5,7 @@
 //! - Transform Gaussians from world space to camera space
 //! - Compute viewing directions for SH evaluation
 
-use nalgebra::{Matrix3, Matrix4, Vector2, Vector3};
+use nalgebra::{Matrix2x3, Matrix3, Matrix4, Vector2, Vector3};
 use serde::{Deserialize, Serialize};
 
 /// A pinhole camera with intrinsic and extrinsic parameters.
@@ -121,11 +121,9 @@ impl Camera {
     ///
     /// J = ∂[u,v]/∂[x,y,z] evaluated at point_camera
     ///
-    /// Returns a 2×3 matrix (but we only need certain elements).
-    pub fn projection_jacobian(&self, point_camera: &Vector3<f32>) -> Matrix3<f32> {
-        // TODO: Implement for M4 (critical for covariance projection!)
-        // This is where the magic happens for splatting
-        unimplemented!("See M4 - perspective projection Jacobian")
+    /// Returns a 2×3 matrix.
+    pub fn projection_jacobian(&self, point_camera: &Vector3<f32>) -> Matrix2x3<f32> {
+        crate::core::math::perspective_jacobian(point_camera, self.fx, self.fy)
     }
 
     /// Get the camera center in world coordinates.
