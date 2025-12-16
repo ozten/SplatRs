@@ -515,6 +515,7 @@ pub struct MultiViewTrainOutputs {
     pub densify_events: usize,
     pub test_view_sample: RgbImage, // One test view rendering for visual check
     pub test_view_target: RgbImage,
+    pub gaussians: Vec<Gaussian>, // Trained Gaussians for model saving
 }
 
 /// Compute PSNR between two linear RGB images.
@@ -1349,6 +1350,7 @@ pub fn train_multiview_color_only(
         densify_events,
         test_view_sample: test_view_sample.unwrap(),
         test_view_target: test_view_target.unwrap(),
+        gaussians,
     })
 }
 

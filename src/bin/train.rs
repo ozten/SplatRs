@@ -3,6 +3,9 @@
 //! Usage:
 //!   sugar-train --scene path/to/colmap/sparse/0 --output model.ply
 
+use sugar_rs::io::{compute_bounds, save_model, Compression, ModelMetadata};
+use sugar_rs::core::GaussianCloud;
+
 fn main() {
     println!("sugar-train v{}", sugar_rs::VERSION);
 
@@ -349,6 +352,28 @@ fn main() {
         out.test_view_target.save(&target_path).ok();
         eprintln!("Saved `{}`", rendered_path.display());
         eprintln!("Saved `{}`", target_path.display());
+
+        // Save trained model
+        let model_path = out_dir.join("model.gs");
+        let cloud = GaussianCloud::from_gaussians(out.gaussians);
+        let (bounds_min, bounds_max) = compute_bounds(&cloud.gaussians);
+
+        #[cfg(feature = "lz4")]
+        let compression = Compression::Lz4;
+        #[cfg(not(feature = "lz4"))]
+        let compression = Compression::None;
+
+        let metadata = ModelMetadata {
+            num_gaussians: cloud.len() as u64,
+            sh_degree: 3,
+            bounds_min,
+            bounds_max,
+            training_iterations: iters as u64,
+            training_psnr: out.final_psnr,
+            compression,
+        };
+        save_model(&model_path, &cloud, &metadata).expect("Failed to save model");
+        eprintln!("Saved model to `{}`", model_path.display());
     } else {
         let cfg = sugar_rs::optim::trainer::TrainConfig {
             sparse_dir: scene,
@@ -384,5 +409,8 @@ fn main() {
         out.initial.save(out_dir.join("m7_initial.png")).ok();
         out.final_img.save(out_dir.join("m7_final.png")).ok();
         eprintln!("Saved M7 outputs under `{}`", out_dir.display());
+
+        // Note: Single-image trainer doesn't currently return gaussians
+        // TODO: Add model saving when trainer is updated to return trained gaussians
     }
 }
