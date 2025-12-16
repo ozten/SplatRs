@@ -89,9 +89,9 @@ pub fn evaluate_sh(sh_coeffs: &[[f32; 3]; 16], direction: &Vector3<f32>) -> Vect
     // Compute color as dot product of basis with coefficients
     let mut color = Vector3::<f32>::zeros();
     for i in 0..16 {
-        color.x += basis[i] * sh_coeffs[i][0];  // R channel
-        color.y += basis[i] * sh_coeffs[i][1];  // G channel
-        color.z += basis[i] * sh_coeffs[i][2];  // B channel
+        color.x += basis[i] * sh_coeffs[i][0]; // R channel
+        color.y += basis[i] * sh_coeffs[i][1]; // G channel
+        color.z += basis[i] * sh_coeffs[i][2]; // B channel
     }
 
     // Clamp to valid color range [0, 1]
@@ -125,7 +125,7 @@ mod tests {
     fn test_evaluate_sh_dc_only() {
         // With only DC coefficients set, color should be view-independent
         let mut sh_coeffs = [[0.0f32; 3]; 16];
-        sh_coeffs[0] = [1.0, 0.5, 0.2];  // DC component only
+        sh_coeffs[0] = [1.0, 0.5, 0.2]; // DC component only
 
         let dir1 = Vector3::new(1.0, 0.0, 0.0);
         let dir2 = Vector3::new(0.0, 0.0, 1.0);

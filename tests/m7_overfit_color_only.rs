@@ -8,13 +8,16 @@
 
 use std::path::PathBuf;
 
-use sugar_rs::optim::trainer::{guess_images_dir_from_sparse, train_single_image_color_only, TrainConfig};
+use sugar_rs::optim::trainer::{
+    guess_images_dir_from_sparse, train_single_image_color_only, TrainConfig,
+};
 
 #[test]
 #[ignore]
 fn test_m7_overfit_color_only_calipers() {
-    let sparse_dir =
-        PathBuf::from("/Users/ozten/Projects/GuassianPlay/digital_calipers2_project/colmap_workspace/sparse/0");
+    let sparse_dir = PathBuf::from(
+        "/Users/ozten/Projects/GuassianPlay/digital_calipers2_project/colmap_workspace/sparse/0",
+    );
     if !sparse_dir.exists() {
         println!("Skipping M7 visual test - COLMAP data not found");
         return;

@@ -4,13 +4,15 @@
 //! 1. Parse COLMAP binary files (cameras.bin, images.bin, points3D.bin)
 //! 2. Export 3D points to PLY format for visualization
 
-use sugar_rs::io::{load_colmap_scene, save_colmap_points_ply};
 use std::path::PathBuf;
+use sugar_rs::io::{load_colmap_scene, save_colmap_points_ply};
 
 #[test]
 fn test_load_calipers_colmap() {
     // Path to the COLMAP sparse reconstruction
-    let colmap_path = PathBuf::from("/Users/ozten/Projects/GuassianPlay/digital_calipers2_project/colmap_workspace/sparse/0");
+    let colmap_path = PathBuf::from(
+        "/Users/ozten/Projects/GuassianPlay/digital_calipers2_project/colmap_workspace/sparse/0",
+    );
 
     // Skip test if path doesn't exist (for CI/other machines)
     if !colmap_path.exists() {
@@ -19,8 +21,7 @@ fn test_load_calipers_colmap() {
     }
 
     // Load COLMAP scene
-    let scene = load_colmap_scene(&colmap_path)
-        .expect("Failed to load COLMAP scene");
+    let scene = load_colmap_scene(&colmap_path).expect("Failed to load COLMAP scene");
 
     // Print statistics
     println!("Loaded COLMAP scene:");
@@ -43,10 +44,16 @@ fn test_load_calipers_colmap() {
 
     // Print some point statistics
     if !scene.points.is_empty() {
-        let avg_x = scene.points.iter().map(|p| p.position.x).sum::<f32>() / scene.points.len() as f32;
-        let avg_y = scene.points.iter().map(|p| p.position.y).sum::<f32>() / scene.points.len() as f32;
-        let avg_z = scene.points.iter().map(|p| p.position.z).sum::<f32>() / scene.points.len() as f32;
-        println!("\nPoint cloud centroid: ({:.3}, {:.3}, {:.3})", avg_x, avg_y, avg_z);
+        let avg_x =
+            scene.points.iter().map(|p| p.position.x).sum::<f32>() / scene.points.len() as f32;
+        let avg_y =
+            scene.points.iter().map(|p| p.position.y).sum::<f32>() / scene.points.len() as f32;
+        let avg_z =
+            scene.points.iter().map(|p| p.position.z).sum::<f32>() / scene.points.len() as f32;
+        println!(
+            "\nPoint cloud centroid: ({:.3}, {:.3}, {:.3})",
+            avg_x, avg_y, avg_z
+        );
     }
 
     // Export to PLY
@@ -54,8 +61,7 @@ fn test_load_calipers_colmap() {
     std::fs::create_dir_all(&output_dir).expect("Failed to create output directory");
 
     let ply_path = output_dir.join("calipers_points.ply");
-    save_colmap_points_ply(&scene.points, &ply_path)
-        .expect("Failed to save PLY file");
+    save_colmap_points_ply(&scene.points, &ply_path).expect("Failed to save PLY file");
 
     println!("\n✅ PLY exported to: {:?}", ply_path);
     println!("   Open this file in MeshLab or Blender to visualize!");
@@ -70,7 +76,9 @@ fn test_load_calipers_colmap() {
 
 #[test]
 fn test_colmap_camera_details() {
-    let colmap_path = PathBuf::from("/Users/ozten/Projects/GuassianPlay/digital_calipers2_project/colmap_workspace/sparse/0");
+    let colmap_path = PathBuf::from(
+        "/Users/ozten/Projects/GuassianPlay/digital_calipers2_project/colmap_workspace/sparse/0",
+    );
 
     if !colmap_path.exists() {
         println!("Skipping test - COLMAP data not found");
@@ -83,8 +91,10 @@ fn test_colmap_camera_details() {
     for (i, camera) in scene.cameras.iter().enumerate() {
         println!("Camera {}:", i);
         println!("  Resolution: {}x{}", camera.width, camera.height);
-        println!("  Intrinsics: fx={:.2}, fy={:.2}, cx={:.2}, cy={:.2}",
-                 camera.fx, camera.fy, camera.cx, camera.cy);
+        println!(
+            "  Intrinsics: fx={:.2}, fy={:.2}, cx={:.2}, cy={:.2}",
+            camera.fx, camera.fy, camera.cx, camera.cy
+        );
     }
 
     // Print first few image poses

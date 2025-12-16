@@ -20,7 +20,30 @@ use crate::diff::blend_grad::{blend_backward_with_bg, blend_forward_with_bg};
 use image::RgbImage;
 use nalgebra::{Matrix2, Vector3};
 
-fn project_gaussian(gaussian: &Gaussian, camera: &Camera, gaussian_idx: usize) -> Option<Gaussian2D> {
+fn srgb_u8_to_linear_f32(u: u8) -> f32 {
+    let cs = (u as f32) / 255.0;
+    if cs <= 0.04045 {
+        cs / 12.92
+    } else {
+        ((cs + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn linear_f32_to_srgb_u8(x: f32) -> u8 {
+    let x = x.clamp(0.0, 1.0);
+    let cs = if x <= 0.0031308 {
+        12.92 * x
+    } else {
+        1.055 * x.powf(1.0 / 2.4) - 0.055
+    };
+    (cs * 255.0).round().clamp(0.0, 255.0) as u8
+}
+
+fn project_gaussian(
+    gaussian: &Gaussian,
+    camera: &Camera,
+    gaussian_idx: usize,
+) -> Option<Gaussian2D> {
     // 1) Transform mean to camera space.
     let mean_cam = camera.world_to_camera(&gaussian.position);
     if mean_cam.z <= 0.0 {
@@ -49,7 +72,10 @@ fn project_gaussian(gaussian: &Gaussian, camera: &Camera, gaussian_idx: usize) -
     Some(Gaussian2D {
         mean: Vector3::new(mean_px.x, mean_px.y, mean_cam.z),
         cov: Vector3::new(cov_xx, cov_xy, cov_yy),
-        color: crate::core::evaluate_sh(&gaussian.sh_coeffs, &camera.view_direction(&gaussian.position)),
+        color: crate::core::evaluate_sh(
+            &gaussian.sh_coeffs,
+            &camera.view_direction(&gaussian.position),
+        ),
         opacity: crate::core::sigmoid(gaussian.opacity),
         gaussian_idx,
     })
@@ -157,8 +183,7 @@ pub fn render_full_color_grads(
 
                 let dx = pixel_x - g.mean_x;
                 let dy = pixel_y - g.mean_y;
-                let quad_form =
-                    g.inv_xx * dx * dx + 2.0 * g.inv_xy * dx * dy + g.inv_yy * dy * dy;
+                let quad_form = g.inv_xx * dx * dx + 2.0 * g.inv_xy * dx * dy + g.inv_yy * dy * dy;
                 let weight = (-0.5 * quad_form).exp();
 
                 let alpha = (g.opacity * weight).min(0.99);
@@ -174,11 +199,16 @@ pub fn render_full_color_grads(
             let forward = blend_forward_with_bg(&alphas, &colors, bg);
             let out = forward.out;
 
-            // Write output pixel.
-            let r = (out.x * 255.0).clamp(0.0, 255.0) as u8;
-            let g = (out.y * 255.0).clamp(0.0, 255.0) as u8;
-            let b = (out.z * 255.0).clamp(0.0, 255.0) as u8;
-            img.put_pixel(px as u32, py as u32, image::Rgb([r, g, b]));
+            // Write output pixel (linear -> sRGB for viewing).
+            img.put_pixel(
+                px as u32,
+                py as u32,
+                image::Rgb([
+                    linear_f32_to_srgb_u8(out.x),
+                    linear_f32_to_srgb_u8(out.y),
+                    linear_f32_to_srgb_u8(out.z),
+                ]),
+            );
 
             // Backward for this pixel: accumulate dL/d(color_i) only.
             let upstream = &d_image[(py * width + px) as usize];
@@ -195,7 +225,11 @@ pub fn render_full_color_grads(
 }
 
 /// Forward render that returns linear RGB pixels in [0,1] (no quantization).
-pub fn render_full_linear(gaussians: &[Gaussian], camera: &Camera, bg: &Vector3<f32>) -> Vec<Vector3<f32>> {
+pub fn render_full_linear(
+    gaussians: &[Gaussian],
+    camera: &Camera,
+    bg: &Vector3<f32>,
+) -> Vec<Vector3<f32>> {
     let width = camera.width as i32;
     let height = camera.height as i32;
     let mut out = vec![Vector3::<f32>::zeros(); (width * height) as usize];
@@ -223,8 +257,7 @@ pub fn render_full_linear(gaussians: &[Gaussian], camera: &Camera, bg: &Vector3<
 
                 let dx = pixel_x - g.mean_x;
                 let dy = pixel_y - g.mean_y;
-                let quad_form =
-                    g.inv_xx * dx * dx + 2.0 * g.inv_xy * dx * dy + g.inv_yy * dy * dy;
+                let quad_form = g.inv_xx * dx * dx + 2.0 * g.inv_xy * dx * dy + g.inv_yy * dy * dy;
                 let weight = (-0.5 * quad_form).exp();
                 let alpha = (g.opacity * weight).min(0.99);
                 if alpha < 1e-4 {
@@ -245,7 +278,10 @@ pub fn render_full_linear(gaussians: &[Gaussian], camera: &Camera, bg: &Vector3<
 /// Helper: compute L2 loss gradient w.r.t. rendered pixel colors.
 ///
 /// `rendered` and `target` are linear RGB in [0,1].
-pub fn l2_image_grad(rendered: &[Vector3<f32>], target: &[Vector3<f32>]) -> (f32, Vec<Vector3<f32>>) {
+pub fn l2_image_grad(
+    rendered: &[Vector3<f32>],
+    target: &[Vector3<f32>],
+) -> (f32, Vec<Vector3<f32>>) {
     assert_eq!(rendered.len(), target.len());
     let n = rendered.len() as f32;
     let mut loss = 0.0f32;
@@ -264,12 +300,32 @@ pub fn rgb8_to_linear_vec(img: &RgbImage) -> Vec<Vector3<f32>> {
     let mut out = Vec::with_capacity((img.width() * img.height()) as usize);
     for p in img.pixels() {
         out.push(Vector3::new(
-            p[0] as f32 / 255.0,
-            p[1] as f32 / 255.0,
-            p[2] as f32 / 255.0,
+            srgb_u8_to_linear_f32(p[0]),
+            srgb_u8_to_linear_f32(p[1]),
+            srgb_u8_to_linear_f32(p[2]),
         ));
     }
     out
+}
+
+/// Convert linear [0,1] RGB pixels to an `RgbImage` (sRGB encoded).
+pub fn linear_vec_to_rgb8_img(linear: &[Vector3<f32>], width: u32, height: u32) -> RgbImage {
+    assert_eq!(linear.len(), (width * height) as usize);
+    let mut img = RgbImage::new(width, height);
+    for (i, p) in linear.iter().enumerate() {
+        let x = (i as u32) % width;
+        let y = (i as u32) / width;
+        img.put_pixel(
+            x,
+            y,
+            image::Rgb([
+                linear_f32_to_srgb_u8(p.x),
+                linear_f32_to_srgb_u8(p.y),
+                linear_f32_to_srgb_u8(p.z),
+            ]),
+        );
+    }
+    img
 }
 
 /// Downsample an image to match a camera resolution (nearest neighbor, for simplicity).
@@ -280,7 +336,9 @@ pub fn downsample_rgb_nearest(img: &RgbImage, width: u32, height: u32) -> RgbIma
     for y in 0..height {
         for x in 0..width {
             let src_x = (x as f32 * sx).floor().clamp(0.0, (img.width() - 1) as f32) as u32;
-            let src_y = (y as f32 * sy).floor().clamp(0.0, (img.height() - 1) as f32) as u32;
+            let src_y = (y as f32 * sy)
+                .floor()
+                .clamp(0.0, (img.height() - 1) as f32) as u32;
             let p = *img.get_pixel(src_x, src_y);
             out.put_pixel(x, y, p);
         }
@@ -291,7 +349,12 @@ pub fn downsample_rgb_nearest(img: &RgbImage, width: u32, height: u32) -> RgbIma
 /// Debug: draw projected Gaussian means as colored dots on top of a target image.
 ///
 /// Uses the same projection and Gaussian subset as the renderer.
-pub fn debug_overlay_means(target: &RgbImage, gaussians: &[Gaussian], camera: &Camera, radius_px: i32) -> RgbImage {
+pub fn debug_overlay_means(
+    target: &RgbImage,
+    gaussians: &[Gaussian],
+    camera: &Camera,
+    radius_px: i32,
+) -> RgbImage {
     let width = camera.width as i32;
     let height = camera.height as i32;
     assert_eq!(target.width() as i32, width);
@@ -310,9 +373,9 @@ pub fn debug_overlay_means(target: &RgbImage, gaussians: &[Gaussian], camera: &C
         let cx = g.mean.x.round() as i32;
         let cy = g.mean.y.round() as i32;
         let color = [
-            (g.color.x * 255.0).clamp(0.0, 255.0) as u8,
-            (g.color.y * 255.0).clamp(0.0, 255.0) as u8,
-            (g.color.z * 255.0).clamp(0.0, 255.0) as u8,
+            linear_f32_to_srgb_u8(g.color.x),
+            linear_f32_to_srgb_u8(g.color.y),
+            linear_f32_to_srgb_u8(g.color.z),
         ];
 
         for dy in -radius_px..=radius_px {
@@ -332,10 +395,101 @@ pub fn debug_overlay_means(target: &RgbImage, gaussians: &[Gaussian], camera: &C
     out
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    #[test]
+    fn test_srgb_linear_endpoints() {
+        assert_relative_eq!(srgb_u8_to_linear_f32(0), 0.0, epsilon = 1e-6);
+        assert_relative_eq!(srgb_u8_to_linear_f32(255), 1.0, epsilon = 1e-6);
+        assert_eq!(linear_f32_to_srgb_u8(0.0), 0);
+        assert_eq!(linear_f32_to_srgb_u8(1.0), 255);
+    }
+
+    #[test]
+    fn test_srgb_midpoint_sanity() {
+        // 128/255 ≈ 0.50196 sRGB corresponds to ≈ 0.21586 linear.
+        let lin = srgb_u8_to_linear_f32(128);
+        assert_relative_eq!(lin, 0.21586, epsilon = 5e-3);
+        let back = linear_f32_to_srgb_u8(lin);
+        assert!((back as i32 - 128).abs() <= 1);
+    }
+}
+
 /// Debug: compute a per-pixel coverage mask (whether any Gaussian contributes).
 ///
 /// The output is a grayscale image where 0=uncovered, 255=covered.
 pub fn debug_coverage_mask(gaussians: &[Gaussian], camera: &Camera) -> RgbImage {
+    let width = camera.width as i32;
+    let height = camera.height as i32;
+
+    let covered = coverage_mask_bool(gaussians, camera);
+    let mut img = RgbImage::new(camera.width, camera.height);
+
+    for py in 0..height {
+        for px in 0..width {
+            let v = if covered[(py * width + px) as usize] {
+                255u8
+            } else {
+                0u8
+            };
+            img.put_pixel(px as u32, py as u32, image::Rgb([v, v, v]));
+        }
+    }
+
+    img
+}
+
+/// Compute a per-pixel coverage mask (whether any Gaussian contributes).
+///
+/// Returns a Vec<bool> with length width*height, row-major.
+pub fn coverage_mask_bool(gaussians: &[Gaussian], camera: &Camera) -> Vec<bool> {
+    let width = camera.width as i32;
+    let height = camera.height as i32;
+
+    let mut projected: Vec<Gaussian2D> = gaussians
+        .iter()
+        .enumerate()
+        .filter_map(|(i, g)| project_gaussian(g, camera, i))
+        .collect();
+    projected.sort_by(|a, b| a.mean.z.partial_cmp(&b.mean.z).unwrap());
+    let prepared = prepare(&projected);
+
+    let mut covered = vec![false; (width * height) as usize];
+
+    for py in 0..height {
+        for px in 0..width {
+            let pixel_x = px as f32 + 0.5;
+            let pixel_y = py as f32 + 0.5;
+
+            let mut is_covered = false;
+            for g in &prepared {
+                if px < g.min_x || px > g.max_x || py < g.min_y || py > g.max_y {
+                    continue;
+                }
+
+                let dx = pixel_x - g.mean_x;
+                let dy = pixel_y - g.mean_y;
+                let quad_form = g.inv_xx * dx * dx + 2.0 * g.inv_xy * dx * dy + g.inv_yy * dy * dy;
+                let weight = (-0.5 * quad_form).exp();
+                let alpha = (g.opacity * weight).min(0.99);
+                if alpha >= 1e-4 {
+                    is_covered = true;
+                    break;
+                }
+            }
+
+            covered[(py * width + px) as usize] = is_covered;
+        }
+    }
+
+    covered
+}
+
+/// Debug: visualize the final transmittance `T_N` per pixel (white=transparent, black=opaque).
+pub fn debug_final_transmittance(gaussians: &[Gaussian], camera: &Camera) -> RgbImage {
     let width = camera.width as i32;
     let height = camera.height as i32;
 
@@ -354,7 +508,7 @@ pub fn debug_coverage_mask(gaussians: &[Gaussian], camera: &Camera) -> RgbImage 
             let pixel_x = px as f32 + 0.5;
             let pixel_y = py as f32 + 0.5;
 
-            let mut covered = false;
+            let mut t = 1.0f32;
             for g in &prepared {
                 if px < g.min_x || px > g.max_x || py < g.min_y || py > g.max_y {
                     continue;
@@ -362,17 +516,62 @@ pub fn debug_coverage_mask(gaussians: &[Gaussian], camera: &Camera) -> RgbImage 
 
                 let dx = pixel_x - g.mean_x;
                 let dy = pixel_y - g.mean_y;
-                let quad_form =
-                    g.inv_xx * dx * dx + 2.0 * g.inv_xy * dx * dy + g.inv_yy * dy * dy;
+                let quad_form = g.inv_xx * dx * dx + 2.0 * g.inv_xy * dx * dy + g.inv_yy * dy * dy;
+                let weight = (-0.5 * quad_form).exp();
+                let alpha = (g.opacity * weight).min(0.99);
+                if alpha < 1e-4 {
+                    continue;
+                }
+                t *= 1.0 - alpha;
+            }
+
+            let v = linear_f32_to_srgb_u8(t);
+            img.put_pixel(px as u32, py as u32, image::Rgb([v, v, v]));
+        }
+    }
+
+    img
+}
+
+/// Debug: visualize number of contributing Gaussians per pixel (brighter = more contributors).
+pub fn debug_contrib_count(gaussians: &[Gaussian], camera: &Camera, clamp_max: u32) -> RgbImage {
+    let width = camera.width as i32;
+    let height = camera.height as i32;
+    let clamp_max = clamp_max.max(1) as f32;
+
+    let mut projected: Vec<Gaussian2D> = gaussians
+        .iter()
+        .enumerate()
+        .filter_map(|(i, g)| project_gaussian(g, camera, i))
+        .collect();
+    projected.sort_by(|a, b| a.mean.z.partial_cmp(&b.mean.z).unwrap());
+    let prepared = prepare(&projected);
+
+    let mut img = RgbImage::new(camera.width, camera.height);
+
+    for py in 0..height {
+        for px in 0..width {
+            let pixel_x = px as f32 + 0.5;
+            let pixel_y = py as f32 + 0.5;
+
+            let mut count = 0u32;
+            for g in &prepared {
+                if px < g.min_x || px > g.max_x || py < g.min_y || py > g.max_y {
+                    continue;
+                }
+
+                let dx = pixel_x - g.mean_x;
+                let dy = pixel_y - g.mean_y;
+                let quad_form = g.inv_xx * dx * dx + 2.0 * g.inv_xy * dx * dy + g.inv_yy * dy * dy;
                 let weight = (-0.5 * quad_form).exp();
                 let alpha = (g.opacity * weight).min(0.99);
                 if alpha >= 1e-4 {
-                    covered = true;
-                    break;
+                    count += 1;
                 }
             }
 
-            let v = if covered { 255u8 } else { 0u8 };
+            let t = (count as f32 / clamp_max).clamp(0.0, 1.0);
+            let v = linear_f32_to_srgb_u8(t);
             img.put_pixel(px as u32, py as u32, image::Rgb([v, v, v]));
         }
     }

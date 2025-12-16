@@ -78,11 +78,7 @@ impl Gaussian {
         let sz = self.scale.z.exp();
 
         // S · S^T for diagonal matrix is just diag(sx², sy², sz²)
-        let s_squared = Matrix3::from_diagonal(&nalgebra::Vector3::new(
-            sx * sx,
-            sy * sy,
-            sz * sz,
-        ));
+        let s_squared = Matrix3::from_diagonal(&nalgebra::Vector3::new(sx * sx, sy * sy, sz * sz));
 
         // Σ = R · S · S^T · R^T = R · S² · R^T
         rotation_matrix * s_squared * rotation_matrix.transpose()
@@ -96,11 +92,7 @@ impl Gaussian {
 
     /// Get the actual scale values (exp of stored log values)
     pub fn actual_scale(&self) -> Vector3<f32> {
-        Vector3::new(
-            self.scale.x.exp(),
-            self.scale.y.exp(),
-            self.scale.z.exp(),
-        )
+        Vector3::new(self.scale.x.exp(), self.scale.y.exp(), self.scale.z.exp())
     }
 }
 
@@ -110,7 +102,7 @@ impl Gaussian {
 #[derive(Clone, Debug)]
 pub struct Gaussian2D {
     /// 2D mean position in pixel coordinates
-    pub mean: Vector3<f32>,  // (x, y, depth) - depth for sorting
+    pub mean: Vector3<f32>, // (x, y, depth) - depth for sorting
 
     /// 2D covariance matrix (2×2 symmetric)
     /// Stored as 3 values: [cov_xx, cov_xy, cov_yy]

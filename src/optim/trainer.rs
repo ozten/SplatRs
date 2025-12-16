@@ -11,12 +11,13 @@
 //! - Add opacity + 2D eval + projection gradients for full parameter training
 //! - Switch to multi-view sampling
 
-use crate::core::{init_from_colmap_points, Camera, Gaussian};
+use crate::core::{init_from_colmap_points_visible_stratified, Camera, Gaussian};
 use crate::io::load_colmap_scene;
 use crate::optim::adam::AdamVec3;
-use crate::optim::loss::l2_image_loss_and_grad;
+use crate::optim::loss::l2_image_loss_and_grad_weighted;
 use crate::render::full_diff::{
-    debug_coverage_mask, debug_overlay_means, downsample_rgb_nearest, render_full_color_grads,
+    coverage_mask_bool, debug_contrib_count, debug_coverage_mask, debug_final_transmittance,
+    debug_overlay_means, downsample_rgb_nearest, linear_vec_to_rgb8_img, render_full_color_grads,
     render_full_linear, rgb8_to_linear_vec,
 };
 use image::RgbImage;
@@ -38,6 +39,8 @@ pub struct TrainOutputs {
     pub target: RgbImage,
     pub overlay: RgbImage,
     pub coverage: RgbImage,
+    pub t_final: RgbImage,
+    pub contrib_count: RgbImage,
     pub initial: RgbImage,
     pub final_img: RgbImage,
     pub background: Vector3<f32>,
@@ -92,9 +95,26 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
     let camera_full = camera_with_pose(base_camera, rotation, image_info.translation);
     let camera = downsample_camera(&camera_full, cfg.downsample_factor);
 
-    let cloud = init_from_colmap_points(&scene.points);
-    let max_g = cfg.max_gaussians.min(cloud.gaussians.len());
-    let mut gaussians: Vec<Gaussian> = cloud.gaussians[..max_g].to_vec();
+    // Initialize a Gaussian subset that is (roughly) evenly distributed in screen space.
+    // This avoids spending most Gaussians on only one part of the image (e.g. the caliper)
+    // which makes single-image overfit debugging misleading.
+    let cloud =
+        init_from_colmap_points_visible_stratified(&scene.points, &camera, cfg.max_gaussians, 8);
+    let mut gaussians: Vec<Gaussian> = cloud.gaussians;
+
+    // Heuristic: set per-point isotropic 3D sigma so that the projected footprint is ~constant in pixel-space.
+    // This reduces the "salt-and-pepper" look from tiny splats when using sparse COLMAP points.
+    let desired_sigma_px = 1.5f32;
+    let f_mean = 0.5 * (camera.fx + camera.fy).max(1.0);
+    for g in &mut gaussians {
+        let z = camera.world_to_camera(&g.position).z;
+        if z <= 0.0 {
+            continue;
+        }
+        let sigma_world = (desired_sigma_px * z / f_mean).clamp(1e-4, 1.0);
+        let log_sigma = sigma_world.ln();
+        g.scale = Vector3::new(log_sigma, log_sigma, log_sigma);
+    }
 
     // Target image.
     let target_full = load_target_image(&cfg.images_dir, &image_info.name)?;
@@ -103,7 +123,35 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
 
     // Debug outputs at training resolution, using the same gaussian subset.
     let overlay = debug_overlay_means(&target_ds, &gaussians, &camera, 1);
+    let coverage_bool = coverage_mask_bool(&gaussians, &camera);
     let coverage = debug_coverage_mask(&gaussians, &camera);
+    let t_final = debug_final_transmittance(&gaussians, &camera);
+    let contrib_count = debug_contrib_count(&gaussians, &camera, 32);
+
+    // Quick sanity: print coverage stats for top vs bottom halves.
+    {
+        let w = camera.width as usize;
+        let h = camera.height as usize;
+        let total = w * h;
+        let covered = coverage_bool.iter().filter(|&&c| c).count();
+        let top = w * (h / 2);
+        let covered_top = coverage_bool[..top].iter().filter(|&&c| c).count();
+        let covered_bot = coverage_bool[top..].iter().filter(|&&c| c).count();
+        eprintln!(
+            "gaussians={}  coverage={:.1}%  top={:.1}%  bottom={:.1}%",
+            gaussians.len(),
+            100.0 * (covered as f32) / (total as f32).max(1.0),
+            100.0 * (covered_top as f32) / (top as f32).max(1.0),
+            100.0 * (covered_bot as f32) / ((total - top) as f32).max(1.0),
+        );
+    }
+
+    // Loss weighting: emphasize covered pixels so Gaussian colors get a strong learning signal.
+    // Otherwise the loss is dominated by background pixels and updates barely affect Gaussians.
+    let weights: Vec<f32> = coverage_bool
+        .iter()
+        .map(|&c| if c { 1.0 } else { 0.1 })
+        .collect();
 
     // Background color parameter (linear RGB).
     // Initialize to mean target color to reduce initial error for uncovered pixels.
@@ -127,25 +175,11 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
         .collect();
 
     // Initial render for output.
-    let initial_render_u8 = {
-        let linear = render_full_linear(&gaussians, &camera, &bg);
-        // Quantize via image buffer.
-        let mut img = RgbImage::new(camera.width, camera.height);
-        for (i, p) in linear.iter().enumerate() {
-            let x = (i as u32) % camera.width;
-            let y = (i as u32) / camera.width;
-            img.put_pixel(
-                x,
-                y,
-                image::Rgb([
-                    (p.x * 255.0).clamp(0.0, 255.0) as u8,
-                    (p.y * 255.0).clamp(0.0, 255.0) as u8,
-                    (p.z * 255.0).clamp(0.0, 255.0) as u8,
-                ]),
-            );
-        }
-        img
-    };
+    let initial_render_u8 = linear_vec_to_rgb8_img(
+        &render_full_linear(&gaussians, &camera, &bg),
+        camera.width,
+        camera.height,
+    );
 
     for iter in 0..cfg.iters {
         // Write params back into gaussians.
@@ -157,7 +191,8 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
 
         // Forward (linear) and loss.
         let rendered_linear = render_full_linear(&gaussians, &camera, &bg);
-        let (loss, d_image) = l2_image_loss_and_grad(&rendered_linear, &target_linear);
+        let (loss, d_image) =
+            l2_image_loss_and_grad_weighted(&rendered_linear, &target_linear, &weights);
 
         // Backward: get dL/d(color_i) per Gaussian.
         let (_img_u8, d_color, d_bg) = render_full_color_grads(&gaussians, &camera, &d_image, &bg);
@@ -175,7 +210,10 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
         }
 
         if iter % 10 == 0 || iter + 1 == cfg.iters {
-            eprintln!("iter {iter:4}  loss={loss:.6}  bg=({:.3},{:.3},{:.3})", bg.x, bg.y, bg.z);
+            eprintln!(
+                "iter {iter:4}  loss={loss:.6}  bg=({:.3},{:.3},{:.3})",
+                bg.x, bg.y, bg.z
+            );
         }
     }
 
@@ -186,28 +224,19 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
             g.sh_coeffs[0][1] = params[i].y;
             g.sh_coeffs[0][2] = params[i].z;
         }
-        let linear = render_full_linear(&gaussians, &camera, &bg);
-        let mut img = RgbImage::new(camera.width, camera.height);
-        for (i, p) in linear.iter().enumerate() {
-            let x = (i as u32) % camera.width;
-            let y = (i as u32) / camera.width;
-            img.put_pixel(
-                x,
-                y,
-                image::Rgb([
-                    (p.x * 255.0).clamp(0.0, 255.0) as u8,
-                    (p.y * 255.0).clamp(0.0, 255.0) as u8,
-                    (p.z * 255.0).clamp(0.0, 255.0) as u8,
-                ]),
-            );
-        }
-        img
+        linear_vec_to_rgb8_img(
+            &render_full_linear(&gaussians, &camera, &bg),
+            camera.width,
+            camera.height,
+        )
     };
 
     Ok(TrainOutputs {
         target: target_ds,
         overlay,
         coverage,
+        t_final,
+        contrib_count,
         initial: initial_render_u8,
         final_img: final_render_u8,
         background: bg,

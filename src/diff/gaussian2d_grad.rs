@@ -118,4 +118,3 @@ pub fn gaussian2d_evaluate_with_grads(
         d_cov_yy,
     }
 }
-

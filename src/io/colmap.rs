@@ -133,8 +133,10 @@ fn read_cameras_bin(path: &Path) -> Result<Vec<Camera>, LoadError> {
                 let cy = reader.read_f64::<LittleEndian>()? as f32;
 
                 Camera::new(
-                    f, f, // fx = fy for simple pinhole
-                    cx, cy,
+                    f,
+                    f, // fx = fy for simple pinhole
+                    cx,
+                    cy,
                     width as u32,
                     height as u32,
                     Matrix3::identity(), // Will be filled from images.bin
@@ -149,7 +151,10 @@ fn read_cameras_bin(path: &Path) -> Result<Vec<Camera>, LoadError> {
                 let cy = reader.read_f64::<LittleEndian>()? as f32;
 
                 Camera::new(
-                    fx, fy, cx, cy,
+                    fx,
+                    fy,
+                    cx,
+                    cy,
                     width as u32,
                     height as u32,
                     Matrix3::identity(),
@@ -166,9 +171,9 @@ fn read_cameras_bin(path: &Path) -> Result<Vec<Camera>, LoadError> {
 
                 // Skip distortion parameters
                 let num_params = match model_id {
-                    2 => 4, // SIMPLE_RADIAL: f, cx, cy, k
-                    3 => 5, // RADIAL: f, cx, cy, k1, k2
-                    4 => 8, // OPENCV: fx, fy, cx, cy, k1, k2, p1, p2
+                    2 => 4,  // SIMPLE_RADIAL: f, cx, cy, k
+                    3 => 5,  // RADIAL: f, cx, cy, k1, k2
+                    4 => 8,  // OPENCV: fx, fy, cx, cy, k1, k2, p1, p2
                     5 => 12, // OPENCV_FISHEYE: fx, fy, cx, cy, k1, k2, k3, k4
                     _ => return Err(LoadError::UnsupportedCameraModel(model_id)),
                 };
@@ -179,8 +184,10 @@ fn read_cameras_bin(path: &Path) -> Result<Vec<Camera>, LoadError> {
                 }
 
                 Camera::new(
-                    fx, fx, // Assume fy = fx for simple radial
-                    cx, cy,
+                    fx,
+                    fx, // Assume fy = fx for simple radial
+                    cx,
+                    cy,
                     width as u32,
                     height as u32,
                     Matrix3::identity(),
@@ -252,9 +259,8 @@ fn read_images_bin(path: &Path) -> Result<Vec<ImageInfo>, LoadError> {
         }
 
         // Create quaternion (nalgebra uses (w, x, y, z) order internally)
-        let rotation = UnitQuaternion::from_quaternion(
-            nalgebra::Quaternion::new(qw, qx, qy, qz).normalize()
-        );
+        let rotation =
+            UnitQuaternion::from_quaternion(nalgebra::Quaternion::new(qw, qx, qy, qz).normalize());
 
         let translation = Vector3::new(tx, ty, tz);
 

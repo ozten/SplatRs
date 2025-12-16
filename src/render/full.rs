@@ -11,7 +11,11 @@ use crate::core::{Camera, Gaussian, Gaussian2D};
 use image::{Rgb, RgbImage};
 use nalgebra::{Matrix2, Vector3};
 
-fn project_gaussian(gaussian: &Gaussian, camera: &Camera, gaussian_idx: usize) -> Option<Gaussian2D> {
+fn project_gaussian(
+    gaussian: &Gaussian,
+    camera: &Camera,
+    gaussian_idx: usize,
+) -> Option<Gaussian2D> {
     // 1) Transform mean to camera space.
     let mean_cam = camera.world_to_camera(&gaussian.position);
     if mean_cam.z <= 0.0 {
@@ -42,7 +46,10 @@ fn project_gaussian(gaussian: &Gaussian, camera: &Camera, gaussian_idx: usize) -
     Some(Gaussian2D {
         mean: Vector3::new(mean_px.x, mean_px.y, mean_cam.z),
         cov: Vector3::new(cov_xx, cov_xy, cov_yy),
-        color: crate::core::evaluate_sh(&gaussian.sh_coeffs, &camera.view_direction(&gaussian.position)),
+        color: crate::core::evaluate_sh(
+            &gaussian.sh_coeffs,
+            &camera.view_direction(&gaussian.position),
+        ),
         opacity: crate::core::sigmoid(gaussian.opacity),
         gaussian_idx,
     })
@@ -138,7 +145,8 @@ impl FullRenderer {
 
                     let dx = pixel_x - g.mean_x;
                     let dy = pixel_y - g.mean_y;
-                    let quad_form = g.inv_xx * dx * dx + 2.0 * g.inv_xy * dx * dy + g.inv_yy * dy * dy;
+                    let quad_form =
+                        g.inv_xx * dx * dx + 2.0 * g.inv_xy * dx * dy + g.inv_yy * dy * dy;
                     let weight = (-0.5 * quad_form).exp();
 
                     // Alpha contribution at this pixel (clamp for stability, like the paper implementations).

@@ -21,7 +21,12 @@ pub fn project_point(point_cam: &Vector3<f32>, fx: f32, fy: f32, cx: f32, cy: f3
 /// Gradient of `project_point` w.r.t. `point_cam`, given upstream `d_uv`.
 ///
 /// Returns dL/d[x,y,z].
-pub fn project_point_grad_point_cam(point_cam: &Vector3<f32>, fx: f32, fy: f32, d_uv: &Vector2<f32>) -> Vector3<f32> {
+pub fn project_point_grad_point_cam(
+    point_cam: &Vector3<f32>,
+    fx: f32,
+    fy: f32,
+    d_uv: &Vector2<f32>,
+) -> Vector3<f32> {
     let x = point_cam.x;
     let y = point_cam.y;
     let z = point_cam.z;
@@ -45,4 +50,3 @@ pub fn project_point_grad_point_cam(point_cam: &Vector3<f32>, fx: f32, fy: f32, 
 
     Vector3::new(d_x, d_y, d_z)
 }
-

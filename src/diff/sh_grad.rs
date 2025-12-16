@@ -31,4 +31,3 @@ pub fn evaluate_sh_grad_coeffs(basis: &[f32; 16], d_color: &Vector3<f32>) -> [[f
     }
     d_sh
 }
-

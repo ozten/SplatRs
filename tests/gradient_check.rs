@@ -15,16 +15,18 @@ mod tests {
     use rand::{Rng, SeedableRng};
 
     use sugar_rs::core::{evaluate_sh, inverse_sigmoid, perspective_jacobian, sh_basis, sigmoid};
-    use sugar_rs::diff::math_grad::{inverse_sigmoid_grad, sigmoid_grad_from_sigmoid};
-    use sugar_rs::diff::gaussian2d_grad::gaussian2d_evaluate_with_grads;
-    use sugar_rs::diff::sh_grad::evaluate_sh_grad_coeffs;
     use sugar_rs::diff::blend_grad::{blend_backward, blend_forward};
+    use sugar_rs::diff::covariance_grad::project_covariance_2d_grad_point_cam;
     use sugar_rs::diff::covariance_grad::{
         project_covariance_2d_grad_log_scale, project_covariance_2d_grad_rotation_vector_at_r0,
     };
-    use sugar_rs::diff::covariance_grad::project_covariance_2d_grad_point_cam;
-    use sugar_rs::diff::quaternion_grad::{quaternion_raw_to_matrix, quaternion_raw_to_matrix_grad};
+    use sugar_rs::diff::gaussian2d_grad::gaussian2d_evaluate_with_grads;
+    use sugar_rs::diff::math_grad::{inverse_sigmoid_grad, sigmoid_grad_from_sigmoid};
     use sugar_rs::diff::project_grad::project_point_grad_point_cam;
+    use sugar_rs::diff::quaternion_grad::{
+        quaternion_raw_to_matrix, quaternion_raw_to_matrix_grad,
+    };
+    use sugar_rs::diff::sh_grad::evaluate_sh_grad_coeffs;
 
     // These tests are NON-NEGOTIABLE - bugs in gradients cause silent failures.
     fn rel_err(a: f32, b: f32) -> f32 {
@@ -189,8 +191,9 @@ mod tests {
             let g11 = rng.gen_range(-1.0f32..1.0f32);
             let d_sigma2d = nalgebra::Matrix2::new(g00, g01, g01, g11);
 
-            let grad_f32 =
-                project_covariance_2d_grad_rotation_vector_at_r0(&w, &j, &r0, &log_scale, &d_sigma2d);
+            let grad_f32 = project_covariance_2d_grad_rotation_vector_at_r0(
+                &w, &j, &r0, &log_scale, &d_sigma2d,
+            );
 
             // f64 forward for numeric gradient.
             let w64 = w.map(|x| x as f64);
@@ -308,7 +311,11 @@ mod tests {
 
             let loss64 = |s: nalgebra::Vector3<f64>| -> f64 {
                 let sigma2d = {
-                    let v = nalgebra::Vector3::new((2.0 * s.x).exp(), (2.0 * s.y).exp(), (2.0 * s.z).exp());
+                    let v = nalgebra::Vector3::new(
+                        (2.0 * s.x).exp(),
+                        (2.0 * s.y).exp(),
+                        (2.0 * s.z).exp(),
+                    );
                     let d = nalgebra::Matrix3::from_diagonal(&v);
                     let sigma = r64 * d * r64.transpose();
                     let sigma_cam = w64 * sigma * w64.transpose();
@@ -318,11 +325,16 @@ mod tests {
             };
 
             let grad64 = |s: nalgebra::Vector3<f64>| -> nalgebra::Vector3<f64> {
-                let v = nalgebra::Vector3::new((2.0 * s.x).exp(), (2.0 * s.y).exp(), (2.0 * s.z).exp());
+                let v =
+                    nalgebra::Vector3::new((2.0 * s.x).exp(), (2.0 * s.y).exp(), (2.0 * s.z).exp());
                 let d_sigma_cam: nalgebra::Matrix3<f64> = j64.transpose() * g64 * j64;
                 let d_sigma = w64.transpose() * d_sigma_cam * w64;
                 let m = r64.transpose() * d_sigma * r64;
-                nalgebra::Vector3::new(m[(0, 0)] * 2.0 * v.x, m[(1, 1)] * 2.0 * v.y, m[(2, 2)] * 2.0 * v.z)
+                nalgebra::Vector3::new(
+                    m[(0, 0)] * 2.0 * v.x,
+                    m[(1, 1)] * 2.0 * v.y,
+                    m[(2, 2)] * 2.0 * v.z,
+                )
             };
 
             let ana64 = grad64(log_scale64);
@@ -339,7 +351,10 @@ mod tests {
                 let ana = ana64[axis];
                 let denom = num.abs().max(ana.abs()).max(1e-9);
                 let rel = (num - ana).abs() / denom;
-                assert!(rel < 1e-6, "cov proj grad mismatch axis={axis}: num={num} ana={ana} rel={rel}");
+                assert!(
+                    rel < 1e-6,
+                    "cov proj grad mismatch axis={axis}: num={num} ana={ana} rel={rel}"
+                );
 
                 // Also ensure our f32 implementation matches the f64 analytic result.
                 let ana_f32_ref = ana as f32;
@@ -364,16 +379,8 @@ mod tests {
 
         for _ in 0..200 {
             // Random mean and pixel within a modest range.
-            let mean = Vector3::new(
-                rng.gen_range(-1.0..1.0),
-                rng.gen_range(-1.0..1.0),
-                0.0,
-            );
-            let pixel = Vector3::new(
-                rng.gen_range(-1.0..1.0),
-                rng.gen_range(-1.0..1.0),
-                0.0,
-            );
+            let mean = Vector3::new(rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0), 0.0);
+            let pixel = Vector3::new(rng.gen_range(-1.0..1.0), rng.gen_range(-1.0..1.0), 0.0);
 
             // SPD covariance with controlled off-diagonal.
             let cov_xx = rng.gen_range(0.5f32..2.0f32);
@@ -434,11 +441,14 @@ mod tests {
                 .value
             };
 
-            let num_a = ((f(cov_xx + eps, cov_xy, cov_yy) as f64 - f(cov_xx - eps, cov_xy, cov_yy) as f64)
+            let num_a = ((f(cov_xx + eps, cov_xy, cov_yy) as f64
+                - f(cov_xx - eps, cov_xy, cov_yy) as f64)
                 / (2.0 * eps as f64)) as f32;
-            let num_b = ((f(cov_xx, cov_xy + eps, cov_yy) as f64 - f(cov_xx, cov_xy - eps, cov_yy) as f64)
+            let num_b = ((f(cov_xx, cov_xy + eps, cov_yy) as f64
+                - f(cov_xx, cov_xy - eps, cov_yy) as f64)
                 / (2.0 * eps as f64)) as f32;
-            let num_c = ((f(cov_xx, cov_xy, cov_yy + eps) as f64 - f(cov_xx, cov_xy, cov_yy - eps) as f64)
+            let num_c = ((f(cov_xx, cov_xy, cov_yy + eps) as f64
+                - f(cov_xx, cov_xy, cov_yy - eps) as f64)
                 / (2.0 * eps as f64)) as f32;
 
             for (name, num, ana) in [
@@ -503,7 +513,8 @@ mod tests {
                 a_plus[i] += eps;
                 a_minus[i] -= eps;
 
-                let num = ((f(&a_plus, &colors) as f64 - f(&a_minus, &colors) as f64) / (2.0 * eps as f64)) as f32;
+                let num = ((f(&a_plus, &colors) as f64 - f(&a_minus, &colors) as f64)
+                    / (2.0 * eps as f64)) as f32;
                 let ana = grads.d_alphas[i];
                 let abs_err = (num - ana).abs();
                 assert!(
@@ -536,7 +547,8 @@ mod tests {
                     _ => unreachable!(),
                 }
 
-                let num = ((f(&alphas, &c_plus) as f64 - f(&alphas, &c_minus) as f64) / (2.0 * eps as f64)) as f32;
+                let num = ((f(&alphas, &c_plus) as f64 - f(&alphas, &c_minus) as f64)
+                    / (2.0 * eps as f64)) as f32;
                 let ana = match channel {
                     0 => grads.d_colors[i].x,
                     1 => grads.d_colors[i].y,
@@ -605,7 +617,10 @@ mod tests {
                 }
 
                 let color = evaluate_sh(&sh_coeffs, &dir_raw);
-                if (0.2..0.8).contains(&color.x) && (0.2..0.8).contains(&color.y) && (0.2..0.8).contains(&color.z) {
+                if (0.2..0.8).contains(&color.x)
+                    && (0.2..0.8).contains(&color.y)
+                    && (0.2..0.8).contains(&color.z)
+                {
                     break sh_coeffs;
                 }
             };
@@ -673,7 +688,10 @@ mod tests {
                     break;
                 }
             }
-            assert!(checked >= 20, "Expected to check >= 20 coefficient grads, got {checked}");
+            assert!(
+                checked >= 20,
+                "Expected to check >= 20 coefficient grads, got {checked}"
+            );
         }
     }
 
@@ -717,7 +735,9 @@ mod tests {
             let g11 = rng.gen_range(-1.0f32..1.0f32);
             let d_sigma2d = nalgebra::Matrix2::new(g00, g01, g01, g11);
 
-            let ana = project_covariance_2d_grad_point_cam(&point_cam, fx, fy, &w, &r, &log_scale, &d_sigma2d);
+            let ana = project_covariance_2d_grad_point_cam(
+                &point_cam, fx, fy, &w, &r, &log_scale, &d_sigma2d,
+            );
 
             // f64 numeric derivative of L = <G, J Σ_cam Jᵀ>
             let w64 = w.map(|x| x as f64);
@@ -725,7 +745,11 @@ mod tests {
             let g64 = d_sigma2d.map(|x| x as f64);
             let s64 = log_scale.map(|x| x as f64);
 
-            let v = nalgebra::Vector3::new((2.0 * s64.x).exp(), (2.0 * s64.y).exp(), (2.0 * s64.z).exp());
+            let v = nalgebra::Vector3::new(
+                (2.0 * s64.x).exp(),
+                (2.0 * s64.y).exp(),
+                (2.0 * s64.z).exp(),
+            );
             let d = nalgebra::Matrix3::from_diagonal(&v);
             let sigma = r64 * d * r64.transpose();
             let sigma_cam = w64 * sigma * w64.transpose();
@@ -738,8 +762,12 @@ mod tests {
                     let z_inv = 1.0 / z;
                     let z_inv2 = z_inv * z_inv;
                     nalgebra::Matrix2x3::new(
-                        (fx as f64) * z_inv, 0.0, -(fx as f64) * x * z_inv2,
-                        0.0, (fy as f64) * z_inv, -(fy as f64) * y * z_inv2,
+                        (fx as f64) * z_inv,
+                        0.0,
+                        -(fx as f64) * x * z_inv2,
+                        0.0,
+                        (fy as f64) * z_inv,
+                        -(fy as f64) * y * z_inv2,
                     )
                 };
                 let sigma2d = j * sigma_cam * j.transpose();
@@ -821,12 +849,15 @@ mod tests {
 
             // Analytic gradients.
             let d_point_from_mean = project_point_grad_point_cam(&point_cam, fx, fy, &w_uv);
-            let d_point_from_cov = project_covariance_2d_grad_point_cam(&point_cam, fx, fy, &w, &r0, &log_scale, &g_cov);
+            let d_point_from_cov = project_covariance_2d_grad_point_cam(
+                &point_cam, fx, fy, &w, &r0, &log_scale, &g_cov,
+            );
             let d_point = d_point_from_mean + d_point_from_cov;
 
             let j = perspective_jacobian(&point_cam, fx, fy);
             let d_log_scale = project_covariance_2d_grad_log_scale(&w, &j, &r0, &log_scale, &g_cov);
-            let d_rot = project_covariance_2d_grad_rotation_vector_at_r0(&w, &j, &r0, &log_scale, &g_cov);
+            let d_rot =
+                project_covariance_2d_grad_rotation_vector_at_r0(&w, &j, &r0, &log_scale, &g_cov);
 
             // Numeric gradients in f64.
             let w64 = w.map(|x| x as f64);
@@ -844,15 +875,22 @@ mod tests {
             let sigma = r0_64 * d_mat * r0_64.transpose();
             let _sigma_cam = w64 * sigma * w64.transpose();
 
-            let loss64 = |p: nalgebra::Vector3<f64>, s: nalgebra::Vector3<f64>, r: nalgebra::Matrix3<f64>| -> f64 {
+            let loss64 = |p: nalgebra::Vector3<f64>,
+                          s: nalgebra::Vector3<f64>,
+                          r: nalgebra::Matrix3<f64>|
+             -> f64 {
                 let uv = {
                     let x = p.x;
                     let y = p.y;
                     let z = p.z;
-                    nalgebra::Vector2::new((fx as f64) * x / z + (cx as f64), (fy as f64) * y / z + (cy as f64))
+                    nalgebra::Vector2::new(
+                        (fx as f64) * x / z + (cx as f64),
+                        (fy as f64) * y / z + (cy as f64),
+                    )
                 };
 
-                let d_vec = nalgebra::Vector3::new((2.0 * s.x).exp(), (2.0 * s.y).exp(), (2.0 * s.z).exp());
+                let d_vec =
+                    nalgebra::Vector3::new((2.0 * s.x).exp(), (2.0 * s.y).exp(), (2.0 * s.z).exp());
                 let d_mat = nalgebra::Matrix3::from_diagonal(&d_vec);
                 let sigma = r * d_mat * r.transpose();
                 let sigma_cam = w64 * sigma * w64.transpose();
@@ -864,8 +902,12 @@ mod tests {
                     let z_inv = 1.0 / z;
                     let z_inv2 = z_inv * z_inv;
                     nalgebra::Matrix2x3::new(
-                        (fx as f64) * z_inv, 0.0, -(fx as f64) * x * z_inv2,
-                        0.0, (fy as f64) * z_inv, -(fy as f64) * y * z_inv2,
+                        (fx as f64) * z_inv,
+                        0.0,
+                        -(fx as f64) * x * z_inv2,
+                        0.0,
+                        (fy as f64) * z_inv,
+                        -(fy as f64) * y * z_inv2,
                     )
                 };
                 let sigma2d = j * sigma_cam * j.transpose();
@@ -882,7 +924,8 @@ mod tests {
                 let mut minus = p0;
                 plus[axis] += eps_p;
                 minus[axis] -= eps_p;
-                let num = (loss64(plus, log_scale64, r0_64) - loss64(minus, log_scale64, r0_64)) / (2.0 * eps_p);
+                let num = (loss64(plus, log_scale64, r0_64) - loss64(minus, log_scale64, r0_64))
+                    / (2.0 * eps_p);
                 let num_f32 = num as f32;
                 let got = d_point[axis];
                 let abs_err = (got - num_f32).abs();
@@ -927,9 +970,15 @@ mod tests {
             };
 
             let eps_r = 1e-4f64;
-            let num_rx = (loss64(p0, s0, rot_x(eps_r) * r0_64) - loss64(p0, s0, rot_x(-eps_r) * r0_64)) / (2.0 * eps_r);
-            let num_ry = (loss64(p0, s0, rot_y(eps_r) * r0_64) - loss64(p0, s0, rot_y(-eps_r) * r0_64)) / (2.0 * eps_r);
-            let num_rz = (loss64(p0, s0, rot_z(eps_r) * r0_64) - loss64(p0, s0, rot_z(-eps_r) * r0_64)) / (2.0 * eps_r);
+            let num_rx = (loss64(p0, s0, rot_x(eps_r) * r0_64)
+                - loss64(p0, s0, rot_x(-eps_r) * r0_64))
+                / (2.0 * eps_r);
+            let num_ry = (loss64(p0, s0, rot_y(eps_r) * r0_64)
+                - loss64(p0, s0, rot_y(-eps_r) * r0_64))
+                / (2.0 * eps_r);
+            let num_rz = (loss64(p0, s0, rot_z(eps_r) * r0_64)
+                - loss64(p0, s0, rot_z(-eps_r) * r0_64))
+                / (2.0 * eps_r);
 
             let num_r = nalgebra::Vector3::new(num_rx as f32, num_ry as f32, num_rz as f32);
             for axis in 0..3 {

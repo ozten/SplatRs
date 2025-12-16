@@ -3,7 +3,7 @@
 //! This is a minimal renderer that draws each Gaussian as a fixed-size circle.
 //! No covariance projection yet - just validates depth sorting and alpha blending.
 
-use crate::core::{Camera, Gaussian, sigmoid, evaluate_sh};
+use crate::core::{evaluate_sh, sigmoid, Camera, Gaussian};
 use image::{Rgb, RgbImage};
 use nalgebra::Vector3;
 
@@ -42,11 +42,7 @@ impl SimpleRenderer {
     }
 
     /// Render Gaussians to an image.
-    pub fn render(
-        &mut self,
-        gaussians: &[Gaussian],
-        camera: &Camera,
-    ) -> RgbImage {
+    pub fn render(&mut self, gaussians: &[Gaussian], camera: &Camera) -> RgbImage {
         // Create output image
         let mut img = RgbImage::new(camera.width, camera.height);
 
@@ -190,9 +186,12 @@ mod tests {
 
         // Simple camera
         let camera = Camera::new(
-            100.0, 100.0,
-            50.0, 50.0,
-            100, 100,
+            100.0,
+            100.0,
+            50.0,
+            50.0,
+            100,
+            100,
             Matrix3::identity(),
             Vector3::zeros(),
         );

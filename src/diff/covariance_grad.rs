@@ -10,7 +10,11 @@
 
 use nalgebra::{Matrix2, Matrix2x3, Matrix3, Vector3};
 
-fn covariance_2d_grad_j(j: &Matrix2x3<f32>, a: &Matrix3<f32>, d_sigma2d: &Matrix2<f32>) -> Matrix2x3<f32> {
+fn covariance_2d_grad_j(
+    j: &Matrix2x3<f32>,
+    a: &Matrix3<f32>,
+    d_sigma2d: &Matrix2<f32>,
+) -> Matrix2x3<f32> {
     // Σ₂d = J A Jᵀ
     // Let G = dL/dΣ₂d. Then:
     // dL/dJ = (G + Gᵀ) J A   (when A is symmetric; if not, this still matches using A + Aᵀ)
@@ -18,7 +22,12 @@ fn covariance_2d_grad_j(j: &Matrix2x3<f32>, a: &Matrix3<f32>, d_sigma2d: &Matrix
     sym_g * j * a
 }
 
-fn perspective_jacobian_grad_point(point_cam: &Vector3<f32>, fx: f32, fy: f32, d_j: &Matrix2x3<f32>) -> Vector3<f32> {
+fn perspective_jacobian_grad_point(
+    point_cam: &Vector3<f32>,
+    fx: f32,
+    fy: f32,
+    d_j: &Matrix2x3<f32>,
+) -> Vector3<f32> {
     let x = point_cam.x;
     let y = point_cam.y;
     let z = point_cam.z;
@@ -176,21 +185,9 @@ pub fn project_covariance_2d_grad_rotation_vector_at_r0(
     let g_r = (g + g.transpose()) * gaussian_rotation_r0 * d;
 
     // Basis skew matrices for ω = (ωx, ωy, ωz).
-    let kx = Matrix3::new(
-        0.0, 0.0, 0.0,
-        0.0, 0.0, -1.0,
-        0.0, 1.0, 0.0,
-    );
-    let ky = Matrix3::new(
-        0.0, 0.0, 1.0,
-        0.0, 0.0, 0.0,
-        -1.0, 0.0, 0.0,
-    );
-    let kz = Matrix3::new(
-        0.0, -1.0, 0.0,
-        1.0, 0.0, 0.0,
-        0.0, 0.0, 0.0,
-    );
+    let kx = Matrix3::new(0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 1.0, 0.0);
+    let ky = Matrix3::new(0.0, 0.0, 1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0);
+    let kz = Matrix3::new(0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0);
 
     let d_r_x = kx * gaussian_rotation_r0;
     let d_r_y = ky * gaussian_rotation_r0;

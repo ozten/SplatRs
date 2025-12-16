@@ -7,10 +7,10 @@
 //! - Checkpoints (training state)
 
 mod colmap;
-mod ply;
 mod obj;
+mod ply;
 
 // Re-export public types and functions
-pub use colmap::{ColmapScene, load_colmap_scene, LoadError, Point3D, ImageInfo};
-pub use ply::{save_ply, load_ply, save_colmap_points_ply};
+pub use colmap::{load_colmap_scene, ColmapScene, ImageInfo, LoadError, Point3D};
 pub use obj::save_obj;
+pub use ply::{load_ply, save_colmap_points_ply, save_ply};

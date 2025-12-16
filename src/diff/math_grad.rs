@@ -18,4 +18,3 @@ pub fn sigmoid_grad_from_sigmoid(sigmoid_x: f32) -> f32 {
 pub fn inverse_sigmoid_grad(p: f32) -> f32 {
     1.0 / (p * (1.0 - p))
 }
-

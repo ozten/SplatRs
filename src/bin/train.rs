@@ -57,14 +57,19 @@ fn main() {
         learn_background,
     };
 
-    let out = sugar_rs::optim::trainer::train_single_image_color_only(&cfg).expect("Training failed");
+    let out =
+        sugar_rs::optim::trainer::train_single_image_color_only(&cfg).expect("Training failed");
     eprintln!("Training image: {}", out.image_name);
 
     std::fs::create_dir_all("test_output").ok();
     out.target.save("test_output/m7_target.png").ok();
     out.overlay.save("test_output/m7_overlay.png").ok();
     out.coverage.save("test_output/m7_coverage.png").ok();
+    out.t_final.save("test_output/m7_t_final.png").ok();
+    out.contrib_count
+        .save("test_output/m7_contrib_count.png")
+        .ok();
     out.initial.save("test_output/m7_initial.png").ok();
     out.final_img.save("test_output/m7_final.png").ok();
-    eprintln!("Saved `test_output/m7_target.png`, `test_output/m7_overlay.png`, `test_output/m7_coverage.png`, `test_output/m7_initial.png`, `test_output/m7_final.png`");
+    eprintln!("Saved `test_output/m7_target.png`, `test_output/m7_overlay.png`, `test_output/m7_coverage.png`, `test_output/m7_t_final.png`, `test_output/m7_contrib_count.png`, `test_output/m7_initial.png`, `test_output/m7_final.png`");
 }

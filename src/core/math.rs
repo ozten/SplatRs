@@ -60,8 +60,12 @@ pub fn perspective_jacobian(
     // J = | fx/z    0      -fx*x/z² |
     //     |  0     fy/z    -fy*y/z² |
     nalgebra::Matrix2x3::new(
-        fx * z_inv,  0.0,         -fx * x * z_inv_sq,
-        0.0,         fy * z_inv,  -fy * y * z_inv_sq,
+        fx * z_inv,
+        0.0,
+        -fx * x * z_inv_sq,
+        0.0,
+        fy * z_inv,
+        -fy * y * z_inv_sq,
     )
 }
 

@@ -23,7 +23,11 @@ use sugar_rs::render::FullRenderer;
 const CALIPERS_COLMAP_PATH: &str =
     "/Users/ozten/Projects/GuassianPlay/digital_calipers2_project/colmap_workspace/sparse/0";
 
-fn camera_with_pose(base_camera: &Camera, rotation: Matrix3<f32>, translation: Vector3<f32>) -> Camera {
+fn camera_with_pose(
+    base_camera: &Camera,
+    rotation: Matrix3<f32>,
+    translation: Vector3<f32>,
+) -> Camera {
     Camera::new(
         base_camera.fx,
         base_camera.fy,
@@ -91,7 +95,12 @@ fn test_m4_render_calipers_projected_covariance() {
         let camera_full = camera_with_pose(base_camera, rotation, image_info.translation);
         let camera = downsample_camera(&camera_full, 0.25);
 
-        println!("\nM4 render viewpoint {}/{}: {}", i + 1, num_renders, image_info.name);
+        println!(
+            "\nM4 render viewpoint {}/{}: {}",
+            i + 1,
+            num_renders,
+            image_info.name
+        );
         println!("  Resolution: {}x{}", camera.width, camera.height);
 
         let start = std::time::Instant::now();
@@ -100,7 +109,8 @@ fn test_m4_render_calipers_projected_covariance() {
         println!("  Rendered in {:.2}s", elapsed.as_secs_f32());
 
         let output_path = output_dir.join(format!("m4_render_{:02}.png", i));
-        img.save(&output_path).expect("Failed to save M4 render image");
+        img.save(&output_path)
+            .expect("Failed to save M4 render image");
         println!("  Saved to: {:?}", output_path);
     }
 
@@ -110,4 +120,3 @@ fn test_m4_render_calipers_projected_covariance() {
     println!("  - Splats that vary in apparent size with depth");
     println!("  - Coherent scene structure (should resemble the calipers)");
 }
-

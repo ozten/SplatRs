@@ -5,10 +5,10 @@
 //! 2. Depth-sorted alpha blending works
 //! 3. Rendered images have correct colors and depth ordering
 
+use std::path::PathBuf;
 use sugar_rs::core::{init_from_colmap_points, Camera};
 use sugar_rs::io::load_colmap_scene;
 use sugar_rs::render::SimpleRenderer;
-use std::path::PathBuf;
 
 /// Helper to create a camera with pose from scene data.
 fn create_camera_with_pose(
@@ -31,7 +31,9 @@ fn create_camera_with_pose(
 #[test]
 fn test_render_calipers_fixed_size() {
     // Paths
-    let colmap_path = PathBuf::from("/Users/ozten/Projects/GuassianPlay/digital_calipers2_project/colmap_workspace/sparse/0");
+    let colmap_path = PathBuf::from(
+        "/Users/ozten/Projects/GuassianPlay/digital_calipers2_project/colmap_workspace/sparse/0",
+    );
 
     // Skip test if path doesn't exist
     if !colmap_path.exists() {
@@ -40,11 +42,14 @@ fn test_render_calipers_fixed_size() {
     }
 
     // Load COLMAP scene
-    let scene = load_colmap_scene(&colmap_path)
-        .expect("Failed to load COLMAP scene");
+    let scene = load_colmap_scene(&colmap_path).expect("Failed to load COLMAP scene");
 
-    println!("Loaded scene: {} cameras, {} images, {} points",
-             scene.cameras.len(), scene.images.len(), scene.points.len());
+    println!(
+        "Loaded scene: {} cameras, {} images, {} points",
+        scene.cameras.len(),
+        scene.images.len(),
+        scene.points.len()
+    );
 
     // Initialize Gaussians from points
     let cloud = init_from_colmap_points(&scene.points);
@@ -69,7 +74,12 @@ fn test_render_calipers_fixed_size() {
         let rotation = image_info.rotation.to_rotation_matrix().into_inner();
         let camera = create_camera_with_pose(base_camera, rotation, image_info.translation);
 
-        println!("\nRendering viewpoint {}/{}: {}", i + 1, num_renders, image_info.name);
+        println!(
+            "\nRendering viewpoint {}/{}: {}",
+            i + 1,
+            num_renders,
+            image_info.name
+        );
 
         // Render
         let start = std::time::Instant::now();
@@ -95,8 +105,8 @@ fn test_render_calipers_fixed_size() {
 
 #[test]
 fn test_depth_ordering() {
-    use sugar_rs::io::Point3D;
     use nalgebra::{Matrix3, Vector3};
+    use sugar_rs::io::Point3D;
 
     // Create three points at different depths with different colors
     let points = vec![
@@ -124,9 +134,12 @@ fn test_depth_ordering() {
 
     // Simple camera looking down +Z
     let camera = Camera::new(
-        200.0, 200.0,
-        100.0, 100.0,
-        200, 200,
+        200.0,
+        200.0,
+        100.0,
+        100.0,
+        200,
+        200,
         Matrix3::identity(),
         Vector3::zeros(),
     );
@@ -138,10 +151,16 @@ fn test_depth_ordering() {
 
     // Center pixel should be green (near point occludes far point)
     let center = img.get_pixel(100, 100);
-    println!("Center pixel RGB: ({}, {}, {})", center[0], center[1], center[2]);
+    println!(
+        "Center pixel RGB: ({}, {}, {})",
+        center[0], center[1], center[2]
+    );
 
     // Should have strong green component
-    assert!(center[1] > 100, "Near green point should be visible at center");
+    assert!(
+        center[1] > 100,
+        "Near green point should be visible at center"
+    );
 
     // Save for visual inspection
     let output_dir = PathBuf::from("test_output");

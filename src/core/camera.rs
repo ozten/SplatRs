@@ -172,7 +172,12 @@ mod tests {
     #[test]
     fn test_point_behind_camera() {
         let cam = Camera::new(
-            100.0, 100.0, 50.0, 50.0, 100, 100,
+            100.0,
+            100.0,
+            50.0,
+            50.0,
+            100,
+            100,
             Matrix3::identity(),
             Vector3::zeros(),
         );

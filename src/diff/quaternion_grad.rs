@@ -104,4 +104,3 @@ pub fn quaternion_raw_to_matrix_grad(q_raw: &Vector4<f32>, d_r: &Matrix3<f32>) -
     let dot = q.dot(&grad_unit);
     (grad_unit - q * dot) / n
 }
-

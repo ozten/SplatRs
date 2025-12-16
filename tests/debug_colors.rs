@@ -1,9 +1,9 @@
 //! Debug test to track down color loss in M3 rendering
 
-use sugar_rs::core::{init_from_colmap_points, evaluate_sh};
-use sugar_rs::io::{load_colmap_scene, Point3D};
 use nalgebra::Vector3;
 use std::path::PathBuf;
+use sugar_rs::core::{evaluate_sh, init_from_colmap_points};
+use sugar_rs::io::{load_colmap_scene, Point3D};
 
 #[test]
 fn test_color_pipeline() {
@@ -11,7 +11,7 @@ fn test_color_pipeline() {
     let blue_point = Point3D {
         id: 0,
         position: Vector3::new(0.0, 0.0, 1.0),
-        color: [0, 0, 255],  // Pure blue
+        color: [0, 0, 255], // Pure blue
         error: 0.0,
     };
 
@@ -25,8 +25,10 @@ fn test_color_pipeline() {
     let view_dir = Vector3::new(0.0, 0.0, 1.0).normalize();
     let color_vec = evaluate_sh(&gaussian.sh_coeffs, &view_dir);
 
-    println!("Evaluated color (0-1): [{:.3}, {:.3}, {:.3}]",
-             color_vec.x, color_vec.y, color_vec.z);
+    println!(
+        "Evaluated color (0-1): [{:.3}, {:.3}, {:.3}]",
+        color_vec.x, color_vec.y, color_vec.z
+    );
 
     let color_u8 = [
         (color_vec.x * 255.0) as u8,
@@ -44,7 +46,9 @@ fn test_color_pipeline() {
 
 #[test]
 fn test_colmap_color_distribution() {
-    let colmap_path = PathBuf::from("/Users/ozten/Projects/GuassianPlay/digital_calipers2_project/colmap_workspace/sparse/0");
+    let colmap_path = PathBuf::from(
+        "/Users/ozten/Projects/GuassianPlay/digital_calipers2_project/colmap_workspace/sparse/0",
+    );
 
     if !colmap_path.exists() {
         println!("Skipping test - data not found");
@@ -86,29 +90,39 @@ fn test_colmap_color_distribution() {
     println!("  B: min={}, max={}, avg={}", min_b, max_b, sum_b / count);
 
     // Find some blue points (for the tape)
-    let blue_points: Vec<_> = scene.points.iter()
+    let blue_points: Vec<_> = scene
+        .points
+        .iter()
         .filter(|p| p.color[2] > 150 && p.color[2] > p.color[0] && p.color[2] > p.color[1])
         .take(5)
         .collect();
 
-    println!("\nFound {} blue-ish points (B>150, B>R, B>G):", blue_points.len());
+    println!(
+        "\nFound {} blue-ish points (B>150, B>R, B>G):",
+        blue_points.len()
+    );
     for (i, p) in blue_points.iter().enumerate() {
         println!("  Point {}: RGB = {:?}", i, p.color);
     }
 
     // Find VERY colorful points (high saturation)
-    let colorful_points: Vec<_> = scene.points.iter()
+    let colorful_points: Vec<_> = scene
+        .points
+        .iter()
         .filter(|p| {
             let r = p.color[0] as i32;
             let g = p.color[1] as i32;
             let b = p.color[2] as i32;
             let max_diff = (r - g).abs().max((r - b).abs()).max((g - b).abs());
-            max_diff > 50  // At least 50 difference between channels
+            max_diff > 50 // At least 50 difference between channels
         })
         .take(10)
         .collect();
 
-    println!("\nFound {} highly saturated points (channel diff >50):", colorful_points.len());
+    println!(
+        "\nFound {} highly saturated points (channel diff >50):",
+        colorful_points.len()
+    );
     for (i, p) in colorful_points.iter().enumerate() {
         println!("  Point {}: RGB = {:?}", i, p.color);
     }

@@ -5,20 +5,17 @@
 //! 2. 3D→2D projection math works
 //! 3. Projected points align with actual scene features
 
-use sugar_rs::io::{load_colmap_scene, ImageInfo};
-use sugar_rs::core::Camera;
 use image::{ImageBuffer, Rgb, RgbImage};
 use nalgebra::{Matrix3, Vector3};
 use std::path::PathBuf;
+use sugar_rs::core::Camera;
+use sugar_rs::io::{load_colmap_scene, ImageInfo};
 
 /// Create a Camera by combining intrinsics and extrinsics.
 ///
 /// Camera intrinsics come from cameras.bin.
 /// Camera extrinsics (pose) come from images.bin.
-fn create_camera_with_pose(
-    base_camera: &Camera,
-    image_info: &ImageInfo,
-) -> Camera {
+fn create_camera_with_pose(base_camera: &Camera, image_info: &ImageInfo) -> Camera {
     // Convert quaternion to rotation matrix
     let rotation = image_info.rotation.to_rotation_matrix().into_inner();
 
@@ -37,8 +34,11 @@ fn create_camera_with_pose(
 #[test]
 fn test_project_points_to_images() {
     // Paths
-    let colmap_path = PathBuf::from("/Users/ozten/Projects/GuassianPlay/digital_calipers2_project/colmap_workspace/sparse/0");
-    let images_dir = PathBuf::from("/Users/ozten/Projects/GuassianPlay/digital_calipers2_project/input");
+    let colmap_path = PathBuf::from(
+        "/Users/ozten/Projects/GuassianPlay/digital_calipers2_project/colmap_workspace/sparse/0",
+    );
+    let images_dir =
+        PathBuf::from("/Users/ozten/Projects/GuassianPlay/digital_calipers2_project/input");
 
     // Skip test if paths don't exist
     if !colmap_path.exists() || !images_dir.exists() {
@@ -47,11 +47,14 @@ fn test_project_points_to_images() {
     }
 
     // Load COLMAP scene
-    let scene = load_colmap_scene(&colmap_path)
-        .expect("Failed to load COLMAP scene");
+    let scene = load_colmap_scene(&colmap_path).expect("Failed to load COLMAP scene");
 
-    println!("Loaded scene: {} cameras, {} images, {} points",
-             scene.cameras.len(), scene.images.len(), scene.points.len());
+    println!(
+        "Loaded scene: {} cameras, {} images, {} points",
+        scene.cameras.len(),
+        scene.images.len(),
+        scene.points.len()
+    );
 
     // Create output directory
     let output_dir = PathBuf::from("test_output");
@@ -72,7 +75,12 @@ fn test_project_points_to_images() {
 
         // Load the input image
         let image_path = images_dir.join(&image_info.name);
-        println!("\nProcessing image {}/{}: {}", i + 1, num_test_images, image_info.name);
+        println!(
+            "\nProcessing image {}/{}: {}",
+            i + 1,
+            num_test_images,
+            image_info.name
+        );
 
         let mut img = if image_path.exists() {
             image::open(&image_path)
@@ -115,7 +123,11 @@ fn test_project_points_to_images() {
             }
         }
 
-        println!("  Points in frame: {}/{}", in_frame_count, scene.points.len());
+        println!(
+            "  Points in frame: {}/{}",
+            in_frame_count,
+            scene.points.len()
+        );
         println!("  Points drawn: {}", visible_count);
 
         // Save overlay image
@@ -132,9 +144,12 @@ fn test_project_points_to_images() {
 fn test_projection_math_simple() {
     // Simple test with known values
     let camera = Camera::new(
-        100.0, 100.0,  // fx, fy
-        50.0, 50.0,    // cx, cy
-        100, 100,      // width, height
+        100.0,
+        100.0, // fx, fy
+        50.0,
+        50.0, // cx, cy
+        100,
+        100, // width, height
         Matrix3::identity(),
         Vector3::zeros(),
     );
@@ -143,8 +158,10 @@ fn test_projection_math_simple() {
     let world_point = Vector3::new(1.0, 0.0, 2.0);
     let pixel = camera.world_to_pixel(&world_point).unwrap();
 
-    println!("Test projection: ({}, {}, {}) -> ({}, {})",
-             world_point.x, world_point.y, world_point.z, pixel.x, pixel.y);
+    println!(
+        "Test projection: ({}, {}, {}) -> ({}, {})",
+        world_point.x, world_point.y, world_point.z, pixel.x, pixel.y
+    );
 
     approx::assert_relative_eq!(pixel.x, 100.0, epsilon = 1e-4);
     approx::assert_relative_eq!(pixel.y, 50.0, epsilon = 1e-4);

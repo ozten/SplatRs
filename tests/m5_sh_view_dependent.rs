@@ -68,15 +68,23 @@ fn test_m5_sh_view_dependent_color_changes() {
 
     let left_path = output_dir.join("m5_sh_left.png");
     let right_path = output_dir.join("m5_sh_right.png");
-    img_left.save(&left_path).expect("Failed to save m5_sh_left.png");
-    img_right.save(&right_path).expect("Failed to save m5_sh_right.png");
+    img_left
+        .save(&left_path)
+        .expect("Failed to save m5_sh_left.png");
+    img_right
+        .save(&right_path)
+        .expect("Failed to save m5_sh_right.png");
 
     // Assert the red channel near the projected mean differs meaningfully.
     // (The mean shifts slightly because the cameras are translated in X.)
     let mean_left = cam_left.world_to_camera(&position);
     let mean_right = cam_right.world_to_camera(&position);
-    let px_left = cam_left.project(&mean_left).expect("Left camera projection failed");
-    let px_right = cam_right.project(&mean_right).expect("Right camera projection failed");
+    let px_left = cam_left
+        .project(&mean_left)
+        .expect("Left camera projection failed");
+    let px_right = cam_right
+        .project(&mean_right)
+        .expect("Right camera projection failed");
 
     let sample_x_left = (px_left.x.round() as i32).clamp(0, (width - 1) as i32) as u32;
     let sample_y_left = (px_left.y.round() as i32).clamp(0, (height - 1) as i32) as u32;
