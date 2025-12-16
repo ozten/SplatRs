@@ -11,3 +11,4 @@ pub mod sh_grad;
 pub mod math_grad;
 pub mod gaussian2d_grad;
 pub mod covariance_grad;
+pub mod quaternion_grad;

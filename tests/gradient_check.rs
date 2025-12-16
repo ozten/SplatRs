@@ -22,6 +22,7 @@ mod tests {
     use sugar_rs::diff::covariance_grad::{
         project_covariance_2d_grad_log_scale, project_covariance_2d_grad_rotation_vector_at_r0,
     };
+    use sugar_rs::diff::quaternion_grad::{quaternion_raw_to_matrix, quaternion_raw_to_matrix_grad};
 
     // These tests are NON-NEGOTIABLE - bugs in gradients cause silent failures.
     fn rel_err(a: f32, b: f32) -> f32 {
@@ -77,9 +78,71 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_quaternion_to_matrix_gradient() {
-        // TODO: Test quaternion → rotation matrix gradients
+        // Gradient check for raw quaternion (w,x,y,z) -> rotation matrix conversion.
+        //
+        // We parameterize with a raw 4-vector and normalize inside the function.
+        let mut rng = StdRng::seed_from_u64(0x0A76_A4D1_u64);
+        let tol = 5e-4f32;
+
+        for _ in 0..200 {
+            // Random non-zero quaternion raw parameters.
+            let mut q_raw = nalgebra::Vector4::new(
+                rng.gen_range(-1.0f32..1.0f32),
+                rng.gen_range(-1.0f32..1.0f32),
+                rng.gen_range(-1.0f32..1.0f32),
+                rng.gen_range(-1.0f32..1.0f32),
+            );
+            if q_raw.norm() < 1e-3 {
+                q_raw.x = 1.0;
+            }
+
+            // Upstream gradient dL/dR.
+            let d_r = nalgebra::Matrix3::new(
+                rng.gen_range(-1.0f32..1.0f32),
+                rng.gen_range(-1.0f32..1.0f32),
+                rng.gen_range(-1.0f32..1.0f32),
+                rng.gen_range(-1.0f32..1.0f32),
+                rng.gen_range(-1.0f32..1.0f32),
+                rng.gen_range(-1.0f32..1.0f32),
+                rng.gen_range(-1.0f32..1.0f32),
+                rng.gen_range(-1.0f32..1.0f32),
+                rng.gen_range(-1.0f32..1.0f32),
+            );
+
+            let ana = quaternion_raw_to_matrix_grad(&q_raw, &d_r);
+
+            // Scalar loss L = <d_r, R(q_raw)>
+            let loss = |q: &nalgebra::Vector4<f32>| -> f64 {
+                let r = quaternion_raw_to_matrix(q);
+                (r[(0, 0)] as f64) * (d_r[(0, 0)] as f64)
+                    + (r[(0, 1)] as f64) * (d_r[(0, 1)] as f64)
+                    + (r[(0, 2)] as f64) * (d_r[(0, 2)] as f64)
+                    + (r[(1, 0)] as f64) * (d_r[(1, 0)] as f64)
+                    + (r[(1, 1)] as f64) * (d_r[(1, 1)] as f64)
+                    + (r[(1, 2)] as f64) * (d_r[(1, 2)] as f64)
+                    + (r[(2, 0)] as f64) * (d_r[(2, 0)] as f64)
+                    + (r[(2, 1)] as f64) * (d_r[(2, 1)] as f64)
+                    + (r[(2, 2)] as f64) * (d_r[(2, 2)] as f64)
+            };
+
+            let eps = 1e-3f32;
+            for k in 0..4 {
+                let mut plus = q_raw;
+                let mut minus = q_raw;
+                plus[k] += eps;
+                minus[k] -= eps;
+
+                let num = ((loss(&plus) - loss(&minus)) / (2.0 * eps as f64)) as f32;
+                let got = ana[k];
+                let abs_err = (got - num).abs();
+                assert!(
+                    rel_err(got, num) < tol || abs_err < 5e-4,
+                    "quat->mat grad mismatch k={k}: num={num} ana={got} abs_err={abs_err} rel_err={}",
+                    rel_err(got, num)
+                );
+            }
+        }
     }
 
     #[test]
