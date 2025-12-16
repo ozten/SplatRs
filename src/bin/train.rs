@@ -17,6 +17,7 @@ fn main() {
     let mut downsample: f32 = 0.25;
     let mut max_gaussians: usize = 20_000;
     let mut image_index: usize = 0;
+    let mut log_interval: usize = 10;
     let mut learn_background: bool = true;
     let mut learn_opacity: bool = false;
     let mut learn_position: bool = false;
@@ -39,6 +40,7 @@ fn main() {
             "--downsample" => downsample = args.next().unwrap().parse().unwrap(),
             "--max-gaussians" => max_gaussians = args.next().unwrap().parse().unwrap(),
             "--image-index" => image_index = args.next().unwrap().parse().unwrap(),
+            "--log-interval" => log_interval = args.next().unwrap().parse().unwrap(),
             "--no-learn-bg" => learn_background = false,
             "--learn-opacity" => learn_opacity = true,
             "--learn-position" => learn_position = true,
@@ -62,10 +64,10 @@ fn main() {
             "--help" | "-h" => {
                 eprintln!("Usage:");
                 eprintln!("  # M7 (single-view / overfit)");
-                eprintln!("  sugar-train --scene <sparse/0> [--images <dir>] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--image-index I] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--learn-position] [--out-dir DIR]");
+                eprintln!("  sugar-train --scene <sparse/0> [--images <dir>] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--image-index I] [--log-interval N] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--learn-position] [--out-dir DIR]");
                 eprintln!();
                 eprintln!("  # M8 (multi-view)");
-                eprintln!("  sugar-train --multiview --scene <sparse/0> [--images <dir>] [--max-images N] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--train-fraction F] [--val-interval N] [--max-test-views N] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--learn-position] [--out-dir DIR]");
+                eprintln!("  sugar-train --multiview --scene <sparse/0> [--images <dir>] [--max-images N] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--train-fraction F] [--val-interval N] [--max-test-views N] [--log-interval N] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--learn-position] [--out-dir DIR]");
                 eprintln!();
                 eprintln!("  # Auto-detect paths");
                 eprintln!("  sugar-train [--multiview] --dataset-root <root> [--iters N] ...   (auto-detects sparse/0 + images/)");
@@ -111,6 +113,7 @@ fn main() {
             train_fraction,
             val_interval,
             max_test_views_for_metrics,
+            log_interval,
         };
 
         let out = sugar_rs::optim::trainer::train_multiview_color_only(&cfg)
@@ -140,6 +143,7 @@ fn main() {
             learn_opacity,
             learn_position,
             loss,
+            log_interval,
         };
 
         let out =

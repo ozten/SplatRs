@@ -40,12 +40,12 @@ M7 (single-image overfit, color-only):
 
 M8 (multi-view, color-only):
 
-- `cargo run --bin sugar-train -- --multiview --max-images 5 --loss l2 --dataset-root /Users/ozten/Projects/GuassianPlay/digital_calipers2_project --iters 2000 --lr 0.01 --downsample 0.25 --max-gaussians 20000 --train-fraction 0.8 --val-interval 100 --max-test-views 3 --out-dir test_output`
+- `cargo run --bin sugar-train -- --multiview --max-images 5 --max-gaussians 2000 --downsample 0.125 --iters 50 --val-interval 10 --max-test-views 1 --log-interval 1 --loss l2 --dataset-root /Users/ozten/Projects/GuassianPlay/digital_calipers2_project --out-dir test_output`
 
 M8 (multi-view, color + opacity):
 
-- `cargo run --bin sugar-train -- --multiview --max-images 5 --loss l1-dssim --learn-opacity --dataset-root /Users/ozten/Projects/GuassianPlay/digital_calipers2_project --iters 2000 --lr 0.01 --downsample 0.25 --max-gaussians 20000 --train-fraction 0.8 --val-interval 100 --max-test-views 3 --out-dir test_output`
+- `cargo run --bin sugar-train -- --multiview --max-images 5 --max-gaussians 2000 --downsample 0.125 --iters 200 --val-interval 20 --max-test-views 1 --log-interval 1 --loss l1-dssim --learn-opacity --lr 0.01 --dataset-root /Users/ozten/Projects/GuassianPlay/digital_calipers2_project --out-dir test_output`
 
 M8 (multi-view, color + opacity + position):
 
-- `cargo run --bin sugar-train -- --multiview --max-images 5 --loss l1-dssim --learn-opacity --learn-position --dataset-root /Users/ozten/Projects/GuassianPlay/digital_calipers2_project --iters 2000 --lr 0.002 --downsample 0.25 --max-gaussians 20000 --train-fraction 0.8 --val-interval 100 --max-test-views 3 --out-dir test_output`
+- `cargo run --bin sugar-train -- --multiview --max-images 5 --max-gaussians 2000 --downsample 0.125 --iters 200 --val-interval 20 --max-test-views 1 --log-interval 1 --loss l1-dssim --learn-opacity --learn-position --lr 0.002 --dataset-root /Users/ozten/Projects/GuassianPlay/digital_calipers2_project --out-dir test_output`

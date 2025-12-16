@@ -29,6 +29,7 @@ use nalgebra::{Matrix3, Vector3};
 use rand::seq::SliceRandom;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 pub struct TrainConfig {
     pub sparse_dir: PathBuf,
@@ -42,6 +43,8 @@ pub struct TrainConfig {
     pub learn_opacity: bool,
     pub loss: LossKind,
     pub learn_position: bool,
+    /// Print per-iteration timing every N iterations (0 disables).
+    pub log_interval: usize,
 }
 
 pub struct TrainOutputs {
@@ -199,6 +202,10 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
     );
 
     for iter in 0..cfg.iters {
+        let should_log =
+            cfg.log_interval > 0 && (iter == 0 || iter % cfg.log_interval == 0 || iter + 1 == cfg.iters);
+        let iter_start = if should_log { Some(Instant::now()) } else { None };
+
         // Write params back into gaussians.
         for (i, g) in gaussians.iter_mut().enumerate() {
             g.sh_coeffs[0][0] = params[i].x;
@@ -213,7 +220,18 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
         }
 
         // Forward (linear) and loss.
+        if should_log {
+            eprintln!(
+                "iter {iter:4} start  gaussians={}  res={}x{}",
+                gaussians.len(),
+                camera.width,
+                camera.height
+            );
+        }
+
+        let t0 = Instant::now();
         let rendered_linear = render_full_linear(&gaussians, &camera, &bg);
+        let t_forward = t0.elapsed();
         let (loss, d_image) = match cfg.loss {
             crate::optim::loss::LossKind::L2 => {
                 l2_image_loss_and_grad_weighted(&rendered_linear, &target_linear, &weights)
@@ -228,12 +246,15 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
         };
 
         // Backward: get dL/d(color_i) and dL/d(opacity_logit_i) per Gaussian.
+        let t1 = Instant::now();
         let (_img_u8, d_color, d_opacity_logits, d_positions, d_bg) =
             render_full_color_grads(&gaussians, &camera, &d_image, &bg);
+        let t_backward = t1.elapsed();
 
         // Convert dL/d(color) -> dL/d(SH0 coeff) using basis[0] (assuming clamp inactive).
         let grads: Vec<Vector3<f32>> = d_color.iter().map(|dc| dc * sh0_basis).collect();
 
+        let t2 = Instant::now();
         adam.step(&mut params, &grads);
         if cfg.learn_opacity {
             opacity_opt.step(&mut opacity_logits, &d_opacity_logits);
@@ -248,10 +269,16 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
             bg_opt.step(&mut bg_param, &bg_grad);
             bg = bg_param[0];
         }
+        let t_step = t2.elapsed();
 
-        if iter % 10 == 0 || iter + 1 == cfg.iters {
+        if should_log {
+            let total = iter_start.unwrap().elapsed();
             eprintln!(
-                "iter {iter:4}  loss={loss:.6}  bg=({:.3},{:.3},{:.3})",
+                "iter {iter:4} done   loss={loss:.6}  forward={:.2?} backward={:.2?} step={:.2?} total={:.2?}  bg=({:.3},{:.3},{:.3})",
+                t_forward,
+                t_backward,
+                t_step,
+                total,
                 bg.x, bg.y, bg.z
             );
         }
@@ -374,6 +401,8 @@ pub struct MultiViewTrainConfig {
     /// Limit how many held-out views are used for PSNR reporting.
     /// Use `0` to evaluate all test views (can be slow on large datasets).
     pub max_test_views_for_metrics: usize,
+    /// Print per-iteration timing every N iterations (0 disables).
+    pub log_interval: usize,
 }
 
 pub struct MultiViewTrainOutputs {
@@ -616,6 +645,10 @@ pub fn train_multiview_color_only(
     // Training loop: sample random views
     let mut train_loss = 0.0f32;
     for iter in 0..cfg.iters {
+        let should_log =
+            cfg.log_interval > 0 && (iter == 0 || iter % cfg.log_interval == 0 || iter + 1 == cfg.iters);
+        let iter_start = if should_log { Some(Instant::now()) } else { None };
+
         // Sample a random training view
         let train_idx = *train_indices
             .choose(&mut rng)
@@ -654,6 +687,17 @@ pub fn train_multiview_color_only(
         }
 
         // Coverage weighting (use current params)
+        if should_log {
+            eprintln!(
+                "iter {iter:4} start  view={}  gaussians={}  res={}x{}",
+                scene.images[train_idx].name,
+                gaussians.len(),
+                train_camera.width,
+                train_camera.height
+            );
+        }
+
+        let t0 = Instant::now();
         let coverage_bool = coverage_mask_bool(&gaussians, &train_camera);
         let weights: Vec<f32> = coverage_bool
             .iter()
@@ -677,14 +721,18 @@ pub fn train_multiview_color_only(
             ),
         };
         train_loss = loss; // Track most recent loss
+        let t_forward = t0.elapsed();
 
         // Backward
+        let t1 = Instant::now();
         let (_img_u8, d_color, d_opacity_logits, d_positions, d_bg) =
             render_full_color_grads(&gaussians, &train_camera, &d_image, &bg);
+        let t_backward = t1.elapsed();
 
         // Convert dL/d(color) -> dL/d(SH0 coeff)
         let grads: Vec<Vector3<f32>> = d_color.iter().map(|dc| dc * sh0_basis).collect();
 
+        let t2 = Instant::now();
         adam.step(&mut params, &grads);
         if cfg.learn_opacity {
             opacity_opt.step(&mut opacity_logits, &d_opacity_logits);
@@ -698,6 +746,7 @@ pub fn train_multiview_color_only(
             bg_opt.step(&mut bg_param, &bg_grad);
             bg = bg_param[0];
         }
+        let t_step = t2.elapsed();
 
         // Validation
         if (iter + 1) % cfg.val_interval == 0 || iter + 1 == cfg.iters {
@@ -737,6 +786,15 @@ pub fn train_multiview_color_only(
             eprintln!(
                 "iter {iter:4}  train_loss={loss:.6}  test_psnr={avg_test_psnr:.2} dB  bg=({:.3},{:.3},{:.3})",
                 bg.x, bg.y, bg.z
+            );
+        } else if should_log {
+            let total = iter_start.unwrap().elapsed();
+            eprintln!(
+                "iter {iter:4} done   train_loss={loss:.6}  forward={:.2?} backward={:.2?} step={:.2?} total={:.2?}",
+                t_forward,
+                t_backward,
+                t_step,
+                total
             );
         }
     }

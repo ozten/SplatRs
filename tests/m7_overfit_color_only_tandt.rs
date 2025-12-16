@@ -41,6 +41,7 @@ fn test_m7_overfit_color_only_tandt_train() {
         learn_opacity: false,
         loss: LossKind::L2,
         learn_position: false,
+        log_interval: 10,
     };
 
     let _out = train_single_image_color_only(&cfg).expect("Training failed");

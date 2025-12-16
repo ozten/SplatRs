@@ -35,6 +35,7 @@ fn test_m8_multiview_train_smoke_tandt() {
         train_fraction: 0.8,
         val_interval: 1000, // Only validates at the end (iters=5)
         max_test_views_for_metrics: 2,
+        log_interval: 1,
     };
 
     let result = train_multiview_color_only(&cfg).expect("Training failed");
@@ -100,6 +101,7 @@ fn test_m8_multiview_train_quality_tandt() {
         train_fraction: 0.8,
         val_interval: 50,
         max_test_views_for_metrics: 0, // Evaluate all held-out views
+        log_interval: 10,
     };
 
     let result = train_multiview_color_only(&cfg).expect("Training failed");
