@@ -198,14 +198,23 @@ pub fn render_full_color_grads(
     let prepared = prepare(&projected, gaussians, camera);
 
     let mut img = RgbImage::new(camera.width, camera.height);
-    let mut d_colors = vec![Vector3::<f32>::zeros(); gaussians.len()];
-    let mut d_opacity_logits = vec![0.0f32; gaussians.len()];
-    let mut d_mean_px = vec![Vector2::<f32>::zeros(); gaussians.len()];
-    let mut d_cov_2d = vec![Vector3::<f32>::zeros(); gaussians.len()]; // (xx, xy, yy)
-    let mut d_bg = Vector3::<f32>::zeros();
 
-    for py in 0..height {
-        for px in 0..width {
+    // Use parallel iteration for gradient computation (major speedup!)
+    use rayon::prelude::*;
+    use std::sync::Mutex;
+
+    let d_colors = Mutex::new(vec![Vector3::<f32>::zeros(); gaussians.len()]);
+    let d_opacity_logits = Mutex::new(vec![0.0f32; gaussians.len()]);
+    let d_mean_px = Mutex::new(vec![Vector2::<f32>::zeros(); gaussians.len()]);
+    let d_cov_2d = Mutex::new(vec![Vector3::<f32>::zeros(); gaussians.len()]);
+    let d_bg = Mutex::new(Vector3::<f32>::zeros());
+
+    // Parallel iteration over pixels
+    let pixels: Vec<(i32, i32)> = (0..height)
+        .flat_map(|py| (0..width).map(move |px| (px, py)))
+        .collect();
+
+    pixels.par_iter().for_each(|&(px, py)| {
             let pixel_x = px as f32 + 0.5;
             let pixel_y = py as f32 + 0.5;
 
@@ -262,7 +271,62 @@ pub fn render_full_color_grads(
             let forward = blend_forward_with_bg(&alphas, &colors, bg);
             let out = forward.out;
 
-            // Write output pixel (linear -> sRGB for viewing).
+            // Backward for this pixel: accumulate dL/d(color_i) only.
+            let upstream = &d_image[(py * width + px) as usize];
+            let grads = blend_backward_with_bg(&alphas, &colors, &forward, bg, upstream);
+
+            // Accumulate gradients (with mutex for thread safety)
+            {
+                let mut d_c = d_colors.lock().unwrap();
+                let mut d_o = d_opacity_logits.lock().unwrap();
+                let mut d_m = d_mean_px.lock().unwrap();
+                let mut d_cov = d_cov_2d.lock().unwrap();
+                let mut d_b = d_bg.lock().unwrap();
+
+                for (k, &gi) in indices.iter().enumerate() {
+                    d_c[gi] += grads.d_colors[k];
+                    d_o[gi] += grads.d_alphas[k] * d_alpha_d_logits[k];
+                    let d_weight = grads.d_alphas[k] * d_alpha_d_weights[k];
+                    d_m[gi] += d_weight_d_means[k] * d_weight;
+                    d_cov[gi] += d_weight_d_covs[k] * d_weight;
+                }
+                *d_b += grads.d_bg;
+            }
+    });
+
+    // Unwrap mutex-protected gradients
+    let d_colors = d_colors.into_inner().unwrap();
+    let d_opacity_logits = d_opacity_logits.into_inner().unwrap();
+    let d_mean_px = d_mean_px.into_inner().unwrap();
+    let d_cov_2d = d_cov_2d.into_inner().unwrap();
+    let d_bg = d_bg.into_inner().unwrap();
+
+    // Create output image (fast sequential render)
+    for py in 0..height {
+        for px in 0..width {
+            let pixel_x = px as f32 + 0.5;
+            let pixel_y = py as f32 + 0.5;
+
+            let mut alphas_img: Vec<f32> = Vec::new();
+            let mut colors_img: Vec<Vector3<f32>> = Vec::new();
+
+            for g in &prepared {
+                if px < g.min_x || px > g.max_x || py < g.min_y || py > g.max_y {
+                    continue;
+                }
+                let dx = pixel_x - g.mean_x;
+                let dy = pixel_y - g.mean_y;
+                let quad_form = g.inv_xx * dx * dx + 2.0 * g.inv_xy * dx * dy + g.inv_yy * dy * dy;
+                let weight = (-0.5 * quad_form).exp();
+                let alpha = (g.opacity * weight).min(0.99);
+                if alpha < 1e-4 {
+                    continue;
+                }
+                alphas_img.push(alpha);
+                colors_img.push(g.color);
+            }
+
+            let out = blend_forward_with_bg(&alphas_img, &colors_img, bg).out;
             img.put_pixel(
                 px as u32,
                 py as u32,
@@ -272,19 +336,6 @@ pub fn render_full_color_grads(
                     linear_f32_to_srgb_u8(out.z),
                 ]),
             );
-
-            // Backward for this pixel: accumulate dL/d(color_i) only.
-            let upstream = &d_image[(py * width + px) as usize];
-            let grads = blend_backward_with_bg(&alphas, &colors, &forward, bg, upstream);
-
-            for (k, &gi) in indices.iter().enumerate() {
-                d_colors[gi] += grads.d_colors[k];
-                d_opacity_logits[gi] += grads.d_alphas[k] * d_alpha_d_logits[k];
-                let d_weight = grads.d_alphas[k] * d_alpha_d_weights[k];
-                d_mean_px[gi] += d_weight_d_means[k] * d_weight;
-                d_cov_2d[gi] += d_weight_d_covs[k] * d_weight;
-            }
-            d_bg += grads.d_bg;
         }
     }
 
