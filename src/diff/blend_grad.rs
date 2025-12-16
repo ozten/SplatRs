@@ -41,9 +41,39 @@ pub fn blend_forward(alphas: &[f32], colors: &[Vector3<f32>]) -> BlendForward {
 }
 
 #[derive(Clone, Debug)]
+pub struct BlendForwardWithBg {
+    pub out: Vector3<f32>,
+    /// T_i for i=0..=N (length N+1)
+    pub transmittance: Vec<f32>,
+}
+
+/// Forward alpha compositing with a constant background color.
+///
+/// out = sum_i T_i * a_i * c_i + T_N * bg
+pub fn blend_forward_with_bg(
+    alphas: &[f32],
+    colors: &[Vector3<f32>],
+    bg: &Vector3<f32>,
+) -> BlendForwardWithBg {
+    let forward = blend_forward(alphas, colors);
+    let t_final = *forward.transmittance.last().unwrap_or(&1.0);
+    BlendForwardWithBg {
+        out: forward.out + t_final * bg,
+        transmittance: forward.transmittance,
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct BlendGrads {
     pub d_alphas: Vec<f32>,
     pub d_colors: Vec<Vector3<f32>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct BlendGradsWithBg {
+    pub d_alphas: Vec<f32>,
+    pub d_colors: Vec<Vector3<f32>>,
+    pub d_bg: Vector3<f32>,
 }
 
 /// Backward pass for alpha compositing.
@@ -111,3 +141,47 @@ pub fn blend_backward(
     BlendGrads { d_alphas, d_colors }
 }
 
+/// Backward pass for alpha compositing with background.
+pub fn blend_backward_with_bg(
+    alphas: &[f32],
+    colors: &[Vector3<f32>],
+    forward: &BlendForwardWithBg,
+    bg: &Vector3<f32>,
+    d_out: &Vector3<f32>,
+) -> BlendGradsWithBg {
+    assert_eq!(alphas.len(), colors.len());
+    assert_eq!(forward.transmittance.len(), alphas.len() + 1);
+
+    let n = alphas.len();
+    let mut d_alphas = vec![0.0f32; n];
+    let mut d_colors = vec![Vector3::<f32>::zeros(); n];
+
+    // Background gradient: out includes T_N * bg.
+    let t_final = *forward.transmittance.last().unwrap_or(&1.0);
+    let d_bg = *d_out * t_final;
+
+    // Initialize g_T_N from the bg term.
+    let mut g_t_next = d_out.dot(bg);
+
+    for i in (0..n).rev() {
+        let a_i = alphas[i];
+        let c_i = colors[i];
+        let t_i = forward.transmittance[i];
+
+        d_colors[i] = *d_out * (t_i * a_i);
+
+        let direct = d_out.dot(&(c_i * t_i));
+        let indirect = g_t_next * (-t_i);
+        d_alphas[i] = direct + indirect;
+
+        let g_t_i_from_out = d_out.dot(&(c_i * a_i));
+        let g_t_i_from_next = g_t_next * (1.0 - a_i);
+        g_t_next = g_t_i_from_out + g_t_i_from_next;
+    }
+
+    BlendGradsWithBg {
+        d_alphas,
+        d_colors,
+        d_bg,
+    }
+}
