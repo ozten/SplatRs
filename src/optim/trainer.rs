@@ -27,6 +27,7 @@ use crate::render::full_diff::{
 use image::RgbImage;
 use nalgebra::{Matrix3, Vector3};
 use rand::seq::SliceRandom;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 pub struct TrainConfig {
@@ -366,6 +367,8 @@ pub struct MultiViewTrainConfig {
     pub learn_opacity: bool,
     pub loss: LossKind,
     pub learn_position: bool,
+    /// If non-zero, only use the first N images from `images.bin` (for faster iteration).
+    pub max_images: usize,
     pub train_fraction: f32, // Fraction of images for training (rest for testing)
     pub val_interval: usize,  // Validate every N iterations
     /// Limit how many held-out views are used for PSNR reporting.
@@ -429,12 +432,24 @@ pub fn train_multiview_color_only(
         return Err(anyhow::anyhow!("val_interval must be > 0"));
     }
 
+    let available_images = if cfg.max_images == 0 {
+        scene.images.len()
+    } else {
+        cfg.max_images.min(scene.images.len())
+    };
+    if available_images < 2 {
+        return Err(anyhow::anyhow!(
+            "Need at least 2 images for multi-view training (max_images={})",
+            cfg.max_images
+        ));
+    }
+
     // Split images into train/test sets
-    let mut image_indices: Vec<usize> = (0..scene.images.len()).collect();
+    let mut image_indices: Vec<usize> = (0..available_images).collect();
     let mut rng = rand::thread_rng();
     image_indices.shuffle(&mut rng);
 
-    let num_train = ((scene.images.len() as f32) * cfg.train_fraction).max(1.0) as usize;
+    let num_train = ((available_images as f32) * cfg.train_fraction).max(1.0) as usize;
     let train_indices = &image_indices[..num_train];
     let test_indices = &image_indices[num_train..];
 
@@ -456,17 +471,60 @@ pub fn train_multiview_color_only(
         &test_indices[..cfg.max_test_views_for_metrics.min(test_indices.len())]
     };
 
+    #[derive(Clone)]
+    struct ViewData {
+        camera: Camera,
+        target_ds: RgbImage,
+        target_linear: Vec<Vector3<f32>>,
+    }
+
+    let mut view_cache: HashMap<usize, ViewData> = HashMap::new();
+    let should_preload_images = cfg.max_images != 0;
+    if should_preload_images {
+        for &idx in image_indices.iter() {
+            let image_info = &scene.images[idx];
+            let base_camera = scene
+                .cameras
+                .get(&image_info.camera_id)
+                .ok_or_else(|| anyhow::anyhow!("Camera {} not found", image_info.camera_id))?;
+            let rotation = image_info.rotation.to_rotation_matrix().into_inner();
+            let camera_full = camera_with_pose(base_camera, rotation, image_info.translation);
+            let camera = downsample_camera(&camera_full, cfg.downsample_factor);
+
+            let target = load_target_image(&cfg.images_dir, &image_info.name)?;
+            let target_ds = downsample_rgb_nearest(&target, camera.width, camera.height);
+            let target_linear = rgb8_to_linear_vec(&target_ds);
+
+            view_cache.insert(
+                idx,
+                ViewData {
+                    camera,
+                    target_ds,
+                    target_linear,
+                },
+            );
+        }
+        eprintln!(
+            "Preloaded {} images (max_images={})",
+            view_cache.len(),
+            cfg.max_images
+        );
+    }
+
     // Use first training view to initialize camera and Gaussians
     let first_train_idx = train_indices[0];
     let first_image_info = &scene.images[first_train_idx];
-    let base_camera = scene
-        .cameras
-        .get(&first_image_info.camera_id)
-        .ok_or_else(|| anyhow::anyhow!("Camera {} not found", first_image_info.camera_id))?;
-
-    let rotation = first_image_info.rotation.to_rotation_matrix().into_inner();
-    let camera_full = camera_with_pose(base_camera, rotation, first_image_info.translation);
-    let camera = downsample_camera(&camera_full, cfg.downsample_factor);
+    let camera = if let Some(v) = view_cache.get(&first_train_idx) {
+        v.camera.clone()
+    } else {
+        let base_camera = scene
+            .cameras
+            .get(&first_image_info.camera_id)
+            .ok_or_else(|| anyhow::anyhow!("Camera {} not found", first_image_info.camera_id))?;
+        let rotation = first_image_info.rotation.to_rotation_matrix().into_inner();
+        let camera_full = camera_with_pose(base_camera, rotation, first_image_info.translation);
+        downsample_camera(&camera_full, cfg.downsample_factor)
+    };
 
     // Initialize Gaussians from visible points (using first view for now)
     let cloud =
@@ -489,9 +547,13 @@ pub fn train_multiview_color_only(
     eprintln!("Initialized {} Gaussians", gaussians.len());
 
     // Initialize background color (using first view's mean)
-    let first_target = load_target_image(&cfg.images_dir, &first_image_info.name)?;
-    let first_target_ds = downsample_rgb_nearest(&first_target, camera.width, camera.height);
-    let first_target_linear = rgb8_to_linear_vec(&first_target_ds);
+    let first_target_linear = if let Some(v) = view_cache.get(&first_train_idx) {
+        v.target_linear.clone()
+    } else {
+        let first_target = load_target_image(&cfg.images_dir, &first_image_info.name)?;
+        let first_target_ds = downsample_rgb_nearest(&first_target, camera.width, camera.height);
+        rgb8_to_linear_vec(&first_target_ds)
+    };
 
     let mut bg = {
         let mut acc = Vector3::<f32>::zeros();
@@ -520,20 +582,27 @@ pub fn train_multiview_color_only(
     let initial_psnr = {
         let mut psnr_sum = 0.0f32;
         for &test_idx in test_indices_for_metrics {
-            let test_image_info = &scene.images[test_idx];
-            let test_base_camera = scene
-                .cameras
-                .get(&test_image_info.camera_id)
-                .ok_or_else(|| anyhow::anyhow!("Camera {} not found", test_image_info.camera_id))?;
-            let test_rotation = test_image_info.rotation.to_rotation_matrix().into_inner();
-            let test_camera_full =
-                camera_with_pose(test_base_camera, test_rotation, test_image_info.translation);
-            let test_camera = downsample_camera(&test_camera_full, cfg.downsample_factor);
+            let (test_camera, test_target_linear) = if let Some(v) = view_cache.get(&test_idx) {
+                (v.camera.clone(), v.target_linear.clone())
+            } else {
+                let test_image_info = &scene.images[test_idx];
+                let test_base_camera = scene
+                    .cameras
+                    .get(&test_image_info.camera_id)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("Camera {} not found", test_image_info.camera_id)
+                    })?;
+                let test_rotation = test_image_info.rotation.to_rotation_matrix().into_inner();
+                let test_camera_full =
+                    camera_with_pose(test_base_camera, test_rotation, test_image_info.translation);
+                let test_camera = downsample_camera(&test_camera_full, cfg.downsample_factor);
 
-            let test_target = load_target_image(&cfg.images_dir, &test_image_info.name)?;
-            let test_target_ds =
-                downsample_rgb_nearest(&test_target, test_camera.width, test_camera.height);
-            let test_target_linear = rgb8_to_linear_vec(&test_target_ds);
+                let test_target = load_target_image(&cfg.images_dir, &test_image_info.name)?;
+                let test_target_ds =
+                    downsample_rgb_nearest(&test_target, test_camera.width, test_camera.height);
+                let test_target_linear = rgb8_to_linear_vec(&test_target_ds);
+                (test_camera, test_target_linear)
+            };
 
             let rendered = render_full_linear(&gaussians, &test_camera, &bg);
             let psnr = compute_psnr(&rendered, &test_target_linear);
@@ -551,21 +620,25 @@ pub fn train_multiview_color_only(
         let train_idx = *train_indices
             .choose(&mut rng)
             .expect("train_indices is non-empty");
-        let train_image_info = &scene.images[train_idx];
-        let train_base_camera = scene
-            .cameras
-            .get(&train_image_info.camera_id)
-            .ok_or_else(|| anyhow::anyhow!("Camera {} not found", train_image_info.camera_id))?;
-        let train_rotation = train_image_info.rotation.to_rotation_matrix().into_inner();
-        let train_camera_full =
-            camera_with_pose(train_base_camera, train_rotation, train_image_info.translation);
-        let train_camera = downsample_camera(&train_camera_full, cfg.downsample_factor);
+        let (train_camera, train_target_linear) = if let Some(v) = view_cache.get(&train_idx) {
+            (v.camera.clone(), v.target_linear.clone())
+        } else {
+            let train_image_info = &scene.images[train_idx];
+            let train_base_camera = scene
+                .cameras
+                .get(&train_image_info.camera_id)
+                .ok_or_else(|| anyhow::anyhow!("Camera {} not found", train_image_info.camera_id))?;
+            let train_rotation = train_image_info.rotation.to_rotation_matrix().into_inner();
+            let train_camera_full =
+                camera_with_pose(train_base_camera, train_rotation, train_image_info.translation);
+            let train_camera = downsample_camera(&train_camera_full, cfg.downsample_factor);
 
-        // Load target image
-        let train_target = load_target_image(&cfg.images_dir, &train_image_info.name)?;
-        let train_target_ds =
-            downsample_rgb_nearest(&train_target, train_camera.width, train_camera.height);
-        let train_target_linear = rgb8_to_linear_vec(&train_target_ds);
+            let train_target = load_target_image(&cfg.images_dir, &train_image_info.name)?;
+            let train_target_ds =
+                downsample_rgb_nearest(&train_target, train_camera.width, train_camera.height);
+            let train_target_linear = rgb8_to_linear_vec(&train_target_ds);
+            (train_camera, train_target_linear)
+        };
 
         // Write params back into gaussians
         for (i, g) in gaussians.iter_mut().enumerate() {
@@ -630,25 +703,30 @@ pub fn train_multiview_color_only(
         if (iter + 1) % cfg.val_interval == 0 || iter + 1 == cfg.iters {
             let mut test_psnr_sum = 0.0f32;
             for &test_idx in test_indices_for_metrics {
-                let test_image_info = &scene.images[test_idx];
-                let test_base_camera = scene
-                    .cameras
-                    .get(&test_image_info.camera_id)
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("Camera {} not found", test_image_info.camera_id)
-                    })?;
-                let test_rotation = test_image_info.rotation.to_rotation_matrix().into_inner();
-                let test_camera_full = camera_with_pose(
-                    test_base_camera,
-                    test_rotation,
-                    test_image_info.translation,
-                );
-                let test_camera = downsample_camera(&test_camera_full, cfg.downsample_factor);
+                let (test_camera, test_target_linear) = if let Some(v) = view_cache.get(&test_idx) {
+                    (v.camera.clone(), v.target_linear.clone())
+                } else {
+                    let test_image_info = &scene.images[test_idx];
+                    let test_base_camera = scene
+                        .cameras
+                        .get(&test_image_info.camera_id)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("Camera {} not found", test_image_info.camera_id)
+                        })?;
+                    let test_rotation = test_image_info.rotation.to_rotation_matrix().into_inner();
+                    let test_camera_full = camera_with_pose(
+                        test_base_camera,
+                        test_rotation,
+                        test_image_info.translation,
+                    );
+                    let test_camera = downsample_camera(&test_camera_full, cfg.downsample_factor);
 
-                let test_target = load_target_image(&cfg.images_dir, &test_image_info.name)?;
-                let test_target_ds =
-                    downsample_rgb_nearest(&test_target, test_camera.width, test_camera.height);
-                let test_target_linear = rgb8_to_linear_vec(&test_target_ds);
+                    let test_target = load_target_image(&cfg.images_dir, &test_image_info.name)?;
+                    let test_target_ds =
+                        downsample_rgb_nearest(&test_target, test_camera.width, test_camera.height);
+                    let test_target_linear = rgb8_to_linear_vec(&test_target_ds);
+                    (test_camera, test_target_linear)
+                };
 
                 let rendered = render_full_linear(&gaussians, &test_camera, &bg);
                 let psnr = compute_psnr(&rendered, &test_target_linear);
@@ -681,20 +759,25 @@ pub fn train_multiview_color_only(
     }
 
     for (i, &test_idx) in test_indices_for_metrics.iter().enumerate() {
-        let test_image_info = &scene.images[test_idx];
-        let test_base_camera = scene
-            .cameras
-            .get(&test_image_info.camera_id)
-            .ok_or_else(|| anyhow::anyhow!("Camera {} not found", test_image_info.camera_id))?;
-        let test_rotation = test_image_info.rotation.to_rotation_matrix().into_inner();
-        let test_camera_full =
-            camera_with_pose(test_base_camera, test_rotation, test_image_info.translation);
-        let test_camera = downsample_camera(&test_camera_full, cfg.downsample_factor);
+        let (test_camera, test_target_ds, test_target_linear) = if let Some(v) = view_cache.get(&test_idx) {
+            (v.camera.clone(), v.target_ds.clone(), v.target_linear.clone())
+        } else {
+            let test_image_info = &scene.images[test_idx];
+            let test_base_camera = scene
+                .cameras
+                .get(&test_image_info.camera_id)
+                .ok_or_else(|| anyhow::anyhow!("Camera {} not found", test_image_info.camera_id))?;
+            let test_rotation = test_image_info.rotation.to_rotation_matrix().into_inner();
+            let test_camera_full =
+                camera_with_pose(test_base_camera, test_rotation, test_image_info.translation);
+            let test_camera = downsample_camera(&test_camera_full, cfg.downsample_factor);
 
-        let test_target = load_target_image(&cfg.images_dir, &test_image_info.name)?;
-        let test_target_ds =
-            downsample_rgb_nearest(&test_target, test_camera.width, test_camera.height);
-        let test_target_linear = rgb8_to_linear_vec(&test_target_ds);
+            let test_target = load_target_image(&cfg.images_dir, &test_image_info.name)?;
+            let test_target_ds =
+                downsample_rgb_nearest(&test_target, test_camera.width, test_camera.height);
+            let test_target_linear = rgb8_to_linear_vec(&test_target_ds);
+            (test_camera, test_target_ds, test_target_linear)
+        };
 
         let rendered = render_full_linear(&gaussians, &test_camera, &bg);
         let psnr = compute_psnr(&rendered, &test_target_linear);

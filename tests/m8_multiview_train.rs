@@ -31,6 +31,7 @@ fn test_m8_multiview_train_smoke_tandt() {
         learn_opacity: false,
         loss: LossKind::L2,
         learn_position: false,
+        max_images: 5,
         train_fraction: 0.8,
         val_interval: 1000, // Only validates at the end (iters=5)
         max_test_views_for_metrics: 2,
@@ -59,10 +60,10 @@ fn test_m8_multiview_train_smoke_tandt() {
     println!("\nSaved test_output/m8_test_view_rendered.png");
     println!("Saved test_output/m8_test_view_target.png");
 
-    // Verify basic quality metrics
+    // Verify basic sanity metrics (this is a smoke test; view count can be small when max_images is set).
     assert!(
-        result.num_train_views >= 10,
-        "Expected at least 10 training views"
+        result.num_train_views >= 2,
+        "Expected at least 2 training views"
     );
     assert!(
         result.num_test_views > 0,
@@ -95,6 +96,7 @@ fn test_m8_multiview_train_quality_tandt() {
         learn_opacity: false,
         loss: LossKind::L2,
         learn_position: false,
+        max_images: 0,
         train_fraction: 0.8,
         val_interval: 50,
         max_test_views_for_metrics: 0, // Evaluate all held-out views

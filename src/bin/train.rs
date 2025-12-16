@@ -26,6 +26,7 @@ fn main() {
     let mut train_fraction: f32 = 0.8;
     let mut val_interval: usize = 50;
     let mut max_test_views_for_metrics: usize = 0;
+    let mut max_images: usize = 0;
     let mut out_dir: std::path::PathBuf = std::path::PathBuf::from("test_output");
 
     while let Some(a) = args.next() {
@@ -56,6 +57,7 @@ fn main() {
             "--train-fraction" => train_fraction = args.next().unwrap().parse().unwrap(),
             "--val-interval" => val_interval = args.next().unwrap().parse().unwrap(),
             "--max-test-views" => max_test_views_for_metrics = args.next().unwrap().parse().unwrap(),
+            "--max-images" => max_images = args.next().unwrap().parse().unwrap(),
             "--out-dir" => out_dir = args.next().unwrap().into(),
             "--help" | "-h" => {
                 eprintln!("Usage:");
@@ -63,7 +65,7 @@ fn main() {
                 eprintln!("  sugar-train --scene <sparse/0> [--images <dir>] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--image-index I] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--learn-position] [--out-dir DIR]");
                 eprintln!();
                 eprintln!("  # M8 (multi-view)");
-                eprintln!("  sugar-train --multiview --scene <sparse/0> [--images <dir>] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--train-fraction F] [--val-interval N] [--max-test-views N] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--learn-position] [--out-dir DIR]");
+                eprintln!("  sugar-train --multiview --scene <sparse/0> [--images <dir>] [--max-images N] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--train-fraction F] [--val-interval N] [--max-test-views N] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--learn-position] [--out-dir DIR]");
                 eprintln!();
                 eprintln!("  # Auto-detect paths");
                 eprintln!("  sugar-train [--multiview] --dataset-root <root> [--iters N] ...   (auto-detects sparse/0 + images/)");
@@ -105,6 +107,7 @@ fn main() {
             learn_opacity,
             learn_position,
             loss,
+            max_images,
             train_fraction,
             val_interval,
             max_test_views_for_metrics,
