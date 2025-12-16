@@ -35,6 +35,17 @@ impl AdamF32 {
         }
     }
 
+    /// Reset moment estimates while keeping the global timestep.
+    ///
+    /// This is useful when the parameter vector is re-built (e.g. densification/pruning),
+    /// because any per-index mapping to momentum state becomes invalid.
+    pub fn reset_moments_keep_t(&mut self, len: usize) {
+        self.m.clear();
+        self.v.clear();
+        self.m.resize(len, 0.0);
+        self.v.resize(len, 0.0);
+    }
+
     pub fn step(&mut self, params: &mut [f32], grads: &[f32]) {
         assert_eq!(params.len(), grads.len());
         self.ensure_len(params.len());
@@ -91,6 +102,17 @@ impl AdamVec3 {
             // Don't reset t! Keep the current timestep for proper bias correction.
             // New parameters start with zero momentum, which is correct.
         }
+    }
+
+    /// Reset moment estimates while keeping the global timestep.
+    ///
+    /// This is useful when the parameter vector is re-built (e.g. densification/pruning),
+    /// because any per-index mapping to momentum state becomes invalid.
+    pub fn reset_moments_keep_t(&mut self, len: usize) {
+        self.m.clear();
+        self.v.clear();
+        self.m.resize(len, Vector3::zeros());
+        self.v.resize(len, Vector3::zeros());
     }
 
     pub fn step(&mut self, params: &mut [Vector3<f32>], grads: &[Vector3<f32>]) {

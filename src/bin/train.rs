@@ -29,6 +29,11 @@ fn main() {
     let mut max_test_views_for_metrics: usize = 0;
     let mut max_images: usize = 0;
     let mut out_dir: std::path::PathBuf = std::path::PathBuf::from("test_output");
+    let mut densify_interval: usize = 0;
+    let mut densify_max_gaussians: usize = 0;
+    let mut densify_grad_threshold: f32 = 0.1;
+    let mut prune_opacity_threshold: f32 = 0.01;
+    let mut split_sigma_threshold: f32 = 0.05;
 
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -61,13 +66,18 @@ fn main() {
             "--max-test-views" => max_test_views_for_metrics = args.next().unwrap().parse().unwrap(),
             "--max-images" => max_images = args.next().unwrap().parse().unwrap(),
             "--out-dir" => out_dir = args.next().unwrap().into(),
+            "--densify-interval" => densify_interval = args.next().unwrap().parse().unwrap(),
+            "--densify-max-gaussians" => densify_max_gaussians = args.next().unwrap().parse().unwrap(),
+            "--densify-grad-threshold" => densify_grad_threshold = args.next().unwrap().parse().unwrap(),
+            "--prune-opacity-threshold" => prune_opacity_threshold = args.next().unwrap().parse().unwrap(),
+            "--split-sigma-threshold" => split_sigma_threshold = args.next().unwrap().parse().unwrap(),
             "--help" | "-h" => {
                 eprintln!("Usage:");
                 eprintln!("  # M7 (single-view / overfit)");
                 eprintln!("  sugar-train --scene <sparse/0> [--images <dir>] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--image-index I] [--log-interval N] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--learn-position] [--out-dir DIR]");
                 eprintln!();
                 eprintln!("  # M8 (multi-view)");
-                eprintln!("  sugar-train --multiview --scene <sparse/0> [--images <dir>] [--max-images N] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--train-fraction F] [--val-interval N] [--max-test-views N] [--log-interval N] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--learn-position] [--out-dir DIR]");
+                eprintln!("  sugar-train --multiview --scene <sparse/0> [--images <dir>] [--max-images N] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--train-fraction F] [--val-interval N] [--max-test-views N] [--log-interval N] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--learn-position] [--densify-interval N] [--densify-max-gaussians N] [--densify-grad-threshold F] [--prune-opacity-threshold F] [--split-sigma-threshold F] [--out-dir DIR]");
                 eprintln!();
                 eprintln!("  # Auto-detect paths");
                 eprintln!("  sugar-train [--multiview] --dataset-root <root> [--iters N] ...   (auto-detects sparse/0 + images/)");
@@ -114,6 +124,11 @@ fn main() {
             val_interval,
             max_test_views_for_metrics,
             log_interval,
+            densify_interval,
+            densify_max_gaussians,
+            densify_grad_threshold,
+            prune_opacity_threshold,
+            split_sigma_threshold,
         };
 
         let out = sugar_rs::optim::trainer::train_multiview_color_only(&cfg)

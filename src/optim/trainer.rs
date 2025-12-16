@@ -19,6 +19,7 @@ use crate::optim::adam::{AdamF32, AdamVec3};
 use crate::optim::loss::{
     l1_dssim_image_loss_and_grad_weighted, l2_image_loss_and_grad_weighted, LossKind,
 };
+use crate::core::sigmoid;
 use crate::render::full_diff::{
     coverage_mask_bool, debug_contrib_count, debug_coverage_mask, debug_final_transmittance,
     debug_overlay_means, downsample_rgb_nearest, linear_vec_to_rgb8_img, render_full_color_grads,
@@ -26,6 +27,7 @@ use crate::render::full_diff::{
 };
 use image::RgbImage;
 use nalgebra::{Matrix3, Vector3};
+use rand::Rng;
 use rand::seq::SliceRandom;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -211,12 +213,10 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
             g.sh_coeffs[0][0] = params[i].x;
             g.sh_coeffs[0][1] = params[i].y;
             g.sh_coeffs[0][2] = params[i].z;
-            if cfg.learn_opacity {
-                g.opacity = opacity_logits[i].clamp(-10.0, 10.0);
-            }
-            if cfg.learn_position {
-                g.position = positions[i];
-            }
+            // Even when we don't learn a parameter, keep the struct in sync with the
+            // (fixed) parameter vectors so downstream logic has one source of truth.
+            g.opacity = opacity_logits[i].clamp(-10.0, 10.0);
+            g.position = positions[i];
         }
 
         // Forward (linear) and loss.
@@ -290,12 +290,8 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
             g.sh_coeffs[0][0] = params[i].x;
             g.sh_coeffs[0][1] = params[i].y;
             g.sh_coeffs[0][2] = params[i].z;
-            if cfg.learn_opacity {
-                g.opacity = opacity_logits[i].clamp(-10.0, 10.0);
-            }
-            if cfg.learn_position {
-                g.position = positions[i];
-            }
+            g.opacity = opacity_logits[i].clamp(-10.0, 10.0);
+            g.position = positions[i];
         }
         linear_vec_to_rgb8_img(
             &render_full_linear(&gaussians, &camera, &bg),
@@ -403,6 +399,16 @@ pub struct MultiViewTrainConfig {
     pub max_test_views_for_metrics: usize,
     /// Print per-iteration timing every N iterations (0 disables).
     pub log_interval: usize,
+    /// Every N iterations, run densification (0 disables).
+    pub densify_interval: usize,
+    /// Maximum gaussian count after densification (0 disables cap).
+    pub densify_max_gaussians: usize,
+    /// Split/clone if average position-grad norm exceeds this threshold.
+    pub densify_grad_threshold: f32,
+    /// If opacity (sigmoid) is below this, prune the gaussian.
+    pub prune_opacity_threshold: f32,
+    /// If average world sigma (exp(log_scale)) is above this, SPLIT; otherwise CLONE.
+    pub split_sigma_threshold: f32,
 }
 
 pub struct MultiViewTrainOutputs {
@@ -438,6 +444,209 @@ fn compute_psnr(rendered: &[Vector3<f32>], target: &[Vector3<f32>]) -> f32 {
     // PSNR = 10 * log10(MAX^2 / MSE)
     // For linear RGB in [0, 1], MAX = 1
     10.0 * (1.0 / mse).log10()
+}
+
+fn mean_world_sigma(g: &Gaussian) -> f32 {
+    let s = g.actual_scale();
+    (s.x + s.y + s.z) / 3.0
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct DensifyStats {
+    before: usize,
+    after: usize,
+    kept: usize,
+    pruned: usize,
+    split: usize,
+    cloned: usize,
+    cap_hit: bool,
+    grad_p50: f32,
+    grad_p90: f32,
+}
+
+fn percentile(sorted: &[f32], p: f32) -> f32 {
+    if sorted.is_empty() {
+        return f32::NAN;
+    }
+    let idx = ((sorted.len() - 1) as f32 * p.clamp(0.0, 1.0)).round() as usize;
+    sorted[idx]
+}
+
+fn logit_from_alpha(alpha: f32) -> f32 {
+    let a = alpha.clamp(1e-6, 1.0 - 1e-6);
+    (a / (1.0 - a)).ln()
+}
+
+fn split_opacity_logit(parent_logit: f32, children: usize) -> f32 {
+    if children <= 1 {
+        return parent_logit;
+    }
+    let a_parent = sigmoid(parent_logit);
+    // Preserve total alpha under the approximation:
+    // alpha_total = 1 - Π_k (1 - alpha_k), with all children equal.
+    // Solve for alpha_child:
+    // 1 - (1 - alpha_child)^children = alpha_parent
+    // => alpha_child = 1 - (1 - alpha_parent)^(1/children)
+    let a_child = 1.0 - (1.0 - a_parent).powf(1.0 / (children as f32));
+    logit_from_alpha(a_child)
+}
+
+fn densify_and_prune<R: Rng + ?Sized>(
+    gaussians: &mut Vec<Gaussian>,
+    params: &mut Vec<Vector3<f32>>,
+    opacity_logits: &mut Vec<f32>,
+    positions: &mut Vec<Vector3<f32>>,
+    grad_accum: &mut Vec<f32>,
+    rng: &mut R,
+    iters_in_window: usize,
+    max_gaussians: usize,
+    grad_threshold: f32,
+    prune_opacity_threshold: f32,
+    split_sigma_threshold: f32,
+) -> DensifyStats {
+    let before = gaussians.len();
+    if iters_in_window == 0 || gaussians.is_empty() {
+        return DensifyStats {
+            before,
+            after: before,
+            kept: before,
+            pruned: 0,
+            split: 0,
+            cloned: 0,
+            cap_hit: false,
+            grad_p50: f32::NAN,
+            grad_p90: f32::NAN,
+        };
+    }
+
+    let cap = if max_gaussians == 0 {
+        usize::MAX
+    } else {
+        max_gaussians
+    };
+    // Never drop existing Gaussians just because the post-densify cap is smaller than current size.
+    // The cap is intended to limit *additions* during densification.
+    let cap = cap.max(before);
+
+    let mut new_gaussians = Vec::with_capacity(gaussians.len());
+    let mut new_params = Vec::with_capacity(params.len());
+    let mut new_opacity_logits = Vec::with_capacity(opacity_logits.len());
+    let mut new_positions = Vec::with_capacity(positions.len());
+    let mut new_grad_accum = Vec::with_capacity(grad_accum.len());
+
+    let mut kept = 0usize;
+    let mut pruned = 0usize;
+    let mut split = 0usize;
+    let mut cloned = 0usize;
+    let mut cap_hit = false;
+    let mut kept_avg_grads: Vec<f32> = Vec::new();
+
+    for i in 0..gaussians.len() {
+        let opacity = sigmoid(opacity_logits[i]);
+        if opacity < prune_opacity_threshold {
+            pruned += 1;
+            continue;
+        }
+
+        let avg_grad = grad_accum[i] / (iters_in_window as f32);
+        kept_avg_grads.push(avg_grad);
+
+        // Always keep the original (but ensure it matches our parameter vectors).
+        let keep_idx = new_gaussians.len();
+        let mut keep = gaussians[i].clone();
+        keep.sh_coeffs[0][0] = params[i].x;
+        keep.sh_coeffs[0][1] = params[i].y;
+        keep.sh_coeffs[0][2] = params[i].z;
+        keep.opacity = opacity_logits[i].clamp(-10.0, 10.0);
+        keep.position = positions[i];
+        new_gaussians.push(keep);
+        new_params.push(params[i]);
+        new_opacity_logits.push(opacity_logits[i]);
+        new_positions.push(positions[i]);
+        new_grad_accum.push(0.0);
+        kept += 1;
+
+        let can_add = new_gaussians.len() < cap;
+        if !(avg_grad > grad_threshold && can_add) {
+            if avg_grad > grad_threshold && !can_add {
+                cap_hit = true;
+            }
+            continue;
+        }
+
+        let sigma = mean_world_sigma(&gaussians[i]);
+        let jitter = (0.5 * sigma).clamp(1e-4, 5e-3);
+        let mut dir = Vector3::new(
+            rng.gen_range(-1.0f32..1.0f32),
+            rng.gen_range(-1.0f32..1.0f32),
+            rng.gen_range(-1.0f32..1.0f32),
+        );
+        if dir.norm_squared() < 1e-12 {
+            dir = Vector3::new(1.0, 0.0, 0.0);
+        } else {
+            dir = dir.normalize();
+        }
+        let new_pos = positions[i] + dir * jitter;
+
+        // We are turning 1 Gaussian into 2; split opacity between them so the render doesn't
+        // abruptly get more opaque just because we duplicated a primitive.
+        let child_opacity_logit = split_opacity_logit(opacity_logits[i], 2).clamp(-10.0, 10.0);
+        new_opacity_logits[keep_idx] = child_opacity_logit;
+        new_gaussians[keep_idx].opacity = child_opacity_logit;
+
+        if sigma > split_sigma_threshold {
+            // SPLIT: add a second gaussian, slightly offset and slightly smaller.
+            let mut g2 = gaussians[i].clone();
+            g2.sh_coeffs[0][0] = params[i].x;
+            g2.sh_coeffs[0][1] = params[i].y;
+            g2.sh_coeffs[0][2] = params[i].z;
+            g2.opacity = child_opacity_logit;
+            g2.position = new_pos;
+            g2.scale = g2.scale - Vector3::new(0.2, 0.2, 0.2);
+            new_gaussians.push(g2);
+            new_params.push(params[i]);
+            new_opacity_logits.push(child_opacity_logit);
+            new_positions.push(new_pos);
+            new_grad_accum.push(0.0);
+            split += 1;
+        } else {
+            // CLONE: same scale, slight offset.
+            let mut g2 = gaussians[i].clone();
+            g2.sh_coeffs[0][0] = params[i].x;
+            g2.sh_coeffs[0][1] = params[i].y;
+            g2.sh_coeffs[0][2] = params[i].z;
+            g2.opacity = child_opacity_logit;
+            g2.position = new_pos;
+            new_gaussians.push(g2);
+            new_params.push(params[i]);
+            new_opacity_logits.push(child_opacity_logit);
+            new_positions.push(new_pos);
+            new_grad_accum.push(0.0);
+            cloned += 1;
+        }
+    }
+
+    *gaussians = new_gaussians;
+    *params = new_params;
+    *opacity_logits = new_opacity_logits;
+    *positions = new_positions;
+    *grad_accum = new_grad_accum;
+
+    kept_avg_grads.sort_by(|a, b| a.total_cmp(b));
+    let grad_p50 = percentile(&kept_avg_grads, 0.50);
+    let grad_p90 = percentile(&kept_avg_grads, 0.90);
+
+    DensifyStats {
+        before,
+        after: gaussians.len(),
+        kept,
+        pruned,
+        split,
+        cloned,
+        cap_hit,
+        grad_p50,
+        grad_p90,
+    }
 }
 
 /// M8: Train on multiple views with train/test split.
@@ -606,6 +815,8 @@ pub fn train_multiview_color_only(
         .collect();
     let mut opacity_logits: Vec<f32> = gaussians.iter().map(|g| g.opacity).collect();
     let mut positions: Vec<Vector3<f32>> = gaussians.iter().map(|g| g.position).collect();
+    let mut grad_accum_pos_norm: Vec<f32> = vec![0.0; gaussians.len()];
+    let mut grad_window_iters: usize = 0;
 
     // Compute initial PSNR on test views
     let initial_psnr = {
@@ -678,12 +889,8 @@ pub fn train_multiview_color_only(
             g.sh_coeffs[0][0] = params[i].x;
             g.sh_coeffs[0][1] = params[i].y;
             g.sh_coeffs[0][2] = params[i].z;
-            if cfg.learn_opacity {
-                g.opacity = opacity_logits[i].clamp(-10.0, 10.0);
-            }
-            if cfg.learn_position {
-                g.position = positions[i];
-            }
+            g.opacity = opacity_logits[i].clamp(-10.0, 10.0);
+            g.position = positions[i];
         }
 
         // Coverage weighting (use current params)
@@ -748,6 +955,16 @@ pub fn train_multiview_color_only(
         }
         let t_step = t2.elapsed();
 
+        if cfg.densify_interval > 0 {
+            if grad_accum_pos_norm.len() != d_positions.len() {
+                grad_accum_pos_norm.resize(d_positions.len(), 0.0);
+            }
+            for (i, dp) in d_positions.iter().enumerate() {
+                grad_accum_pos_norm[i] += dp.norm();
+            }
+            grad_window_iters += 1;
+        }
+
         // Validation
         if (iter + 1) % cfg.val_interval == 0 || iter + 1 == cfg.iters {
             let mut test_psnr_sum = 0.0f32;
@@ -797,6 +1014,48 @@ pub fn train_multiview_color_only(
                 total
             );
         }
+
+        // Densify/prune after validation (so reported PSNR reflects the trained state),
+        // and never on the last iteration (so new Gaussians get at least one update step).
+        if cfg.densify_interval > 0
+            && grad_window_iters > 0
+            && (iter + 1) % cfg.densify_interval == 0
+            && (iter + 1) < cfg.iters
+        {
+            let before = gaussians.len();
+            let stats = densify_and_prune(
+                &mut gaussians,
+                &mut params,
+                &mut opacity_logits,
+                &mut positions,
+                &mut grad_accum_pos_norm,
+                &mut rng,
+                grad_window_iters,
+                cfg.densify_max_gaussians,
+                cfg.densify_grad_threshold,
+                cfg.prune_opacity_threshold,
+                cfg.split_sigma_threshold,
+            );
+            // The parameter arrays have been re-built; any per-index optimizer state is invalid.
+            // Reset moments but keep timesteps to avoid bias-correction spikes.
+            adam.reset_moments_keep_t(params.len());
+            opacity_opt.reset_moments_keep_t(opacity_logits.len());
+            position_opt.reset_moments_keep_t(positions.len());
+            grad_window_iters = 0;
+            eprintln!(
+                "densify @iter {}: gaussians {} -> {} (kept={} pruned={} split={} cloned={} cap_hit={} grad_p50={:.4} grad_p90={:.4})",
+                iter + 1,
+                before,
+                gaussians.len(),
+                stats.kept,
+                stats.pruned,
+                stats.split,
+                stats.cloned,
+                stats.cap_hit,
+                stats.grad_p50,
+                stats.grad_p90
+            );
+        }
     }
 
     // Final validation
@@ -808,12 +1067,8 @@ pub fn train_multiview_color_only(
         g.sh_coeffs[0][0] = params[i].x;
         g.sh_coeffs[0][1] = params[i].y;
         g.sh_coeffs[0][2] = params[i].z;
-        if cfg.learn_opacity {
-            g.opacity = opacity_logits[i].clamp(-10.0, 10.0);
-        }
-        if cfg.learn_position {
-            g.position = positions[i];
-        }
+        g.opacity = opacity_logits[i].clamp(-10.0, 10.0);
+        g.position = positions[i];
     }
 
     for (i, &test_idx) in test_indices_for_metrics.iter().enumerate() {
@@ -868,4 +1123,91 @@ pub fn train_multiview_color_only(
         test_view_sample: test_view_sample.unwrap(),
         test_view_target: test_view_target.unwrap(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use approx::assert_relative_eq;
+    use nalgebra::{UnitQuaternion, Vector3};
+    use rand::{SeedableRng, rngs::StdRng};
+
+    fn empty_sh() -> [[f32; 3]; 16] {
+        [[0.0; 3]; 16]
+    }
+
+    #[test]
+    fn densify_prunes_and_splits() {
+        let g1 = Gaussian::new(
+            Vector3::new(0.0, 0.0, 1.0),
+            Vector3::new(0.1f32.ln(), 0.1f32.ln(), 0.1f32.ln()),
+            UnitQuaternion::identity(),
+            2.0, // sigmoid ~ 0.88
+            empty_sh(),
+        );
+        let g2 = Gaussian::new(
+            Vector3::new(1.0, 0.0, 1.0),
+            Vector3::new(0.1f32.ln(), 0.1f32.ln(), 0.1f32.ln()),
+            UnitQuaternion::identity(),
+            -10.0, // sigmoid ~ 0.000045 => pruned
+            empty_sh(),
+        );
+
+        let mut gaussians = vec![g1.clone(), g2];
+        let mut params = vec![Vector3::new(0.1, 0.2, 0.3), Vector3::new(0.4, 0.5, 0.6)];
+        let mut opacity_logits = vec![2.0, -10.0];
+        let mut positions = vec![g1.position, Vector3::new(1.0, 0.0, 1.0)];
+        let mut grad_accum = vec![2.0, 0.0]; // avg_grad=0.2 if window=10
+
+        let mut rng = StdRng::seed_from_u64(123);
+        let stats = densify_and_prune(
+            &mut gaussians,
+            &mut params,
+            &mut opacity_logits,
+            &mut positions,
+            &mut grad_accum,
+            &mut rng,
+            10,
+            10,
+            0.1,
+            0.01,
+            0.05,
+        );
+
+        // g2 pruned, and g1 split -> two gaussians remain.
+        assert_eq!(gaussians.len(), 2);
+        assert_eq!(params.len(), 2);
+        assert_eq!(opacity_logits.len(), 2);
+        assert_eq!(positions.len(), 2);
+        assert_eq!(grad_accum, vec![0.0, 0.0]);
+
+        // First is the original, second is the split copy.
+        assert_eq!(gaussians[0].position, g1.position);
+        assert_ne!(gaussians[1].position, g1.position);
+        assert!(gaussians[1].scale.x < g1.scale.x);
+        assert!(gaussians[1].scale.y < g1.scale.y);
+        assert!(gaussians[1].scale.z < g1.scale.z);
+
+        // Opacity is split across children to preserve total alpha.
+        let expected_child_logit = split_opacity_logit(2.0, 2).clamp(-10.0, 10.0);
+        assert_relative_eq!(gaussians[0].opacity, expected_child_logit, epsilon = 1e-6);
+        assert_relative_eq!(gaussians[1].opacity, expected_child_logit, epsilon = 1e-6);
+        assert_relative_eq!(opacity_logits[0], expected_child_logit, epsilon = 1e-6);
+        assert_relative_eq!(opacity_logits[1], expected_child_logit, epsilon = 1e-6);
+
+        let a_parent = sigmoid(2.0);
+        let a_child = sigmoid(expected_child_logit);
+        let a_total = 1.0 - (1.0 - a_child).powi(2);
+        assert_relative_eq!(a_total, a_parent, epsilon = 1e-5);
+
+        assert_eq!(stats.before, 2);
+        assert_eq!(stats.after, 2);
+        assert_eq!(stats.kept, 1);
+        assert_eq!(stats.pruned, 1);
+        assert_eq!(stats.split, 1);
+        assert_eq!(stats.cloned, 0);
+        assert!(!stats.cap_hit);
+        assert_relative_eq!(stats.grad_p50, 0.2, epsilon = 1e-6);
+        assert_relative_eq!(stats.grad_p90, 0.2, epsilon = 1e-6);
+    }
 }
