@@ -219,6 +219,72 @@ impl AdamSo3 {
     }
 }
 
+pub struct AdamSh16 {
+    pub lr: f32,
+    pub beta1: f32,
+    pub beta2: f32,
+    pub eps: f32,
+    t: u32,
+    m: Vec<[Vector3<f32>; 16]>,
+    v: Vec<[Vector3<f32>; 16]>,
+}
+
+impl AdamSh16 {
+    pub fn new(lr: f32, beta1: f32, beta2: f32, eps: f32) -> Self {
+        Self {
+            lr,
+            beta1,
+            beta2,
+            eps,
+            t: 0,
+            m: Vec::new(),
+            v: Vec::new(),
+        }
+    }
+
+    pub fn ensure_len(&mut self, len: usize) {
+        if self.m.len() != len {
+            self.m.resize(len, [Vector3::zeros(); 16]);
+            self.v.resize(len, [Vector3::zeros(); 16]);
+        }
+    }
+
+    pub fn reset_moments_keep_t(&mut self, len: usize) {
+        self.m.clear();
+        self.v.clear();
+        self.m.resize(len, [Vector3::zeros(); 16]);
+        self.v.resize(len, [Vector3::zeros(); 16]);
+    }
+
+    pub fn step(&mut self, params: &mut [[Vector3<f32>; 16]], grads: &[[Vector3<f32>; 16]]) {
+        assert_eq!(params.len(), grads.len());
+        self.ensure_len(params.len());
+
+        self.t += 1;
+        let t = self.t as f32;
+        let b1 = self.beta1;
+        let b2 = self.beta2;
+
+        let bias1 = 1.0 - b1.powf(t);
+        let bias2 = 1.0 - b2.powf(t);
+
+        for i in 0..params.len() {
+            for k in 0..16 {
+                let g = grads[i][k];
+                self.m[i][k] = self.m[i][k] * b1 + g * (1.0 - b1);
+                self.v[i][k] = self.v[i][k] * b2 + g.component_mul(&g) * (1.0 - b2);
+
+                let m_hat = self.m[i][k] / bias1;
+                let v_hat = self.v[i][k] / bias2;
+
+                params[i][k].x -= self.lr * m_hat.x / (v_hat.x.sqrt() + self.eps);
+                params[i][k].y -= self.lr * m_hat.y / (v_hat.y.sqrt() + self.eps);
+                params[i][k].z -= self.lr * m_hat.z / (v_hat.z.sqrt() + self.eps);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

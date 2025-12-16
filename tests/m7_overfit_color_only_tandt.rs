@@ -43,6 +43,7 @@ fn test_m7_overfit_color_only_tandt_train() {
         learn_position: false,
         learn_scale: false,
         learn_rotation: false,
+        learn_sh: false,
         log_interval: 10,
         rng_seed: Some(0),
     };

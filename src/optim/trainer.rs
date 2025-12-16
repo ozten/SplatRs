@@ -15,7 +15,7 @@
 
 use crate::core::{init_from_colmap_points_visible_stratified, Camera, Gaussian};
 use crate::io::load_colmap_scene;
-use crate::optim::adam::{AdamF32, AdamSo3, AdamVec3};
+use crate::optim::adam::{AdamF32, AdamSh16, AdamSo3, AdamVec3};
 use crate::optim::loss::{
     l1_dssim_image_loss_and_grad_weighted, l2_image_loss_and_grad_weighted, LossKind,
 };
@@ -49,6 +49,7 @@ pub struct TrainConfig {
     pub learn_position: bool,
     pub learn_scale: bool,
     pub learn_rotation: bool,
+    pub learn_sh: bool,
     /// Print per-iteration timing every N iterations (0 disables).
     pub log_interval: usize,
     /// Optional RNG seed for deterministic runs.
@@ -188,18 +189,23 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
     };
     let mut bg_opt = AdamVec3::new(cfg.lr, 0.9, 0.999, 1e-8);
 
-    // Optimizer state for SH DC coeffs (RGB).
-    let mut adam = AdamVec3::new(cfg.lr, 0.9, 0.999, 1e-8);
+    // Optimizer state for SH coeffs (RGB × 16).
+    let mut sh_opt = AdamSh16::new(cfg.lr, 0.9, 0.999, 1e-8);
     let mut opacity_opt = AdamF32::new(cfg.lr, 0.9, 0.999, 1e-8);
     let mut position_opt = AdamVec3::new(cfg.lr, 0.9, 0.999, 1e-8);
     let mut scale_opt = AdamVec3::new(cfg.lr, 0.9, 0.999, 1e-8);
     let mut rotation_opt = AdamSo3::new(cfg.lr, 0.9, 0.999, 1e-8);
 
-    // Pull initial params.
-    let sh0_basis = crate::core::sh_basis(&Vector3::new(0.0, 0.0, 1.0))[0]; // = C0
-    let mut params: Vec<Vector3<f32>> = gaussians
+    // Pull initial SH params.
+    let mut sh_params: Vec<[Vector3<f32>; 16]> = gaussians
         .iter()
-        .map(|g| Vector3::new(g.sh_coeffs[0][0], g.sh_coeffs[0][1], g.sh_coeffs[0][2]))
+        .map(|g| {
+            let mut out = [Vector3::<f32>::zeros(); 16];
+            for k in 0..16 {
+                out[k] = Vector3::new(g.sh_coeffs[k][0], g.sh_coeffs[k][1], g.sh_coeffs[k][2]);
+            }
+            out
+        })
         .collect();
     let mut opacity_logits: Vec<f32> = gaussians.iter().map(|g| g.opacity).collect();
     let mut positions: Vec<Vector3<f32>> = gaussians.iter().map(|g| g.position).collect();
@@ -221,9 +227,11 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
 
         // Write params back into gaussians.
         for (i, g) in gaussians.iter_mut().enumerate() {
-            g.sh_coeffs[0][0] = params[i].x;
-            g.sh_coeffs[0][1] = params[i].y;
-            g.sh_coeffs[0][2] = params[i].z;
+            for k in 0..16 {
+                g.sh_coeffs[k][0] = sh_params[i][k].x;
+                g.sh_coeffs[k][1] = sh_params[i][k].y;
+                g.sh_coeffs[k][2] = sh_params[i][k].z;
+            }
             // Even when we don't learn a parameter, keep the struct in sync with the
             // (fixed) parameter vectors so downstream logic has one source of truth.
             g.opacity = opacity_logits[i].clamp(-10.0, 10.0);
@@ -264,11 +272,25 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
             render_full_color_grads(&gaussians, &camera, &d_image, &bg);
         let t_backward = t1.elapsed();
 
-        // Convert dL/d(color) -> dL/d(SH0 coeff) using basis[0] (assuming clamp inactive).
-        let grads: Vec<Vector3<f32>> = d_color.iter().map(|dc| dc * sh0_basis).collect();
+        // Convert dL/d(color) -> dL/d(SH coeffs) using per-Gaussian SH basis.
+        let mut d_sh: Vec<[Vector3<f32>; 16]> = vec![[Vector3::zeros(); 16]; gaussians.len()];
+        if cfg.learn_sh {
+            for (i, g) in gaussians.iter().enumerate() {
+                let basis = crate::core::sh_basis(&camera.view_direction(&g.position));
+                for k in 0..16 {
+                    d_sh[i][k] = d_color[i] * basis[k];
+                }
+            }
+        } else {
+            // DC-only learning (k=0).
+            let sh0 = crate::core::sh_basis(&Vector3::new(0.0, 0.0, 1.0))[0];
+            for i in 0..gaussians.len() {
+                d_sh[i][0] = d_color[i] * sh0;
+            }
+        }
 
         let t2 = Instant::now();
-        adam.step(&mut params, &grads);
+        sh_opt.step(&mut sh_params, &d_sh);
         if cfg.learn_opacity {
             opacity_opt.step(&mut opacity_logits, &d_opacity_logits);
         }
@@ -306,9 +328,11 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
     // Final render.
     let final_render_u8 = {
         for (i, g) in gaussians.iter_mut().enumerate() {
-            g.sh_coeffs[0][0] = params[i].x;
-            g.sh_coeffs[0][1] = params[i].y;
-            g.sh_coeffs[0][2] = params[i].z;
+            for k in 0..16 {
+                g.sh_coeffs[k][0] = sh_params[i][k].x;
+                g.sh_coeffs[k][1] = sh_params[i][k].y;
+                g.sh_coeffs[k][2] = sh_params[i][k].z;
+            }
             g.opacity = opacity_logits[i].clamp(-10.0, 10.0);
             g.position = positions[i];
             g.scale = log_scales[i];
@@ -413,6 +437,7 @@ pub struct MultiViewTrainConfig {
     pub learn_position: bool,
     pub learn_scale: bool,
     pub learn_rotation: bool,
+    pub learn_sh: bool,
     /// If non-zero, only use the first N images from `images.bin` (for faster iteration).
     pub max_images: usize,
     /// Optional RNG seed for deterministic train/test splits and view sampling.
@@ -521,7 +546,7 @@ fn split_opacity_logit(parent_logit: f32, children: usize) -> f32 {
 
 fn densify_and_prune<R: Rng + ?Sized>(
     gaussians: &mut Vec<Gaussian>,
-    params: &mut Vec<Vector3<f32>>,
+    sh_params: &mut Vec<[Vector3<f32>; 16]>,
     opacity_logits: &mut Vec<f32>,
     positions: &mut Vec<Vector3<f32>>,
     log_scales: &mut Vec<Vector3<f32>>,
@@ -559,7 +584,7 @@ fn densify_and_prune<R: Rng + ?Sized>(
     let cap = cap.max(before);
 
     let mut new_gaussians = Vec::with_capacity(gaussians.len());
-    let mut new_params = Vec::with_capacity(params.len());
+    let mut new_sh_params = Vec::with_capacity(sh_params.len());
     let mut new_opacity_logits = Vec::with_capacity(opacity_logits.len());
     let mut new_positions = Vec::with_capacity(positions.len());
     let mut new_log_scales = Vec::with_capacity(log_scales.len());
@@ -586,15 +611,17 @@ fn densify_and_prune<R: Rng + ?Sized>(
         // Always keep the original (but ensure it matches our parameter vectors).
         let keep_idx = new_gaussians.len();
         let mut keep = gaussians[i].clone();
-        keep.sh_coeffs[0][0] = params[i].x;
-        keep.sh_coeffs[0][1] = params[i].y;
-        keep.sh_coeffs[0][2] = params[i].z;
+        for k in 0..16 {
+            keep.sh_coeffs[k][0] = sh_params[i][k].x;
+            keep.sh_coeffs[k][1] = sh_params[i][k].y;
+            keep.sh_coeffs[k][2] = sh_params[i][k].z;
+        }
         keep.opacity = opacity_logits[i].clamp(-10.0, 10.0);
         keep.position = positions[i];
         keep.scale = log_scales[i];
         keep.rotation = rotations[i];
         new_gaussians.push(keep);
-        new_params.push(params[i]);
+        new_sh_params.push(sh_params[i]);
         new_opacity_logits.push(opacity_logits[i]);
         new_positions.push(positions[i]);
         new_log_scales.push(log_scales[i]);
@@ -633,15 +660,17 @@ fn densify_and_prune<R: Rng + ?Sized>(
         if sigma > split_sigma_threshold {
             // SPLIT: add a second gaussian, slightly offset and slightly smaller.
             let mut g2 = gaussians[i].clone();
-            g2.sh_coeffs[0][0] = params[i].x;
-            g2.sh_coeffs[0][1] = params[i].y;
-            g2.sh_coeffs[0][2] = params[i].z;
+            for k in 0..16 {
+                g2.sh_coeffs[k][0] = sh_params[i][k].x;
+                g2.sh_coeffs[k][1] = sh_params[i][k].y;
+                g2.sh_coeffs[k][2] = sh_params[i][k].z;
+            }
             g2.opacity = child_opacity_logit;
             g2.position = new_pos;
             g2.scale = log_scales[i] - Vector3::new(0.2, 0.2, 0.2);
             g2.rotation = rotations[i];
             new_gaussians.push(g2);
-            new_params.push(params[i]);
+            new_sh_params.push(sh_params[i]);
             new_opacity_logits.push(child_opacity_logit);
             new_positions.push(new_pos);
             new_log_scales.push(log_scales[i] - Vector3::new(0.2, 0.2, 0.2));
@@ -651,15 +680,17 @@ fn densify_and_prune<R: Rng + ?Sized>(
         } else {
             // CLONE: same scale, slight offset.
             let mut g2 = gaussians[i].clone();
-            g2.sh_coeffs[0][0] = params[i].x;
-            g2.sh_coeffs[0][1] = params[i].y;
-            g2.sh_coeffs[0][2] = params[i].z;
+            for k in 0..16 {
+                g2.sh_coeffs[k][0] = sh_params[i][k].x;
+                g2.sh_coeffs[k][1] = sh_params[i][k].y;
+                g2.sh_coeffs[k][2] = sh_params[i][k].z;
+            }
             g2.opacity = child_opacity_logit;
             g2.position = new_pos;
             g2.scale = log_scales[i];
             g2.rotation = rotations[i];
             new_gaussians.push(g2);
-            new_params.push(params[i]);
+            new_sh_params.push(sh_params[i]);
             new_opacity_logits.push(child_opacity_logit);
             new_positions.push(new_pos);
             new_log_scales.push(log_scales[i]);
@@ -670,7 +701,7 @@ fn densify_and_prune<R: Rng + ?Sized>(
     }
 
     *gaussians = new_gaussians;
-    *params = new_params;
+    *sh_params = new_sh_params;
     *opacity_logits = new_opacity_logits;
     *positions = new_positions;
     *log_scales = new_log_scales;
@@ -852,18 +883,23 @@ pub fn train_multiview_color_only(
     };
     let mut bg_opt = AdamVec3::new(cfg.lr, 0.9, 0.999, 1e-8);
 
-    // Optimizer state for SH DC coeffs (RGB)
-    let mut adam = AdamVec3::new(cfg.lr, 0.9, 0.999, 1e-8);
+    // Optimizer state for SH coeffs (RGB × 16)
+    let mut sh_opt = AdamSh16::new(cfg.lr, 0.9, 0.999, 1e-8);
     let mut opacity_opt = AdamF32::new(cfg.lr, 0.9, 0.999, 1e-8);
     let mut position_opt = AdamVec3::new(cfg.lr, 0.9, 0.999, 1e-8);
     let mut scale_opt = AdamVec3::new(cfg.lr, 0.9, 0.999, 1e-8);
     let mut rotation_opt = AdamSo3::new(cfg.lr, 0.9, 0.999, 1e-8);
 
-    // Pull initial params
-    let sh0_basis = crate::core::sh_basis(&Vector3::new(0.0, 0.0, 1.0))[0]; // = C0
-    let mut params: Vec<Vector3<f32>> = gaussians
+    // Pull initial SH params.
+    let mut sh_params: Vec<[Vector3<f32>; 16]> = gaussians
         .iter()
-        .map(|g| Vector3::new(g.sh_coeffs[0][0], g.sh_coeffs[0][1], g.sh_coeffs[0][2]))
+        .map(|g| {
+            let mut out = [Vector3::<f32>::zeros(); 16];
+            for k in 0..16 {
+                out[k] = Vector3::new(g.sh_coeffs[k][0], g.sh_coeffs[k][1], g.sh_coeffs[k][2]);
+            }
+            out
+        })
         .collect();
     let mut opacity_logits: Vec<f32> = gaussians.iter().map(|g| g.opacity).collect();
     let mut positions: Vec<Vector3<f32>> = gaussians.iter().map(|g| g.position).collect();
@@ -942,9 +978,11 @@ pub fn train_multiview_color_only(
 
         // Write params back into gaussians
         for (i, g) in gaussians.iter_mut().enumerate() {
-            g.sh_coeffs[0][0] = params[i].x;
-            g.sh_coeffs[0][1] = params[i].y;
-            g.sh_coeffs[0][2] = params[i].z;
+            for k in 0..16 {
+                g.sh_coeffs[k][0] = sh_params[i][k].x;
+                g.sh_coeffs[k][1] = sh_params[i][k].y;
+                g.sh_coeffs[k][2] = sh_params[i][k].z;
+            }
             g.opacity = opacity_logits[i].clamp(-10.0, 10.0);
             g.position = positions[i];
             g.scale = log_scales[i];
@@ -994,11 +1032,25 @@ pub fn train_multiview_color_only(
             render_full_color_grads(&gaussians, &train_camera, &d_image, &bg);
         let t_backward = t1.elapsed();
 
-        // Convert dL/d(color) -> dL/d(SH0 coeff)
-        let grads: Vec<Vector3<f32>> = d_color.iter().map(|dc| dc * sh0_basis).collect();
+        // Convert dL/d(color) -> dL/d(SH coeffs) using per-Gaussian SH basis.
+        let mut d_sh: Vec<[Vector3<f32>; 16]> = vec![[Vector3::zeros(); 16]; gaussians.len()];
+        if cfg.learn_sh {
+            for (i, g) in gaussians.iter().enumerate() {
+                let basis = crate::core::sh_basis(&train_camera.view_direction(&g.position));
+                for k in 0..16 {
+                    d_sh[i][k] = d_color[i] * basis[k];
+                }
+            }
+        } else {
+            // DC-only learning (k=0).
+            let sh0 = crate::core::sh_basis(&Vector3::new(0.0, 0.0, 1.0))[0];
+            for i in 0..gaussians.len() {
+                d_sh[i][0] = d_color[i] * sh0;
+            }
+        }
 
         let t2 = Instant::now();
-        adam.step(&mut params, &grads);
+        sh_opt.step(&mut sh_params, &d_sh);
         if cfg.learn_opacity {
             opacity_opt.step(&mut opacity_logits, &d_opacity_logits);
         }
@@ -1089,7 +1141,7 @@ pub fn train_multiview_color_only(
             let before = gaussians.len();
             let stats = densify_and_prune(
                 &mut gaussians,
-                &mut params,
+                &mut sh_params,
                 &mut opacity_logits,
                 &mut positions,
                 &mut log_scales,
@@ -1104,7 +1156,7 @@ pub fn train_multiview_color_only(
             );
             // The parameter arrays have been re-built; any per-index optimizer state is invalid.
             // Reset moments but keep timesteps to avoid bias-correction spikes.
-            adam.reset_moments_keep_t(params.len());
+            sh_opt.reset_moments_keep_t(sh_params.len());
             opacity_opt.reset_moments_keep_t(opacity_logits.len());
             position_opt.reset_moments_keep_t(positions.len());
             scale_opt.reset_moments_keep_t(log_scales.len());
@@ -1133,9 +1185,11 @@ pub fn train_multiview_color_only(
     let mut test_view_target = None;
 
     for (i, g) in gaussians.iter_mut().enumerate() {
-        g.sh_coeffs[0][0] = params[i].x;
-        g.sh_coeffs[0][1] = params[i].y;
-        g.sh_coeffs[0][2] = params[i].z;
+        for k in 0..16 {
+            g.sh_coeffs[k][0] = sh_params[i][k].x;
+            g.sh_coeffs[k][1] = sh_params[i][k].y;
+            g.sh_coeffs[k][2] = sh_params[i][k].z;
+        }
         g.opacity = opacity_logits[i].clamp(-10.0, 10.0);
         g.position = positions[i];
         g.scale = log_scales[i];
@@ -1228,7 +1282,10 @@ mod tests {
         );
 
         let mut gaussians = vec![g1.clone(), g2];
-        let mut params = vec![Vector3::new(0.1, 0.2, 0.3), Vector3::new(0.4, 0.5, 0.6)];
+        let mut sh_params = vec![
+            [Vector3::new(0.1, 0.2, 0.3); 16],
+            [Vector3::new(0.4, 0.5, 0.6); 16],
+        ];
         let mut opacity_logits = vec![2.0, -10.0];
         let mut positions = vec![g1.position, Vector3::new(1.0, 0.0, 1.0)];
         let mut log_scales: Vec<Vector3<f32>> = gaussians.iter().map(|g| g.scale).collect();
@@ -1238,7 +1295,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(123);
         let stats = densify_and_prune(
             &mut gaussians,
-            &mut params,
+            &mut sh_params,
             &mut opacity_logits,
             &mut positions,
             &mut log_scales,
@@ -1254,7 +1311,7 @@ mod tests {
 
         // g2 pruned, and g1 split -> two gaussians remain.
         assert_eq!(gaussians.len(), 2);
-        assert_eq!(params.len(), 2);
+        assert_eq!(sh_params.len(), 2);
         assert_eq!(opacity_logits.len(), 2);
         assert_eq!(positions.len(), 2);
         assert_eq!(log_scales.len(), 2);

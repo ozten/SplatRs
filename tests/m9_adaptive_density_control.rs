@@ -36,6 +36,7 @@ fn test_m9_densify_smoke_tandt() {
         learn_position: false,
         learn_scale: false,
         learn_rotation: false,
+        learn_sh: false,
         max_images: 5,
         rng_seed: Some(0),
         train_fraction: 0.8,
