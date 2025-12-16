@@ -199,107 +199,132 @@ pub fn render_full_color_grads(
 
     let mut img = RgbImage::new(camera.width, camera.height);
 
-    // Use parallel iteration for gradient computation (major speedup!)
+    // Use parallel iteration for gradient computation with thread-local accumulation
+    // to eliminate mutex contention (major speedup!).
     use rayon::prelude::*;
-    use std::sync::Mutex;
 
-    let d_colors = Mutex::new(vec![Vector3::<f32>::zeros(); gaussians.len()]);
-    let d_opacity_logits = Mutex::new(vec![0.0f32; gaussians.len()]);
-    let d_mean_px = Mutex::new(vec![Vector2::<f32>::zeros(); gaussians.len()]);
-    let d_cov_2d = Mutex::new(vec![Vector3::<f32>::zeros(); gaussians.len()]);
-    let d_bg = Mutex::new(Vector3::<f32>::zeros());
+    // Thread-local gradient accumulation: each thread gets its own gradient buffers
+    // and we reduce at the end (much faster than mutex locking on every pixel!).
+    struct ThreadLocalGrads {
+        d_colors: Vec<Vector3<f32>>,
+        d_opacity_logits: Vec<f32>,
+        d_mean_px: Vec<Vector2<f32>>,
+        d_cov_2d: Vec<Vector3<f32>>,
+        d_bg: Vector3<f32>,
+    }
 
-    // Parallel iteration over pixels
+    impl ThreadLocalGrads {
+        fn new(num_gaussians: usize) -> Self {
+            Self {
+                d_colors: vec![Vector3::<f32>::zeros(); num_gaussians],
+                d_opacity_logits: vec![0.0f32; num_gaussians],
+                d_mean_px: vec![Vector2::<f32>::zeros(); num_gaussians],
+                d_cov_2d: vec![Vector3::<f32>::zeros(); num_gaussians],
+                d_bg: Vector3::<f32>::zeros(),
+            }
+        }
+    }
+
+    // Parallel iteration over pixels with thread-local gradient accumulation
     let pixels: Vec<(i32, i32)> = (0..height)
         .flat_map(|py| (0..width).map(move |px| (px, py)))
         .collect();
 
-    pixels.par_iter().for_each(|&(px, py)| {
-            let pixel_x = px as f32 + 0.5;
-            let pixel_y = py as f32 + 0.5;
+    let thread_grads: Vec<ThreadLocalGrads> = pixels
+        .par_iter()
+        .fold(
+            || ThreadLocalGrads::new(gaussians.len()),
+            |mut local_grads, &(px, py)| {
+                let pixel_x = px as f32 + 0.5;
+                let pixel_y = py as f32 + 0.5;
 
-            // Gather contributing gaussians in depth order for this pixel.
-            let mut alphas: Vec<f32> = Vec::new();
-            let mut d_alpha_d_logits: Vec<f32> = Vec::new();
-            let mut d_alpha_d_weights: Vec<f32> = Vec::new();
-            let mut d_weight_d_means: Vec<Vector2<f32>> = Vec::new();
-            let mut d_weight_d_covs: Vec<Vector3<f32>> = Vec::new();
-            let mut colors: Vec<Vector3<f32>> = Vec::new();
-            let mut indices: Vec<usize> = Vec::new();
+                // Gather contributing gaussians in depth order for this pixel.
+                let mut alphas: Vec<f32> = Vec::new();
+                let mut d_alpha_d_logits: Vec<f32> = Vec::new();
+                let mut d_alpha_d_weights: Vec<f32> = Vec::new();
+                let mut d_weight_d_means: Vec<Vector2<f32>> = Vec::new();
+                let mut d_weight_d_covs: Vec<Vector3<f32>> = Vec::new();
+                let mut colors: Vec<Vector3<f32>> = Vec::new();
+                let mut indices: Vec<usize> = Vec::new();
 
-            for g in &prepared {
-                if px < g.min_x || px > g.max_x || py < g.min_y || py > g.max_y {
-                    continue;
+                for g in &prepared {
+                    if px < g.min_x || px > g.max_x || py < g.min_y || py > g.max_y {
+                        continue;
+                    }
+
+                    let det = g.cov_xx * g.cov_yy - g.cov_xy * g.cov_xy;
+                    if det <= 1e-10 {
+                        continue;
+                    }
+
+                    let w_grads = gaussian2d_evaluate_with_grads(
+                        Vector2::new(g.mean_x, g.mean_y),
+                        g.cov_xx,
+                        g.cov_xy,
+                        g.cov_yy,
+                        Vector2::new(pixel_x, pixel_y),
+                    );
+                    let weight = w_grads.value;
+
+                    let (alpha, d_alpha_d_logit) =
+                        alpha_from_opacity_logit(gaussians[g.gaussian_idx].opacity, weight);
+                    let opacity = crate::core::sigmoid(gaussians[g.gaussian_idx].opacity);
+                    let alpha_raw = opacity * weight;
+                    let d_alpha_d_weight = if alpha_raw < 0.99 { opacity } else { 0.0 };
+                    if alpha < 1e-4 {
+                        continue;
+                    }
+
+                    alphas.push(alpha);
+                    d_alpha_d_logits.push(d_alpha_d_logit);
+                    d_alpha_d_weights.push(d_alpha_d_weight);
+                    d_weight_d_means.push(w_grads.d_mean);
+                    d_weight_d_covs.push(Vector3::new(
+                        w_grads.d_cov_xx,
+                        w_grads.d_cov_xy,
+                        w_grads.d_cov_yy,
+                    ));
+                    colors.push(g.color);
+                    indices.push(g.gaussian_idx);
                 }
 
-                let det = g.cov_xx * g.cov_yy - g.cov_xy * g.cov_xy;
-                if det <= 1e-10 {
-                    continue;
-                }
+                let forward = blend_forward_with_bg(&alphas, &colors, bg);
 
-                let w_grads = gaussian2d_evaluate_with_grads(
-                    Vector2::new(g.mean_x, g.mean_y),
-                    g.cov_xx,
-                    g.cov_xy,
-                    g.cov_yy,
-                    Vector2::new(pixel_x, pixel_y),
-                );
-                let weight = w_grads.value;
+                // Backward for this pixel
+                let upstream = &d_image[(py * width + px) as usize];
+                let grads = blend_backward_with_bg(&alphas, &colors, &forward, bg, upstream);
 
-                let (alpha, d_alpha_d_logit) =
-                    alpha_from_opacity_logit(gaussians[g.gaussian_idx].opacity, weight);
-                let opacity = crate::core::sigmoid(gaussians[g.gaussian_idx].opacity);
-                let alpha_raw = opacity * weight;
-                let d_alpha_d_weight = if alpha_raw < 0.99 { opacity } else { 0.0 };
-                if alpha < 1e-4 {
-                    continue;
-                }
-
-                alphas.push(alpha);
-                d_alpha_d_logits.push(d_alpha_d_logit);
-                d_alpha_d_weights.push(d_alpha_d_weight);
-                d_weight_d_means.push(w_grads.d_mean);
-                d_weight_d_covs.push(Vector3::new(
-                    w_grads.d_cov_xx,
-                    w_grads.d_cov_xy,
-                    w_grads.d_cov_yy,
-                ));
-                colors.push(g.color);
-                indices.push(g.gaussian_idx);
-            }
-
-            let forward = blend_forward_with_bg(&alphas, &colors, bg);
-            let out = forward.out;
-
-            // Backward for this pixel: accumulate dL/d(color_i) only.
-            let upstream = &d_image[(py * width + px) as usize];
-            let grads = blend_backward_with_bg(&alphas, &colors, &forward, bg, upstream);
-
-            // Accumulate gradients (with mutex for thread safety)
-            {
-                let mut d_c = d_colors.lock().unwrap();
-                let mut d_o = d_opacity_logits.lock().unwrap();
-                let mut d_m = d_mean_px.lock().unwrap();
-                let mut d_cov = d_cov_2d.lock().unwrap();
-                let mut d_b = d_bg.lock().unwrap();
-
+                // Accumulate into thread-local gradients (no locking!)
                 for (k, &gi) in indices.iter().enumerate() {
-                    d_c[gi] += grads.d_colors[k];
-                    d_o[gi] += grads.d_alphas[k] * d_alpha_d_logits[k];
+                    local_grads.d_colors[gi] += grads.d_colors[k];
+                    local_grads.d_opacity_logits[gi] += grads.d_alphas[k] * d_alpha_d_logits[k];
                     let d_weight = grads.d_alphas[k] * d_alpha_d_weights[k];
-                    d_m[gi] += d_weight_d_means[k] * d_weight;
-                    d_cov[gi] += d_weight_d_covs[k] * d_weight;
+                    local_grads.d_mean_px[gi] += d_weight_d_means[k] * d_weight;
+                    local_grads.d_cov_2d[gi] += d_weight_d_covs[k] * d_weight;
                 }
-                *d_b += grads.d_bg;
-            }
-    });
+                local_grads.d_bg += grads.d_bg;
 
-    // Unwrap mutex-protected gradients
-    let d_colors = d_colors.into_inner().unwrap();
-    let d_opacity_logits = d_opacity_logits.into_inner().unwrap();
-    let d_mean_px = d_mean_px.into_inner().unwrap();
-    let d_cov_2d = d_cov_2d.into_inner().unwrap();
-    let d_bg = d_bg.into_inner().unwrap();
+                local_grads
+            },
+        )
+        .collect();
+
+    // Final reduction: combine all thread-local gradients
+    let mut d_colors = vec![Vector3::<f32>::zeros(); gaussians.len()];
+    let mut d_opacity_logits = vec![0.0f32; gaussians.len()];
+    let mut d_mean_px = vec![Vector2::<f32>::zeros(); gaussians.len()];
+    let mut d_cov_2d = vec![Vector3::<f32>::zeros(); gaussians.len()];
+    let mut d_bg = Vector3::<f32>::zeros();
+
+    for tg in thread_grads {
+        for i in 0..gaussians.len() {
+            d_colors[i] += tg.d_colors[i];
+            d_opacity_logits[i] += tg.d_opacity_logits[i];
+            d_mean_px[i] += tg.d_mean_px[i];
+            d_cov_2d[i] += tg.d_cov_2d[i];
+        }
+        d_bg += tg.d_bg;
+    }
 
     // Create output image (fast sequential render)
     for py in 0..height {
