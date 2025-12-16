@@ -25,3 +25,17 @@ Use `docs/sugar-rs-milestones.md` as the source-of-truth for “done-ness”. Th
 
 - Milestones and verification: `docs/sugar-rs-milestones.md`
 - Long-form technical guidance: `docs/sugar-rust-roadmap.md`
+
+## How To Run (M7 / M8)
+
+Your calipers dataset root (per `AGENTS.md`) is:
+
+- `/Users/ozten/Projects/GuassianPlay/digital_calipers2_project`
+
+M7 (single-image overfit, color-only):
+
+- `cargo run --bin sugar-train -- --dataset-root /Users/ozten/Projects/GuassianPlay/digital_calipers2_project --iters 1000 --lr 0.05 --downsample 0.25 --max-gaussians 20000 --image-index 0 --out-dir test_output`
+
+M8 (multi-view, color-only):
+
+- `cargo run --bin sugar-train -- --multiview --dataset-root /Users/ozten/Projects/GuassianPlay/digital_calipers2_project --iters 5000 --lr 0.01 --downsample 0.25 --max-gaussians 20000 --train-fraction 0.8 --val-interval 100 --max-test-views 3 --out-dir test_output`

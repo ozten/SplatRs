@@ -503,7 +503,9 @@ pub fn train_multiview_color_only(
     let mut train_loss = 0.0f32;
     for iter in 0..cfg.iters {
         // Sample a random training view
-        let train_idx = train_indices[iter % train_indices.len()];
+        let train_idx = *train_indices
+            .choose(&mut rng)
+            .expect("train_indices is non-empty");
         let train_image_info = &scene.images[train_idx];
         let train_base_camera = scene
             .cameras
@@ -583,7 +585,7 @@ pub fn train_multiview_color_only(
                 let psnr = compute_psnr(&rendered, &test_target_linear);
                 test_psnr_sum += psnr;
             }
-            let avg_test_psnr = test_psnr_sum / (test_indices.len() as f32);
+            let avg_test_psnr = test_psnr_sum / (test_indices_for_metrics.len() as f32);
 
             eprintln!(
                 "iter {iter:4}  train_loss={loss:.6}  test_psnr={avg_test_psnr:.2} dB  bg=({:.3},{:.3},{:.3})",
