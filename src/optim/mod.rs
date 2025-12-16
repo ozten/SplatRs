@@ -7,7 +7,7 @@
 //! - Training orchestration
 
 // TODO: Implement for M7-M10
-// mod adam;
-// mod loss;
+pub mod adam;
+pub mod loss;
 // mod density;
-// mod trainer;
+pub mod trainer;
