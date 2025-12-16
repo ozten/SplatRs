@@ -6,7 +6,7 @@
 //! - Density field evaluation
 //! - Marching cubes mesh extraction
 
-// TODO: Implement for M11-M12
+// TODO: Implement for M13-M14 (SuGaR regularization + mesh extraction)
 // mod regularization;
 // mod normals;
 // mod density_field;

@@ -5,6 +5,6 @@
 
 fn main() {
     println!("sugar-extract v{}", sugar_rs::VERSION);
-    println!("TODO: Implement mesh extraction CLI (see M12)");
+    println!("TODO: Implement mesh extraction CLI (see M14)");
     std::process::exit(1);
 }

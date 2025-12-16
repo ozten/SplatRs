@@ -157,7 +157,35 @@ Concrete checkpoints where you can verify progress before moving on.
 
 ---
 
-## M11: SuGaR Regularization Training
+## M11: GPU Renderer Matches CPU
+
+**You're done when:** GPU renderer produces identical images to CPU renderer (within floating-point tolerance).
+
+**Verification:**
+- Render same scene with both backends
+- Per-pixel difference < 1e-4
+- Test multiple viewpoints
+- Test edge cases (Gaussians at image boundary, behind camera)
+
+**Why this matters:** Ensures GPU port is correct before optimizing for speed.
+
+---
+
+## M12: GPU Training End-to-End
+
+**You're done when:** Full training runs on GPU with significant speedup.
+
+**Verification:**
+- Train same scene on CPU vs GPU
+- Quality should be identical (PSNR within 0.5 dB)
+- GPU should be 10-50x faster (depending on scene size)
+- Memory usage reasonable (< 8GB for typical scenes)
+
+**Why this matters:** Makes the tool practical for real use. With GPU acceleration, you can iterate quickly on SuGaR development.
+
+---
+
+## M13: SuGaR Regularization Training
 
 **You're done when:** Adding regularization produces visibly flatter, surface-aligned Gaussians.
 
@@ -172,7 +200,7 @@ Concrete checkpoints where you can verify progress before moving on.
 
 ---
 
-## M12: Mesh Extraction
+## M14: Mesh Extraction
 
 **You're done when:** Marching cubes produces a watertight mesh that resembles the scene.
 
@@ -187,52 +215,26 @@ Concrete checkpoints where you can verify progress before moving on.
 
 ---
 
-## M13: GPU Renderer Matches CPU
-
-**You're done when:** GPU renderer produces identical images to CPU renderer (within floating-point tolerance).
-
-**Verification:**
-- Render same scene with both backends
-- Per-pixel difference < 1e-4
-- Test multiple viewpoints
-- Test edge cases (Gaussians at image boundary, behind camera)
-
-**Why this matters:** Ensures GPU port is correct before optimizing for speed.
-
----
-
-## M14: GPU Training End-to-End
-
-**You're done when:** Full training runs on GPU with significant speedup.
-
-**Verification:**
-- Train same scene on CPU vs GPU
-- Quality should be identical (PSNR within 0.5 dB)
-- GPU should be 10-50x faster (depending on scene size)
-- Memory usage reasonable (< 8GB for typical scenes)
-
-**Why this matters:** Makes the tool practical for real use.
-
----
-
 ## Summary: Critical Path
 
 ```
 M1 → M2 → M3 → M4 → M5 → M6 → M7 → M8 → M9 → M10
  │                        │
- │    (foundation)        │    (working 3DGS)
+ │    (foundation)        │    (working 3DGS - CPU)
  │                        │
  └────────────────────────┴──→ M11 → M12
                                 │
-                                │    (SuGaR complete)
-                                │
-                          M13 → M14
-                                │
                                 │    (GPU acceleration)
+                                │
+                          ──→ M13 → M14
+                                │
+                                │    (SuGaR complete)
 ```
 
-**Minimum viable product:** M12 (you can extract meshes)
-**Production ready:** M14 (fast enough to use regularly)
+**Rationale for GPU-first:** 10-50x speedup enables practical iteration on SuGaR development (M13-M14).
+
+**Minimum viable product:** M12 (GPU training works, can train models efficiently)
+**Complete system:** M14 (mesh extraction working)
 
 ---
 
@@ -245,7 +247,9 @@ M1 → M2 → M3 → M4 → M5 → M6 → M7 → M8 → M9 → M10
 | M6 | 3-5 days | 2 weeks |
 | M7-M8 | 3-4 days | 2.5 weeks |
 | M9-M10 | 1 week | 3.5 weeks |
-| M11-M12 | 1 week | 4.5 weeks |
-| M13-M14 | 1-2 weeks | 6 weeks |
+| M11-M12 (GPU) | 1-2 weeks | 5.5 weeks |
+| M13-M14 (SuGaR) | 1 week | 6.5 weeks |
 
 These assume focused work and familiarity with Rust. Double if learning Rust concurrently or working part-time.
+
+**Note:** GPU work (M11-M12) moved before SuGaR (M13-M14) to enable fast iteration on subsequent development.

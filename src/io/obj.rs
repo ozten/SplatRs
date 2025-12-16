@@ -1,7 +1,7 @@
 //! OBJ format export for meshes.
 //!
 //! OBJ is a simple text-based mesh format widely supported by 3D tools.
-//! We'll use it to export meshes extracted from SuGaR (M12).
+//! We'll use it to export meshes extracted from SuGaR (M14).
 
 use crate::io::LoadError;
 use std::path::Path;
@@ -10,7 +10,7 @@ use std::path::Path;
 ///
 /// For now, just a placeholder type.
 pub struct Mesh {
-    // TODO: Move to sugar::mesh module when implementing M12
+    // TODO: Move to sugar::mesh module when implementing M14
 }
 
 /// Save a mesh to OBJ format.
@@ -22,6 +22,6 @@ pub struct Mesh {
 /// f i j k           # Faces (triangles)
 /// ```
 pub fn save_obj(mesh: &Mesh, path: &Path) -> Result<(), LoadError> {
-    // TODO: Implement for M12
-    unimplemented!("See M12 - OBJ mesh export")
+    // TODO: Implement for M14
+    unimplemented!("See M14 - OBJ mesh export")
 }

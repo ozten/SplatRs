@@ -1,26 +1,30 @@
-# Roadmap (Vanilla 3D Gaussian Splatting First)
+# Roadmap (GPU-Accelerated 3DGS, Then SuGaR)
 
-This repo’s end-goal is **SuGaR** (Surface-Aligned Gaussian Splatting) + mesh extraction, but we should **fully finish vanilla 3D Gaussian Splatting (3DGS)** from the first paper before adding any SuGaR-specific regularization.
+This repo's end-goal is **SuGaR** (Surface-Aligned Gaussian Splatting) + mesh extraction.
 
-Use `docs/sugar-rs-milestones.md` as the source-of-truth for “done-ness”. This file is a short execution checklist to keep us focused.
+**Strategy:** Complete vanilla 3D Gaussian Splatting (3DGS) on CPU (M1-M10), then port to GPU (M11-M12) for practical speed, then add SuGaR features (M13-M14).
 
-## Current Focus: M7 → M10 (3DGS Training Loop)
+Use `docs/sugar-rs-milestones.md` as the source-of-truth for "done-ness". This file is a short execution checklist to keep us focused.
 
-- [ ] **M7** Single-image overfit is reliable (PSNR target).
-- [ ] **M8** Multi-view training works:
-  - [ ] Train/test split (hold out 2–3 views)
-  - [ ] Training view sampling (per-iter view selection)
-  - [ ] Report PSNR on held-out views
-  - [ ] Save at least one rendered/target pair for visual inspection
-  - [ ] Optional: enable opacity learning (`--learn-opacity`) and verify PSNR improves vs color-only
-  - [ ] Optional: enable position learning (`--learn-position`) and verify held-out views sharpen (use smaller LR)
-- [ ] **M9** Adaptive density control (split/clone/prune) improves M8 quality.
-- [ ] **M10** Reference-quality 3DGS training (benchmark scene).
+## Current Focus: M10 → M12 (Complete 3DGS + GPU)
+
+- [x] **M7** Single-image overfit is reliable (PSNR target).
+- [x] **M8** Multi-view training works:
+  - [x] Train/test split (hold out 2–3 views)
+  - [x] Training view sampling (per-iter view selection)
+  - [x] Report PSNR on held-out views
+  - [x] Save at least one rendered/target pair for visual inspection
+  - [x] Optional: enable opacity learning (`--learn-opacity`) and verify PSNR improves vs color-only
+  - [x] Optional: enable position learning (`--learn-position`) and verify held-out views sharpen (use smaller LR)
+- [x] **M9** Adaptive density control (split/clone/prune) improves M8 quality.
+- [ ] **M10** Reference-quality 3DGS training (CPU validation baseline).
+- [ ] **M11** GPU renderer matches CPU (correctness validation).
+- [ ] **M12** GPU training end-to-end (10-50x speedup).
 
 ## Rules of Engagement
 
 - **Learning + correctness > speed**: prefer explicit math and gradient checks.
-- **No SuGaR until M10**: SuGaR regularization + mesh extraction start at M11.
+- **GPU before SuGaR**: Port to GPU (M11-M12) for practical speed before adding SuGaR (M13-M14).
 - **Tests are docs**: for each milestone, keep unit + gradient + (optional) visual tests.
 
 ## Where to Look
