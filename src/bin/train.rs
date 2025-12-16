@@ -39,8 +39,189 @@ fn main() {
     let mut split_sigma_threshold: f32 = 0.05;
     let mut seed: Option<u64> = None;
 
+    fn apply_preset(
+        name: &str,
+        multiview: &mut bool,
+        iters: &mut usize,
+        lr: &mut f32,
+        downsample: &mut f32,
+        max_gaussians: &mut usize,
+        image_index: &mut usize,
+        log_interval: &mut usize,
+        learn_background: &mut bool,
+        learn_opacity: &mut bool,
+        learn_position: &mut bool,
+        learn_scale: &mut bool,
+        learn_rotation: &mut bool,
+        learn_sh: &mut bool,
+        loss: &mut sugar_rs::optim::loss::LossKind,
+        train_fraction: &mut f32,
+        val_interval: &mut usize,
+        max_test_views_for_metrics: &mut usize,
+        max_images: &mut usize,
+        densify_interval: &mut usize,
+        densify_max_gaussians: &mut usize,
+        densify_grad_threshold: &mut f32,
+        prune_opacity_threshold: &mut f32,
+        split_sigma_threshold: &mut f32,
+        seed: &mut Option<u64>,
+    ) -> Result<(), String> {
+        match name {
+            "m7" => {
+                *multiview = false;
+                *iters = 1000;
+                *lr = 0.05;
+                *downsample = 0.25;
+                *max_gaussians = 20_000;
+                *image_index = 0;
+                *log_interval = 10;
+                *learn_background = true;
+                *learn_opacity = false;
+                *learn_position = false;
+                *learn_scale = false;
+                *learn_rotation = false;
+                *learn_sh = false;
+                *loss = sugar_rs::optim::loss::LossKind::L2;
+                *seed = Some(0);
+            }
+            "m8-smoke" => {
+                *multiview = true;
+                *iters = 50;
+                *lr = 0.01;
+                *downsample = 0.125;
+                *max_gaussians = 2_000;
+                *log_interval = 1;
+                *learn_background = true;
+                *learn_opacity = false;
+                *learn_position = false;
+                *learn_scale = false;
+                *learn_rotation = false;
+                *learn_sh = false;
+                *loss = sugar_rs::optim::loss::LossKind::L2;
+                *train_fraction = 0.8;
+                *val_interval = 10;
+                *max_test_views_for_metrics = 1;
+                *max_images = 5;
+                *densify_interval = 0;
+                *densify_max_gaussians = 0;
+                *seed = Some(0);
+            }
+            "m8" => {
+                *multiview = true;
+                *iters = 500;
+                *lr = 0.01;
+                *downsample = 0.25;
+                *max_gaussians = 10_000;
+                *log_interval = 10;
+                *learn_background = true;
+                *learn_opacity = false;
+                *learn_position = false;
+                *learn_scale = false;
+                *learn_rotation = false;
+                *learn_sh = false;
+                *loss = sugar_rs::optim::loss::LossKind::L2;
+                *train_fraction = 0.8;
+                *val_interval = 50;
+                *max_test_views_for_metrics = 0;
+                *max_images = 0;
+                *densify_interval = 0;
+                *densify_max_gaussians = 0;
+                *seed = Some(0);
+            }
+            "m9" => {
+                *multiview = true;
+                *iters = 1000;
+                *lr = 0.01;
+                *downsample = 0.25;
+                *max_gaussians = 10_000;
+                *log_interval = 10;
+                *learn_background = true;
+                *learn_opacity = true;
+                *learn_position = false;
+                *learn_scale = false;
+                *learn_rotation = false;
+                *learn_sh = false;
+                *loss = sugar_rs::optim::loss::LossKind::L2;
+                *train_fraction = 0.8;
+                *val_interval = 50;
+                *max_test_views_for_metrics = 0;
+                *max_images = 0;
+                *densify_interval = 100;
+                *densify_max_gaussians = 80_000;
+                *densify_grad_threshold = 0.1;
+                *prune_opacity_threshold = 0.01;
+                *split_sigma_threshold = 0.05;
+                *seed = Some(0);
+            }
+            "m10" | "m10-quick" => {
+                *multiview = true;
+                *iters = 2_000;
+                *lr = 0.002;
+                *downsample = 0.25;
+                *max_gaussians = 20_000;
+                *log_interval = 10;
+                *learn_background = true;
+                *learn_opacity = true;
+                *learn_position = true;
+                *learn_scale = true;
+                *learn_rotation = true;
+                *learn_sh = true;
+                *loss = sugar_rs::optim::loss::LossKind::L1Dssim;
+                *train_fraction = 0.8;
+                *val_interval = 50;
+                *max_test_views_for_metrics = 0;
+                *max_images = 0;
+                *densify_interval = 100;
+                *densify_max_gaussians = 80_000;
+                *densify_grad_threshold = 0.1;
+                *prune_opacity_threshold = 0.01;
+                *split_sigma_threshold = 0.05;
+                *seed = Some(0);
+            }
+            other => {
+                return Err(format!(
+                    "Unknown preset `{other}` (expected one of: m7, m8-smoke, m8, m9, m10, m10-quick)"
+                ));
+            }
+        }
+        Ok(())
+    }
+
     while let Some(a) = args.next() {
         match a.as_str() {
+            "--preset" => {
+                let preset = args.next().unwrap();
+                if let Err(msg) = apply_preset(
+                    &preset,
+                    &mut multiview,
+                    &mut iters,
+                    &mut lr,
+                    &mut downsample,
+                    &mut max_gaussians,
+                    &mut image_index,
+                    &mut log_interval,
+                    &mut learn_background,
+                    &mut learn_opacity,
+                    &mut learn_position,
+                    &mut learn_scale,
+                    &mut learn_rotation,
+                    &mut learn_sh,
+                    &mut loss,
+                    &mut train_fraction,
+                    &mut val_interval,
+                    &mut max_test_views_for_metrics,
+                    &mut max_images,
+                    &mut densify_interval,
+                    &mut densify_max_gaussians,
+                    &mut densify_grad_threshold,
+                    &mut prune_opacity_threshold,
+                    &mut split_sigma_threshold,
+                    &mut seed,
+                ) {
+                    eprintln!("{msg}");
+                    return;
+                }
+            }
             "--dataset-root" => dataset_root = args.next().map(std::path::PathBuf::from),
             "--scene" => scene = args.next().map(std::path::PathBuf::from),
             "--images" => images = args.next().map(std::path::PathBuf::from),
@@ -81,6 +262,9 @@ fn main() {
             "--seed" => seed = Some(args.next().unwrap().parse().unwrap()),
             "--help" | "-h" => {
                 eprintln!("Usage:");
+                eprintln!("  sugar-train --preset m7|m8-smoke|m8|m9|m10 [--dataset-root <root> | --scene <sparse/0>] [--images <dir>] [overrides...]");
+                eprintln!("  Note: presets apply immediately; later flags override preset values.");
+                eprintln!();
                 eprintln!("  # M7 (single-view / overfit)");
                 eprintln!("  sugar-train --scene <sparse/0> [--images <dir>] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--image-index I] [--log-interval N] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--learn-position] [--learn-scale] [--learn-rotation] [--learn-sh] [--seed U64] [--out-dir DIR]");
                 eprintln!();

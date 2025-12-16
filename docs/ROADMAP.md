@@ -34,6 +34,15 @@ Your calipers dataset root (per `AGENTS.md`) is:
 
 - `/Users/ozten/Projects/GuassianPlay/digital_calipers2_project`
 
+## Presets (Recommended)
+
+Presets set a bundle of reasonable defaults; any flags you pass *after* `--preset` override the preset.
+
+- `cargo run --bin sugar-train -- --preset m7 --dataset-root /Users/ozten/Projects/GuassianPlay/digital_calipers2_project --out-dir test_output`
+- `cargo run --bin sugar-train -- --preset m8-smoke --dataset-root /Users/ozten/Projects/GuassianPlay/digital_calipers2_project --out-dir test_output`
+- `cargo run --bin sugar-train -- --preset m9 --dataset-root /Users/ozten/Projects/GuassianPlay/digital_calipers2_project --out-dir test_output`
+- `cargo run --bin sugar-train -- --preset m10 --dataset-root /Users/ozten/Projects/GuassianPlay/digital_calipers2_project --out-dir test_output`
+
 M7 (single-image overfit, color-only):
 
 - `cargo run --bin sugar-train -- --dataset-root /Users/ozten/Projects/GuassianPlay/digital_calipers2_project --iters 1000 --lr 0.05 --downsample 0.25 --max-gaussians 20000 --image-index 0 --out-dir test_output`
