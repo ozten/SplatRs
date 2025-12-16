@@ -22,6 +22,7 @@ mod tests {
     use sugar_rs::diff::covariance_grad::{
         project_covariance_2d_grad_log_scale, project_covariance_2d_grad_rotation_vector_at_r0,
     };
+    use sugar_rs::diff::covariance_grad::project_covariance_2d_grad_point_cam;
     use sugar_rs::diff::quaternion_grad::{quaternion_raw_to_matrix, quaternion_raw_to_matrix_grad};
 
     // These tests are NON-NEGOTIABLE - bugs in gradients cause silent failures.
@@ -672,6 +673,95 @@ mod tests {
                 }
             }
             assert!(checked >= 20, "Expected to check >= 20 coefficient grads, got {checked}");
+        }
+    }
+
+    #[test]
+    fn test_covariance_projection_point_gradient() {
+        // Gradient check for dependence on point_cam through the perspective Jacobian J(point_cam).
+        let mut rng = StdRng::seed_from_u64(0xB01A_7CA1_u64);
+
+        for _ in 0..200 {
+            let cam_q = nalgebra::UnitQuaternion::from_euler_angles(
+                rng.gen_range(-1.0f32..1.0f32),
+                rng.gen_range(-1.0f32..1.0f32),
+                rng.gen_range(-1.0f32..1.0f32),
+            );
+            let w = cam_q.to_rotation_matrix().into_inner();
+
+            let g_q = nalgebra::UnitQuaternion::from_euler_angles(
+                rng.gen_range(-1.0f32..1.0f32),
+                rng.gen_range(-1.0f32..1.0f32),
+                rng.gen_range(-1.0f32..1.0f32),
+            );
+            let r = g_q.to_rotation_matrix().into_inner();
+
+            let log_scale = nalgebra::Vector3::new(
+                rng.gen_range(-4.0f32..-0.5f32),
+                rng.gen_range(-4.0f32..-0.5f32),
+                rng.gen_range(-4.0f32..-0.5f32),
+            );
+
+            let point_cam = nalgebra::Vector3::new(
+                rng.gen_range(-0.5f32..0.5f32),
+                rng.gen_range(-0.5f32..0.5f32),
+                rng.gen_range(1.0f32..4.0f32),
+            );
+
+            let fx = rng.gen_range(100.0f32..400.0f32);
+            let fy = rng.gen_range(100.0f32..400.0f32);
+
+            let g00 = rng.gen_range(-1.0f32..1.0f32);
+            let g01 = rng.gen_range(-1.0f32..1.0f32);
+            let g11 = rng.gen_range(-1.0f32..1.0f32);
+            let d_sigma2d = nalgebra::Matrix2::new(g00, g01, g01, g11);
+
+            let ana = project_covariance_2d_grad_point_cam(&point_cam, fx, fy, &w, &r, &log_scale, &d_sigma2d);
+
+            // f64 numeric derivative of L = <G, J Σ_cam Jᵀ>
+            let w64 = w.map(|x| x as f64);
+            let r64 = r.map(|x| x as f64);
+            let g64 = d_sigma2d.map(|x| x as f64);
+            let s64 = log_scale.map(|x| x as f64);
+
+            let v = nalgebra::Vector3::new((2.0 * s64.x).exp(), (2.0 * s64.y).exp(), (2.0 * s64.z).exp());
+            let d = nalgebra::Matrix3::from_diagonal(&v);
+            let sigma = r64 * d * r64.transpose();
+            let sigma_cam = w64 * sigma * w64.transpose();
+
+            let loss64 = |p: nalgebra::Vector3<f64>| -> f64 {
+                let j = {
+                    let x = p.x;
+                    let y = p.y;
+                    let z = p.z;
+                    let z_inv = 1.0 / z;
+                    let z_inv2 = z_inv * z_inv;
+                    nalgebra::Matrix2x3::new(
+                        (fx as f64) * z_inv, 0.0, -(fx as f64) * x * z_inv2,
+                        0.0, (fy as f64) * z_inv, -(fy as f64) * y * z_inv2,
+                    )
+                };
+                let sigma2d = j * sigma_cam * j.transpose();
+                (sigma2d.component_mul(&g64)).sum()
+            };
+
+            let eps = 1e-4f64;
+            for axis in 0..3 {
+                let mut plus = point_cam.map(|x| x as f64);
+                let mut minus = point_cam.map(|x| x as f64);
+                plus[axis] += eps;
+                minus[axis] -= eps;
+                let num = (loss64(plus) - loss64(minus)) / (2.0 * eps);
+                let num_f32 = num as f32;
+
+                let got = ana[axis];
+                let abs_err = (got - num_f32).abs();
+                assert!(
+                    rel_err(got, num_f32) < 5e-4 || abs_err < 5e-4,
+                    "cov proj point grad mismatch axis={axis}: num={num_f32} ana={got} abs_err={abs_err} rel_err={}",
+                    rel_err(got, num_f32)
+                );
+            }
         }
     }
 }

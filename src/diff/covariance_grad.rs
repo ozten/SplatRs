@@ -10,6 +10,42 @@
 
 use nalgebra::{Matrix2, Matrix2x3, Matrix3, Vector3};
 
+fn covariance_2d_grad_j(j: &Matrix2x3<f32>, a: &Matrix3<f32>, d_sigma2d: &Matrix2<f32>) -> Matrix2x3<f32> {
+    // Σ₂d = J A Jᵀ
+    // Let G = dL/dΣ₂d. Then:
+    // dL/dJ = (G + Gᵀ) J A   (when A is symmetric; if not, this still matches using A + Aᵀ)
+    let sym_g = d_sigma2d + d_sigma2d.transpose();
+    sym_g * j * a
+}
+
+fn perspective_jacobian_grad_point(point_cam: &Vector3<f32>, fx: f32, fy: f32, d_j: &Matrix2x3<f32>) -> Vector3<f32> {
+    let x = point_cam.x;
+    let y = point_cam.y;
+    let z = point_cam.z;
+
+    let z_inv = 1.0 / z;
+    let z_inv2 = z_inv * z_inv;
+    let z_inv3 = z_inv2 * z_inv;
+
+    // J00 = fx / z
+    // J02 = -fx * x / z^2
+    // J11 = fy / z
+    // J12 = -fy * y / z^2
+    let d_j00 = d_j[(0, 0)];
+    let d_j02 = d_j[(0, 2)];
+    let d_j11 = d_j[(1, 1)];
+    let d_j12 = d_j[(1, 2)];
+
+    let d_x = d_j02 * (-fx * z_inv2);
+    let d_y = d_j12 * (-fy * z_inv2);
+    let d_z = d_j00 * (-fx * z_inv2)
+        + d_j02 * (2.0 * fx * x * z_inv3)
+        + d_j11 * (-fy * z_inv2)
+        + d_j12 * (2.0 * fy * y * z_inv3);
+
+    Vector3::new(d_x, d_y, d_z)
+}
+
 /// Project a 3D covariance (from log-scales + rotation) into a 2D covariance.
 ///
 /// Σ = R diag(exp(2s)) Rᵀ
@@ -30,6 +66,34 @@ pub fn project_covariance_2d(
     let sigma = gaussian_rotation * d * gaussian_rotation.transpose();
     let sigma_cam = camera_rotation * sigma * camera_rotation.transpose();
     jacobian * sigma_cam * jacobian.transpose()
+}
+
+/// Gradient of the projected 2D covariance w.r.t. the camera-space point via the perspective Jacobian.
+///
+/// This treats `camera_rotation` (W) and `gaussian_rotation` (R) and `log_scale` (s) as constants.
+/// Only the Jacobian J(point_cam) changes with the point.
+pub fn project_covariance_2d_grad_point_cam(
+    point_cam: &Vector3<f32>,
+    fx: f32,
+    fy: f32,
+    camera_rotation: &Matrix3<f32>,
+    gaussian_rotation: &Matrix3<f32>,
+    log_scale: &Vector3<f32>,
+    d_sigma2d: &Matrix2<f32>,
+) -> Vector3<f32> {
+    let j = crate::core::perspective_jacobian(point_cam, fx, fy);
+
+    let v = Vector3::new(
+        (2.0 * log_scale.x).exp(),
+        (2.0 * log_scale.y).exp(),
+        (2.0 * log_scale.z).exp(),
+    );
+    let d = Matrix3::from_diagonal(&v);
+    let sigma = gaussian_rotation * d * gaussian_rotation.transpose();
+    let sigma_cam = camera_rotation * sigma * camera_rotation.transpose();
+
+    let d_j = covariance_2d_grad_j(&j, &sigma_cam, d_sigma2d);
+    perspective_jacobian_grad_point(point_cam, fx, fy, &d_j)
 }
 
 /// Gradient of `project_covariance_2d` w.r.t. the log-scales.
