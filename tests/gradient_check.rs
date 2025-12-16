@@ -18,6 +18,7 @@ mod tests {
     use sugar_rs::diff::math_grad::{inverse_sigmoid_grad, sigmoid_grad_from_sigmoid};
     use sugar_rs::diff::gaussian2d_grad::gaussian2d_evaluate_with_grads;
     use sugar_rs::diff::sh_grad::evaluate_sh_grad_coeffs;
+    use sugar_rs::diff::blend_grad::{blend_backward, blend_forward};
 
     // These tests are NON-NEGOTIABLE - bugs in gradients cause silent failures.
     fn rel_err(a: f32, b: f32) -> f32 {
@@ -187,9 +188,101 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_alpha_blending_gradient() {
-        // TODO: Test alpha blending gradients
+        // Gradient check for front-to-back alpha compositing w.r.t.:
+        // - alphas a_i
+        // - colors c_i (RGB)
+        let mut rng = StdRng::seed_from_u64(0xB1ED_0BAD_u64);
+        let tol = 5e-4f32;
+
+        for _ in 0..200 {
+            let n = rng.gen_range(1..6);
+            let mut alphas = Vec::with_capacity(n);
+            let mut colors = Vec::with_capacity(n);
+
+            // Keep alpha away from 0/1 to avoid extremely small transmittance and numerical issues.
+            for _ in 0..n {
+                alphas.push(rng.gen_range(0.05f32..0.5f32));
+                colors.push(Vector3::new(
+                    rng.gen_range(0.0f32..1.0f32),
+                    rng.gen_range(0.0f32..1.0f32),
+                    rng.gen_range(0.0f32..1.0f32),
+                ));
+            }
+
+            let forward = blend_forward(&alphas, &colors);
+
+            // Loss: L = w · out
+            let w = Vector3::new(
+                rng.gen_range(-1.0f32..1.0f32),
+                rng.gen_range(-1.0f32..1.0f32),
+                rng.gen_range(-1.0f32..1.0f32),
+            );
+
+            let grads = blend_backward(&alphas, &colors, &forward, &w);
+
+            let eps = 1e-3f32;
+            let f = |a: &[f32], c: &[Vector3<f32>]| -> f32 {
+                let out = blend_forward(a, c).out;
+                w.dot(&out)
+            };
+
+            // Check alpha gradients.
+            for i in 0..n {
+                let mut a_plus = alphas.clone();
+                let mut a_minus = alphas.clone();
+                a_plus[i] += eps;
+                a_minus[i] -= eps;
+
+                let num = ((f(&a_plus, &colors) as f64 - f(&a_minus, &colors) as f64) / (2.0 * eps as f64)) as f32;
+                let ana = grads.d_alphas[i];
+                let abs_err = (num - ana).abs();
+                assert!(
+                    rel_err(num, ana) < tol || abs_err < 2e-4,
+                    "blend alpha grad mismatch i={i}: num={num} ana={ana} abs_err={abs_err} rel_err={}",
+                    rel_err(num, ana)
+                );
+            }
+
+            // Check a few random color components.
+            for _ in 0..5 {
+                let i = rng.gen_range(0..n);
+                let channel = rng.gen_range(0..3);
+
+                let mut c_plus = colors.clone();
+                let mut c_minus = colors.clone();
+                match channel {
+                    0 => {
+                        c_plus[i].x += eps;
+                        c_minus[i].x -= eps;
+                    }
+                    1 => {
+                        c_plus[i].y += eps;
+                        c_minus[i].y -= eps;
+                    }
+                    2 => {
+                        c_plus[i].z += eps;
+                        c_minus[i].z -= eps;
+                    }
+                    _ => unreachable!(),
+                }
+
+                let num = ((f(&alphas, &c_plus) as f64 - f(&alphas, &c_minus) as f64) / (2.0 * eps as f64)) as f32;
+                let ana = match channel {
+                    0 => grads.d_colors[i].x,
+                    1 => grads.d_colors[i].y,
+                    2 => grads.d_colors[i].z,
+                    _ => unreachable!(),
+                };
+
+                let abs_err = (num - ana).abs();
+                assert!(
+                    rel_err(num, ana) < tol || abs_err < 2e-4,
+                    "blend color grad mismatch i={i} ch={channel}: num={num} ana={ana} abs_err={abs_err} rel_err={}",
+                    rel_err(num, ana)
+                );
+            }
+        }
     }
 
     #[test]
