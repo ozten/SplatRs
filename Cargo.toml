@@ -56,13 +56,22 @@ rand = "0.8"
 
 # GPU support (for M11-M12)
 [features]
-gpu = ["wgpu", "pollster"]
+gpu = ["wgpu", "pollster", "bytemuck", "futures"]
 
 [dependencies.wgpu]
 version = "0.19"
 optional = true
 
 [dependencies.pollster]
+version = "0.3"
+optional = true
+
+[dependencies.bytemuck]
+version = "1.14"
+features = ["derive"]
+optional = true
+
+[dependencies.futures]
 version = "0.3"
 optional = true
 

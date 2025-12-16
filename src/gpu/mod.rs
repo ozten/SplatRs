@@ -2,12 +2,33 @@
 //!
 //! This module provides GPU implementations of the rendering pipeline using wgpu.
 //! Only available when compiled with --features gpu
-
-// TODO: Implement for M11-M12 (GPU rendering + training)
-// mod context;
-// mod buffers;
-// mod pipelines;
-// mod renderer;
+//!
+//! Architecture (M11-M12):
+//! - `context` - wgpu device/queue initialization
+//! - `buffers` - GPU buffer management
+//! - `shaders` - WGSL shader modules
+//! - `renderer` - High-level rendering interface
 
 #[cfg(feature = "gpu")]
-compile_error!("GPU feature not yet implemented - see M11-M12 in docs/sugar-rs-milestones.md");
+mod context;
+#[cfg(feature = "gpu")]
+mod buffers;
+#[cfg(feature = "gpu")]
+mod shaders;
+#[cfg(feature = "gpu")]
+mod renderer;
+
+#[cfg(feature = "gpu")]
+pub use context::GpuContext;
+#[cfg(feature = "gpu")]
+pub use renderer::GpuRenderer;
+
+#[cfg(not(feature = "gpu"))]
+pub struct GpuRenderer;
+
+#[cfg(not(feature = "gpu"))]
+impl GpuRenderer {
+    pub fn new() -> Result<Self, String> {
+        Err("GPU support not enabled. Compile with --features gpu".to_string())
+    }
+}
