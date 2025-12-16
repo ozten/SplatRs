@@ -40,11 +40,10 @@ fn test_log_scale_grads_are_finite_for_simple_scene() {
         .map(|(r, t)| (*r - *t) * 2.0)
         .collect();
 
-    let (_img, _d_color, _d_opacity, _d_pos, d_log_scales, _d_bg) =
+    let (_img, _d_color, _d_opacity, _d_pos, d_log_scales, _d_rot, _d_bg) =
         render_full_color_grads(&gaussians, &camera, &d_image, &bg);
 
     assert_eq!(d_log_scales.len(), gaussians.len());
     let ds = d_log_scales[0];
     assert!(ds.x.is_finite() && ds.y.is_finite() && ds.z.is_finite());
 }
-

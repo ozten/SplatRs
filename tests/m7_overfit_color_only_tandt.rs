@@ -42,6 +42,7 @@ fn test_m7_overfit_color_only_tandt_train() {
         loss: LossKind::L2,
         learn_position: false,
         learn_scale: false,
+        learn_rotation: false,
         log_interval: 10,
         rng_seed: Some(0),
     };

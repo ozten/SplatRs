@@ -3,7 +3,7 @@
 //! For M7 we start with a small, focused optimizer that can update per-Gaussian
 //! RGB vectors (e.g. SH DC coefficients) on CPU.
 
-use nalgebra::Vector3;
+use nalgebra::{UnitQuaternion, Vector3};
 
 pub struct AdamF32 {
     pub lr: f32,
@@ -139,6 +139,82 @@ impl AdamVec3 {
             params[i].x -= self.lr * m_hat.x / (v_hat.x.sqrt() + self.eps);
             params[i].y -= self.lr * m_hat.y / (v_hat.y.sqrt() + self.eps);
             params[i].z -= self.lr * m_hat.z / (v_hat.z.sqrt() + self.eps);
+        }
+    }
+}
+
+pub struct AdamSo3 {
+    pub lr: f32,
+    pub beta1: f32,
+    pub beta2: f32,
+    pub eps: f32,
+    t: u32,
+    m: Vec<Vector3<f32>>,
+    v: Vec<Vector3<f32>>,
+}
+
+impl AdamSo3 {
+    pub fn new(lr: f32, beta1: f32, beta2: f32, eps: f32) -> Self {
+        Self {
+            lr,
+            beta1,
+            beta2,
+            eps,
+            t: 0,
+            m: Vec::new(),
+            v: Vec::new(),
+        }
+    }
+
+    pub fn ensure_len(&mut self, len: usize) {
+        if self.m.len() != len {
+            self.m.resize(len, Vector3::zeros());
+            self.v.resize(len, Vector3::zeros());
+        }
+    }
+
+    pub fn reset_moments_keep_t(&mut self, len: usize) {
+        self.m.clear();
+        self.v.clear();
+        self.m.resize(len, Vector3::zeros());
+        self.v.resize(len, Vector3::zeros());
+    }
+
+    pub fn step(&mut self, rotations: &mut [UnitQuaternion<f32>], grads: &[Vector3<f32>]) {
+        assert_eq!(rotations.len(), grads.len());
+        self.ensure_len(rotations.len());
+
+        self.t += 1;
+        let t = self.t as f32;
+        let b1 = self.beta1;
+        let b2 = self.beta2;
+
+        let bias1 = 1.0 - b1.powf(t);
+        let bias2 = 1.0 - b2.powf(t);
+
+        for i in 0..rotations.len() {
+            let g = grads[i];
+            self.m[i] = self.m[i] * b1 + g * (1.0 - b1);
+            self.v[i] = self.v[i] * b2 + g.component_mul(&g) * (1.0 - b2);
+
+            let m_hat = self.m[i] / bias1;
+            let v_hat = self.v[i] / bias2;
+
+            let mut step_vec = Vector3::new(
+                -self.lr * m_hat.x / (v_hat.x.sqrt() + self.eps),
+                -self.lr * m_hat.y / (v_hat.y.sqrt() + self.eps),
+                -self.lr * m_hat.z / (v_hat.z.sqrt() + self.eps),
+            );
+
+            // Keep updates small; otherwise a single bad gradient can flip rotations.
+            let max_step_rad = 0.2f32;
+            let n = step_vec.norm();
+            if n.is_finite() && n > max_step_rad {
+                step_vec *= max_step_rad / n;
+            }
+
+            let dq = UnitQuaternion::from_scaled_axis(step_vec);
+            rotations[i] = dq * rotations[i];
         }
     }
 }

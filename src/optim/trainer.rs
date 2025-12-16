@@ -15,7 +15,7 @@
 
 use crate::core::{init_from_colmap_points_visible_stratified, Camera, Gaussian};
 use crate::io::load_colmap_scene;
-use crate::optim::adam::{AdamF32, AdamVec3};
+use crate::optim::adam::{AdamF32, AdamSo3, AdamVec3};
 use crate::optim::loss::{
     l1_dssim_image_loss_and_grad_weighted, l2_image_loss_and_grad_weighted, LossKind,
 };
@@ -48,6 +48,7 @@ pub struct TrainConfig {
     pub loss: LossKind,
     pub learn_position: bool,
     pub learn_scale: bool,
+    pub learn_rotation: bool,
     /// Print per-iteration timing every N iterations (0 disables).
     pub log_interval: usize,
     /// Optional RNG seed for deterministic runs.
@@ -192,6 +193,7 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
     let mut opacity_opt = AdamF32::new(cfg.lr, 0.9, 0.999, 1e-8);
     let mut position_opt = AdamVec3::new(cfg.lr, 0.9, 0.999, 1e-8);
     let mut scale_opt = AdamVec3::new(cfg.lr, 0.9, 0.999, 1e-8);
+    let mut rotation_opt = AdamSo3::new(cfg.lr, 0.9, 0.999, 1e-8);
 
     // Pull initial params.
     let sh0_basis = crate::core::sh_basis(&Vector3::new(0.0, 0.0, 1.0))[0]; // = C0
@@ -202,6 +204,8 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
     let mut opacity_logits: Vec<f32> = gaussians.iter().map(|g| g.opacity).collect();
     let mut positions: Vec<Vector3<f32>> = gaussians.iter().map(|g| g.position).collect();
     let mut log_scales: Vec<Vector3<f32>> = gaussians.iter().map(|g| g.scale).collect();
+    let mut rotations: Vec<nalgebra::UnitQuaternion<f32>> =
+        gaussians.iter().map(|g| g.rotation).collect();
 
     // Initial render for output.
     let initial_render_u8 = linear_vec_to_rgb8_img(
@@ -225,6 +229,7 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
             g.opacity = opacity_logits[i].clamp(-10.0, 10.0);
             g.position = positions[i];
             g.scale = log_scales[i];
+            g.rotation = rotations[i];
         }
 
         // Forward (linear) and loss.
@@ -255,7 +260,7 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
 
         // Backward: get dL/d(color_i) and dL/d(opacity_logit_i) per Gaussian.
         let t1 = Instant::now();
-        let (_img_u8, d_color, d_opacity_logits, d_positions, d_log_scales, d_bg) =
+        let (_img_u8, d_color, d_opacity_logits, d_positions, d_log_scales, d_rot_vecs, d_bg) =
             render_full_color_grads(&gaussians, &camera, &d_image, &bg);
         let t_backward = t1.elapsed();
 
@@ -272,6 +277,9 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
         }
         if cfg.learn_scale {
             scale_opt.step(&mut log_scales, &d_log_scales);
+        }
+        if cfg.learn_rotation {
+            rotation_opt.step(&mut rotations, &d_rot_vecs);
         }
         if cfg.learn_background {
             // AdamVec3 expects slices; update a single bg vector.
@@ -304,6 +312,7 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
             g.opacity = opacity_logits[i].clamp(-10.0, 10.0);
             g.position = positions[i];
             g.scale = log_scales[i];
+            g.rotation = rotations[i];
         }
         linear_vec_to_rgb8_img(
             &render_full_linear(&gaussians, &camera, &bg),
@@ -403,6 +412,7 @@ pub struct MultiViewTrainConfig {
     pub loss: LossKind,
     pub learn_position: bool,
     pub learn_scale: bool,
+    pub learn_rotation: bool,
     /// If non-zero, only use the first N images from `images.bin` (for faster iteration).
     pub max_images: usize,
     /// Optional RNG seed for deterministic train/test splits and view sampling.
@@ -515,6 +525,7 @@ fn densify_and_prune<R: Rng + ?Sized>(
     opacity_logits: &mut Vec<f32>,
     positions: &mut Vec<Vector3<f32>>,
     log_scales: &mut Vec<Vector3<f32>>,
+    rotations: &mut Vec<nalgebra::UnitQuaternion<f32>>,
     grad_accum: &mut Vec<f32>,
     rng: &mut R,
     iters_in_window: usize,
@@ -552,6 +563,7 @@ fn densify_and_prune<R: Rng + ?Sized>(
     let mut new_opacity_logits = Vec::with_capacity(opacity_logits.len());
     let mut new_positions = Vec::with_capacity(positions.len());
     let mut new_log_scales = Vec::with_capacity(log_scales.len());
+    let mut new_rotations = Vec::with_capacity(rotations.len());
     let mut new_grad_accum = Vec::with_capacity(grad_accum.len());
 
     let mut kept = 0usize;
@@ -580,11 +592,13 @@ fn densify_and_prune<R: Rng + ?Sized>(
         keep.opacity = opacity_logits[i].clamp(-10.0, 10.0);
         keep.position = positions[i];
         keep.scale = log_scales[i];
+        keep.rotation = rotations[i];
         new_gaussians.push(keep);
         new_params.push(params[i]);
         new_opacity_logits.push(opacity_logits[i]);
         new_positions.push(positions[i]);
         new_log_scales.push(log_scales[i]);
+        new_rotations.push(rotations[i]);
         new_grad_accum.push(0.0);
         kept += 1;
 
@@ -625,11 +639,13 @@ fn densify_and_prune<R: Rng + ?Sized>(
             g2.opacity = child_opacity_logit;
             g2.position = new_pos;
             g2.scale = log_scales[i] - Vector3::new(0.2, 0.2, 0.2);
+            g2.rotation = rotations[i];
             new_gaussians.push(g2);
             new_params.push(params[i]);
             new_opacity_logits.push(child_opacity_logit);
             new_positions.push(new_pos);
             new_log_scales.push(log_scales[i] - Vector3::new(0.2, 0.2, 0.2));
+            new_rotations.push(rotations[i]);
             new_grad_accum.push(0.0);
             split += 1;
         } else {
@@ -641,11 +657,13 @@ fn densify_and_prune<R: Rng + ?Sized>(
             g2.opacity = child_opacity_logit;
             g2.position = new_pos;
             g2.scale = log_scales[i];
+            g2.rotation = rotations[i];
             new_gaussians.push(g2);
             new_params.push(params[i]);
             new_opacity_logits.push(child_opacity_logit);
             new_positions.push(new_pos);
             new_log_scales.push(log_scales[i]);
+            new_rotations.push(rotations[i]);
             new_grad_accum.push(0.0);
             cloned += 1;
         }
@@ -656,6 +674,7 @@ fn densify_and_prune<R: Rng + ?Sized>(
     *opacity_logits = new_opacity_logits;
     *positions = new_positions;
     *log_scales = new_log_scales;
+    *rotations = new_rotations;
     *grad_accum = new_grad_accum;
 
     kept_avg_grads.sort_by(|a, b| a.total_cmp(b));
@@ -838,6 +857,7 @@ pub fn train_multiview_color_only(
     let mut opacity_opt = AdamF32::new(cfg.lr, 0.9, 0.999, 1e-8);
     let mut position_opt = AdamVec3::new(cfg.lr, 0.9, 0.999, 1e-8);
     let mut scale_opt = AdamVec3::new(cfg.lr, 0.9, 0.999, 1e-8);
+    let mut rotation_opt = AdamSo3::new(cfg.lr, 0.9, 0.999, 1e-8);
 
     // Pull initial params
     let sh0_basis = crate::core::sh_basis(&Vector3::new(0.0, 0.0, 1.0))[0]; // = C0
@@ -848,6 +868,8 @@ pub fn train_multiview_color_only(
     let mut opacity_logits: Vec<f32> = gaussians.iter().map(|g| g.opacity).collect();
     let mut positions: Vec<Vector3<f32>> = gaussians.iter().map(|g| g.position).collect();
     let mut log_scales: Vec<Vector3<f32>> = gaussians.iter().map(|g| g.scale).collect();
+    let mut rotations: Vec<nalgebra::UnitQuaternion<f32>> =
+        gaussians.iter().map(|g| g.rotation).collect();
     let mut grad_accum_pos_norm: Vec<f32> = vec![0.0; gaussians.len()];
     let mut grad_window_iters: usize = 0;
 
@@ -926,6 +948,7 @@ pub fn train_multiview_color_only(
             g.opacity = opacity_logits[i].clamp(-10.0, 10.0);
             g.position = positions[i];
             g.scale = log_scales[i];
+            g.rotation = rotations[i];
         }
 
         // Coverage weighting (use current params)
@@ -967,7 +990,7 @@ pub fn train_multiview_color_only(
 
         // Backward
         let t1 = Instant::now();
-        let (_img_u8, d_color, d_opacity_logits, d_positions, d_log_scales, d_bg) =
+        let (_img_u8, d_color, d_opacity_logits, d_positions, d_log_scales, d_rot_vecs, d_bg) =
             render_full_color_grads(&gaussians, &train_camera, &d_image, &bg);
         let t_backward = t1.elapsed();
 
@@ -984,6 +1007,9 @@ pub fn train_multiview_color_only(
         }
         if cfg.learn_scale {
             scale_opt.step(&mut log_scales, &d_log_scales);
+        }
+        if cfg.learn_rotation {
+            rotation_opt.step(&mut rotations, &d_rot_vecs);
         }
         if cfg.learn_background {
             let mut bg_param = vec![bg];
@@ -1067,6 +1093,7 @@ pub fn train_multiview_color_only(
                 &mut opacity_logits,
                 &mut positions,
                 &mut log_scales,
+                &mut rotations,
                 &mut grad_accum_pos_norm,
                 &mut rng,
                 grad_window_iters,
@@ -1081,6 +1108,7 @@ pub fn train_multiview_color_only(
             opacity_opt.reset_moments_keep_t(opacity_logits.len());
             position_opt.reset_moments_keep_t(positions.len());
             scale_opt.reset_moments_keep_t(log_scales.len());
+            rotation_opt.reset_moments_keep_t(rotations.len());
             grad_window_iters = 0;
             densify_events += 1;
             eprintln!(
@@ -1111,6 +1139,7 @@ pub fn train_multiview_color_only(
         g.opacity = opacity_logits[i].clamp(-10.0, 10.0);
         g.position = positions[i];
         g.scale = log_scales[i];
+        g.rotation = rotations[i];
     }
 
     for (i, &test_idx) in test_indices_for_metrics.iter().enumerate() {
@@ -1203,6 +1232,7 @@ mod tests {
         let mut opacity_logits = vec![2.0, -10.0];
         let mut positions = vec![g1.position, Vector3::new(1.0, 0.0, 1.0)];
         let mut log_scales: Vec<Vector3<f32>> = gaussians.iter().map(|g| g.scale).collect();
+        let mut rotations: Vec<UnitQuaternion<f32>> = gaussians.iter().map(|g| g.rotation).collect();
         let mut grad_accum = vec![2.0, 0.0]; // avg_grad=0.2 if window=10
 
         let mut rng = StdRng::seed_from_u64(123);
@@ -1212,6 +1242,7 @@ mod tests {
             &mut opacity_logits,
             &mut positions,
             &mut log_scales,
+            &mut rotations,
             &mut grad_accum,
             &mut rng,
             10,
@@ -1227,6 +1258,7 @@ mod tests {
         assert_eq!(opacity_logits.len(), 2);
         assert_eq!(positions.len(), 2);
         assert_eq!(log_scales.len(), 2);
+        assert_eq!(rotations.len(), 2);
         assert_eq!(grad_accum, vec![0.0, 0.0]);
 
         // First is the original, second is the split copy.
