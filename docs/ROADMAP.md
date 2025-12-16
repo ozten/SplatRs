@@ -12,6 +12,7 @@ Use `docs/sugar-rs-milestones.md` as the source-of-truth for “done-ness”. Th
   - [ ] Training view sampling (per-iter view selection)
   - [ ] Report PSNR on held-out views
   - [ ] Save at least one rendered/target pair for visual inspection
+  - [ ] Optional: enable opacity learning (`--learn-opacity`) and verify PSNR improves vs color-only
 - [ ] **M9** Adaptive density control (split/clone/prune) improves M8 quality.
 - [ ] **M10** Reference-quality 3DGS training (benchmark scene).
 
@@ -39,3 +40,7 @@ M7 (single-image overfit, color-only):
 M8 (multi-view, color-only):
 
 - `cargo run --bin sugar-train -- --multiview --dataset-root /Users/ozten/Projects/GuassianPlay/digital_calipers2_project --iters 5000 --lr 0.01 --downsample 0.25 --max-gaussians 20000 --train-fraction 0.8 --val-interval 100 --max-test-views 3 --out-dir test_output`
+
+M8 (multi-view, color + opacity):
+
+- `cargo run --bin sugar-train -- --multiview --learn-opacity --dataset-root /Users/ozten/Projects/GuassianPlay/digital_calipers2_project --iters 5000 --lr 0.01 --downsample 0.25 --max-gaussians 20000 --train-fraction 0.8 --val-interval 100 --max-test-views 3 --out-dir test_output`

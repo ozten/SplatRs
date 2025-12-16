@@ -5,6 +5,61 @@
 
 use nalgebra::Vector3;
 
+pub struct AdamF32 {
+    pub lr: f32,
+    pub beta1: f32,
+    pub beta2: f32,
+    pub eps: f32,
+    t: u32,
+    m: Vec<f32>,
+    v: Vec<f32>,
+}
+
+impl AdamF32 {
+    pub fn new(lr: f32, beta1: f32, beta2: f32, eps: f32) -> Self {
+        Self {
+            lr,
+            beta1,
+            beta2,
+            eps,
+            t: 0,
+            m: Vec::new(),
+            v: Vec::new(),
+        }
+    }
+
+    pub fn ensure_len(&mut self, len: usize) {
+        if self.m.len() != len {
+            self.m.resize(len, 0.0);
+            self.v.resize(len, 0.0);
+        }
+    }
+
+    pub fn step(&mut self, params: &mut [f32], grads: &[f32]) {
+        assert_eq!(params.len(), grads.len());
+        self.ensure_len(params.len());
+
+        self.t += 1;
+        let t = self.t as f32;
+        let b1 = self.beta1;
+        let b2 = self.beta2;
+
+        let bias1 = 1.0 - b1.powf(t);
+        let bias2 = 1.0 - b2.powf(t);
+
+        for i in 0..params.len() {
+            let g = grads[i];
+            self.m[i] = self.m[i] * b1 + g * (1.0 - b1);
+            self.v[i] = self.v[i] * b2 + g * g * (1.0 - b2);
+
+            let m_hat = self.m[i] / bias1;
+            let v_hat = self.v[i] / bias2;
+
+            params[i] -= self.lr * m_hat / (v_hat.sqrt() + self.eps);
+        }
+    }
+}
+
 pub struct AdamVec3 {
     pub lr: f32,
     pub beta1: f32,
@@ -153,5 +208,14 @@ mod tests {
             params[0].z < initial.z,
             "Parameter should decrease with positive gradient"
         );
+    }
+
+    #[test]
+    fn test_adam_f32_basic_update() {
+        let mut opt = AdamF32::new(0.01, 0.9, 0.999, 1e-8);
+        let mut params = vec![1.0f32];
+        let grads = vec![1.0f32];
+        opt.step(&mut params, &grads);
+        assert!(params[0] < 1.0);
     }
 }

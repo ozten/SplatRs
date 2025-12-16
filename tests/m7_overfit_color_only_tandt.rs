@@ -37,6 +37,7 @@ fn test_m7_overfit_color_only_tandt_train() {
         iters: 150,
         lr: 0.05,
         learn_background: true,
+        learn_opacity: false,
     };
 
     let _out = train_single_image_color_only(&cfg).expect("Training failed");

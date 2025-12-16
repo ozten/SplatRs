@@ -27,6 +27,7 @@ fn test_m8_multiview_train_smoke_tandt() {
         iters: 5,
         lr: 0.01,
         learn_background: true,
+        learn_opacity: false,
         train_fraction: 0.8,
         val_interval: 1000, // Only validates at the end (iters=5)
         max_test_views_for_metrics: 2,
@@ -88,6 +89,7 @@ fn test_m8_multiview_train_quality_tandt() {
         iters: 500,
         lr: 0.02,
         learn_background: true,
+        learn_opacity: false,
         train_fraction: 0.8,
         val_interval: 50,
         max_test_views_for_metrics: 0, // Evaluate all held-out views

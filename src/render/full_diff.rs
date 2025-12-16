@@ -1,8 +1,8 @@
-//! Differentiable (CPU) renderer pieces for M7.
+//! Differentiable (CPU) renderer pieces for M7/M8.
 //!
 //! This file intentionally implements a *minimal* backward pass that only
-//! computes gradients w.r.t. the Gaussian color (SH coefficients), keeping all
-//! geometry fixed.
+//! computes gradients w.r.t. Gaussian color (SH coefficients) and opacity,
+//! keeping all geometry fixed.
 //!
 //! Why start here?
 //! - It validates the full loss -> pixel gradients -> blend -> per-Gaussian color
@@ -11,7 +11,6 @@
 //!   position/scale/rotation.
 //!
 //! Next steps (not yet implemented here):
-//! - Backprop into alpha (opacity + 2D Gaussian weight)
 //! - Backprop into 2D covariance / mean (projection math)
 //! - Full training loop (M7+)
 
@@ -37,6 +36,18 @@ fn linear_f32_to_srgb_u8(x: f32) -> u8 {
         1.055 * x.powf(1.0 / 2.4) - 0.055
     };
     (cs * 255.0).round().clamp(0.0, 255.0) as u8
+}
+
+fn alpha_from_opacity_logit(opacity_logit: f32, weight: f32) -> (f32, f32) {
+    let opacity = crate::core::sigmoid(opacity_logit);
+    let alpha_raw = opacity * weight;
+    let alpha = alpha_raw.min(0.99);
+    let d_alpha_d_logit = if alpha_raw < 0.99 {
+        weight * opacity * (1.0 - opacity)
+    } else {
+        0.0
+    };
+    (alpha, d_alpha_d_logit)
 }
 
 fn project_gaussian(
@@ -147,7 +158,7 @@ pub fn render_full_color_grads(
     camera: &Camera,
     d_image: &[Vector3<f32>],
     bg: &Vector3<f32>,
-) -> (RgbImage, Vec<Vector3<f32>>, Vector3<f32>) {
+) -> (RgbImage, Vec<Vector3<f32>>, Vec<f32>, Vector3<f32>) {
     let width = camera.width as i32;
     let height = camera.height as i32;
     assert_eq!(d_image.len(), (width * height) as usize);
@@ -164,6 +175,7 @@ pub fn render_full_color_grads(
 
     let mut img = RgbImage::new(camera.width, camera.height);
     let mut d_colors = vec![Vector3::<f32>::zeros(); gaussians.len()];
+    let mut d_opacity_logits = vec![0.0f32; gaussians.len()];
     let mut d_bg = Vector3::<f32>::zeros();
 
     for py in 0..height {
@@ -173,6 +185,7 @@ pub fn render_full_color_grads(
 
             // Gather contributing gaussians in depth order for this pixel.
             let mut alphas: Vec<f32> = Vec::new();
+            let mut d_alpha_d_logits: Vec<f32> = Vec::new();
             let mut colors: Vec<Vector3<f32>> = Vec::new();
             let mut indices: Vec<usize> = Vec::new();
 
@@ -186,12 +199,14 @@ pub fn render_full_color_grads(
                 let quad_form = g.inv_xx * dx * dx + 2.0 * g.inv_xy * dx * dy + g.inv_yy * dy * dy;
                 let weight = (-0.5 * quad_form).exp();
 
-                let alpha = (g.opacity * weight).min(0.99);
+                let (alpha, d_alpha_d_logit) =
+                    alpha_from_opacity_logit(gaussians[g.gaussian_idx].opacity, weight);
                 if alpha < 1e-4 {
                     continue;
                 }
 
                 alphas.push(alpha);
+                d_alpha_d_logits.push(d_alpha_d_logit);
                 colors.push(g.color);
                 indices.push(g.gaussian_idx);
             }
@@ -216,12 +231,13 @@ pub fn render_full_color_grads(
 
             for (k, &gi) in indices.iter().enumerate() {
                 d_colors[gi] += grads.d_colors[k];
+                d_opacity_logits[gi] += grads.d_alphas[k] * d_alpha_d_logits[k];
             }
             d_bg += grads.d_bg;
         }
     }
 
-    (img, d_colors, d_bg)
+    (img, d_colors, d_opacity_logits, d_bg)
 }
 
 /// Forward render that returns linear RGB pixels in [0,1] (no quantization).
@@ -399,6 +415,26 @@ pub fn debug_overlay_means(
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
+
+    #[test]
+    fn test_alpha_from_opacity_logit_matches_finite_difference() {
+        let opacity_logit = 0.3f32;
+        let weight = 0.7f32;
+
+        let (_alpha, d_alpha_d_logit) = alpha_from_opacity_logit(opacity_logit, weight);
+        assert!(d_alpha_d_logit.is_finite());
+
+        let eps = 1e-4f32;
+        let (alpha_p, _) = alpha_from_opacity_logit(opacity_logit + eps, weight);
+        let (alpha_m, _) = alpha_from_opacity_logit(opacity_logit - eps, weight);
+        let numerical = (alpha_p - alpha_m) / (2.0 * eps);
+
+        let diff = (numerical - d_alpha_d_logit).abs();
+        assert!(
+            diff < 1e-3,
+            "finite diff mismatch: numerical={numerical} analytical={d_alpha_d_logit} diff={diff}"
+        );
+    }
 
     #[test]
     fn test_srgb_linear_endpoints() {

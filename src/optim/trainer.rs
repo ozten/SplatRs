@@ -15,7 +15,7 @@
 
 use crate::core::{init_from_colmap_points_visible_stratified, Camera, Gaussian};
 use crate::io::load_colmap_scene;
-use crate::optim::adam::AdamVec3;
+use crate::optim::adam::{AdamF32, AdamVec3};
 use crate::optim::loss::l2_image_loss_and_grad_weighted;
 use crate::render::full_diff::{
     coverage_mask_bool, debug_contrib_count, debug_coverage_mask, debug_final_transmittance,
@@ -36,6 +36,7 @@ pub struct TrainConfig {
     pub iters: usize,
     pub lr: f32,
     pub learn_background: bool,
+    pub learn_opacity: bool,
 }
 
 pub struct TrainOutputs {
@@ -173,6 +174,7 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
 
     // Optimizer state for SH DC coeffs (RGB).
     let mut adam = AdamVec3::new(cfg.lr, 0.9, 0.999, 1e-8);
+    let mut opacity_opt = AdamF32::new(cfg.lr, 0.9, 0.999, 1e-8);
 
     // Pull initial params.
     let sh0_basis = crate::core::sh_basis(&Vector3::new(0.0, 0.0, 1.0))[0]; // = C0
@@ -180,6 +182,7 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
         .iter()
         .map(|g| Vector3::new(g.sh_coeffs[0][0], g.sh_coeffs[0][1], g.sh_coeffs[0][2]))
         .collect();
+    let mut opacity_logits: Vec<f32> = gaussians.iter().map(|g| g.opacity).collect();
 
     // Initial render for output.
     let initial_render_u8 = linear_vec_to_rgb8_img(
@@ -194,6 +197,9 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
             g.sh_coeffs[0][0] = params[i].x;
             g.sh_coeffs[0][1] = params[i].y;
             g.sh_coeffs[0][2] = params[i].z;
+            if cfg.learn_opacity {
+                g.opacity = opacity_logits[i].clamp(-10.0, 10.0);
+            }
         }
 
         // Forward (linear) and loss.
@@ -201,13 +207,17 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
         let (loss, d_image) =
             l2_image_loss_and_grad_weighted(&rendered_linear, &target_linear, &weights);
 
-        // Backward: get dL/d(color_i) per Gaussian.
-        let (_img_u8, d_color, d_bg) = render_full_color_grads(&gaussians, &camera, &d_image, &bg);
+        // Backward: get dL/d(color_i) and dL/d(opacity_logit_i) per Gaussian.
+        let (_img_u8, d_color, d_opacity_logits, d_bg) =
+            render_full_color_grads(&gaussians, &camera, &d_image, &bg);
 
         // Convert dL/d(color) -> dL/d(SH0 coeff) using basis[0] (assuming clamp inactive).
         let grads: Vec<Vector3<f32>> = d_color.iter().map(|dc| dc * sh0_basis).collect();
 
         adam.step(&mut params, &grads);
+        if cfg.learn_opacity {
+            opacity_opt.step(&mut opacity_logits, &d_opacity_logits);
+        }
         if cfg.learn_background {
             // AdamVec3 expects slices; update a single bg vector.
             let mut bg_param = vec![bg];
@@ -230,6 +240,9 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
             g.sh_coeffs[0][0] = params[i].x;
             g.sh_coeffs[0][1] = params[i].y;
             g.sh_coeffs[0][2] = params[i].z;
+            if cfg.learn_opacity {
+                g.opacity = opacity_logits[i].clamp(-10.0, 10.0);
+            }
         }
         linear_vec_to_rgb8_img(
             &render_full_linear(&gaussians, &camera, &bg),
@@ -325,6 +338,7 @@ pub struct MultiViewTrainConfig {
     pub iters: usize,
     pub lr: f32,
     pub learn_background: bool,
+    pub learn_opacity: bool,
     pub train_fraction: f32, // Fraction of images for training (rest for testing)
     pub val_interval: usize,  // Validate every N iterations
     /// Limit how many held-out views are used for PSNR reporting.
@@ -463,6 +477,7 @@ pub fn train_multiview_color_only(
 
     // Optimizer state for SH DC coeffs (RGB)
     let mut adam = AdamVec3::new(cfg.lr, 0.9, 0.999, 1e-8);
+    let mut opacity_opt = AdamF32::new(cfg.lr, 0.9, 0.999, 1e-8);
 
     // Pull initial params
     let sh0_basis = crate::core::sh_basis(&Vector3::new(0.0, 0.0, 1.0))[0]; // = C0
@@ -470,6 +485,7 @@ pub fn train_multiview_color_only(
         .iter()
         .map(|g| Vector3::new(g.sh_coeffs[0][0], g.sh_coeffs[0][1], g.sh_coeffs[0][2]))
         .collect();
+    let mut opacity_logits: Vec<f32> = gaussians.iter().map(|g| g.opacity).collect();
 
     // Compute initial PSNR on test views
     let initial_psnr = {
@@ -494,7 +510,7 @@ pub fn train_multiview_color_only(
             let psnr = compute_psnr(&rendered, &test_target_linear);
             psnr_sum += psnr;
         }
-        psnr_sum / (test_indices.len() as f32)
+        psnr_sum / (test_indices_for_metrics.len() as f32)
     };
 
     eprintln!("Initial test PSNR: {:.2} dB", initial_psnr);
@@ -534,6 +550,9 @@ pub fn train_multiview_color_only(
             g.sh_coeffs[0][0] = params[i].x;
             g.sh_coeffs[0][1] = params[i].y;
             g.sh_coeffs[0][2] = params[i].z;
+            if cfg.learn_opacity {
+                g.opacity = opacity_logits[i].clamp(-10.0, 10.0);
+            }
         }
 
         // Forward and loss
@@ -543,13 +562,16 @@ pub fn train_multiview_color_only(
         train_loss = loss; // Track most recent loss
 
         // Backward
-        let (_img_u8, d_color, d_bg) =
+        let (_img_u8, d_color, d_opacity_logits, d_bg) =
             render_full_color_grads(&gaussians, &train_camera, &d_image, &bg);
 
         // Convert dL/d(color) -> dL/d(SH0 coeff)
         let grads: Vec<Vector3<f32>> = d_color.iter().map(|dc| dc * sh0_basis).collect();
 
         adam.step(&mut params, &grads);
+        if cfg.learn_opacity {
+            opacity_opt.step(&mut opacity_logits, &d_opacity_logits);
+        }
         if cfg.learn_background {
             let mut bg_param = vec![bg];
             let bg_grad = vec![d_bg];
@@ -599,6 +621,15 @@ pub fn train_multiview_color_only(
     let mut test_view_sample = None;
     let mut test_view_target = None;
 
+    for (i, g) in gaussians.iter_mut().enumerate() {
+        g.sh_coeffs[0][0] = params[i].x;
+        g.sh_coeffs[0][1] = params[i].y;
+        g.sh_coeffs[0][2] = params[i].z;
+        if cfg.learn_opacity {
+            g.opacity = opacity_logits[i].clamp(-10.0, 10.0);
+        }
+    }
+
     for (i, &test_idx) in test_indices_for_metrics.iter().enumerate() {
         let test_image_info = &scene.images[test_idx];
         let test_base_camera = scene
@@ -614,13 +645,6 @@ pub fn train_multiview_color_only(
         let test_target_ds =
             downsample_rgb_nearest(&test_target, test_camera.width, test_camera.height);
         let test_target_linear = rgb8_to_linear_vec(&test_target_ds);
-
-        // Write final params
-        for (i, g) in gaussians.iter_mut().enumerate() {
-            g.sh_coeffs[0][0] = params[i].x;
-            g.sh_coeffs[0][1] = params[i].y;
-            g.sh_coeffs[0][2] = params[i].z;
-        }
 
         let rendered = render_full_linear(&gaussians, &test_camera, &bg);
         let psnr = compute_psnr(&rendered, &test_target_linear);

@@ -18,6 +18,7 @@ fn main() {
     let mut max_gaussians: usize = 20_000;
     let mut image_index: usize = 0;
     let mut learn_background: bool = true;
+    let mut learn_opacity: bool = false;
     let mut dataset_root: Option<std::path::PathBuf> = None;
     let mut multiview: bool = false;
     let mut train_fraction: f32 = 0.8;
@@ -36,6 +37,7 @@ fn main() {
             "--max-gaussians" => max_gaussians = args.next().unwrap().parse().unwrap(),
             "--image-index" => image_index = args.next().unwrap().parse().unwrap(),
             "--no-learn-bg" => learn_background = false,
+            "--learn-opacity" => learn_opacity = true,
             "--multiview" => multiview = true,
             "--train-fraction" => train_fraction = args.next().unwrap().parse().unwrap(),
             "--val-interval" => val_interval = args.next().unwrap().parse().unwrap(),
@@ -44,10 +46,10 @@ fn main() {
             "--help" | "-h" => {
                 eprintln!("Usage:");
                 eprintln!("  # M7 (single-view / overfit)");
-                eprintln!("  sugar-train --scene <sparse/0> [--images <dir>] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--image-index I] [--no-learn-bg] [--out-dir DIR]");
+                eprintln!("  sugar-train --scene <sparse/0> [--images <dir>] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--image-index I] [--no-learn-bg] [--learn-opacity] [--out-dir DIR]");
                 eprintln!();
                 eprintln!("  # M8 (multi-view)");
-                eprintln!("  sugar-train --multiview --scene <sparse/0> [--images <dir>] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--train-fraction F] [--val-interval N] [--max-test-views N] [--no-learn-bg] [--out-dir DIR]");
+                eprintln!("  sugar-train --multiview --scene <sparse/0> [--images <dir>] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--train-fraction F] [--val-interval N] [--max-test-views N] [--no-learn-bg] [--learn-opacity] [--out-dir DIR]");
                 eprintln!();
                 eprintln!("  # Auto-detect paths");
                 eprintln!("  sugar-train [--multiview] --dataset-root <root> [--iters N] ...   (auto-detects sparse/0 + images/)");
@@ -86,6 +88,7 @@ fn main() {
             iters,
             lr,
             learn_background,
+            learn_opacity,
             train_fraction,
             val_interval,
             max_test_views_for_metrics,
@@ -115,6 +118,7 @@ fn main() {
             iters,
             lr,
             learn_background,
+            learn_opacity,
         };
 
         let out =
