@@ -908,6 +908,23 @@ pub fn train_multiview_color_only(
     eprintln!("Initialized {} Gaussians", gaussians.len());
     let initial_num_gaussians = gaussians.len();
 
+    // Initialize GPU renderer if requested
+    #[cfg(feature = "gpu")]
+    let gpu_renderer = if cfg.use_gpu {
+        eprintln!("Initializing GPU renderer...");
+        Some(GpuRenderer::new().expect("Failed to initialize GPU"))
+    } else {
+        None
+    };
+
+    #[cfg(not(feature = "gpu"))]
+    let gpu_renderer: Option<()> = None;
+
+    #[cfg(not(feature = "gpu"))]
+    if cfg.use_gpu {
+        return Err(anyhow::anyhow!("GPU rendering requested but not compiled with --features gpu"));
+    }
+
     // Initialize background color (using first view's mean)
     let first_target_linear = if let Some(v) = view_cache.get(&first_train_idx) {
         v.target_linear.clone()
@@ -952,6 +969,21 @@ pub fn train_multiview_color_only(
     let mut grad_accum_pos_norm: Vec<f32> = vec![0.0; gaussians.len()];
     let mut grad_window_iters: usize = 0;
 
+    // Conditional render function: GPU if available, otherwise CPU
+    #[cfg(feature = "gpu")]
+    let render = |gaussians: &[Gaussian], camera: &Camera, bg: &Vector3<f32>| {
+        if let Some(ref renderer) = gpu_renderer {
+            renderer.render(gaussians, camera, bg)
+        } else {
+            render_full_linear(gaussians, camera, bg)
+        }
+    };
+
+    #[cfg(not(feature = "gpu"))]
+    let render = |gaussians: &[Gaussian], camera: &Camera, bg: &Vector3<f32>| {
+        render_full_linear(gaussians, camera, bg)
+    };
+
     // Compute initial PSNR on test views
     let initial_psnr = {
         let mut psnr_sum = 0.0f32;
@@ -978,7 +1010,7 @@ pub fn train_multiview_color_only(
                 (test_camera, test_target_linear)
             };
 
-            let rendered = render_full_linear(&gaussians, &test_camera, &bg);
+            let rendered = render(&gaussians, &test_camera, &bg);
             let psnr = compute_psnr(&rendered, &test_target_linear);
             psnr_sum += psnr;
         }
@@ -1053,7 +1085,7 @@ pub fn train_multiview_color_only(
             .collect();
 
         // Forward and loss
-        let rendered_linear = render_full_linear(&gaussians, &train_camera, &bg);
+        let rendered_linear = render(&gaussians, &train_camera, &bg);
         let (loss, d_image) = match cfg.loss {
             crate::optim::loss::LossKind::L2 => l2_image_loss_and_grad_weighted(
                 &rendered_linear,
@@ -1155,7 +1187,7 @@ pub fn train_multiview_color_only(
                     (test_camera, test_target_linear)
                 };
 
-                let rendered = render_full_linear(&gaussians, &test_camera, &bg);
+                let rendered = render(&gaussians, &test_camera, &bg);
                 let psnr = compute_psnr(&rendered, &test_target_linear);
                 test_psnr_sum += psnr;
             }
@@ -1267,7 +1299,7 @@ pub fn train_multiview_color_only(
             (test_camera, test_target_ds, test_target_linear)
         };
 
-        let rendered = render_full_linear(&gaussians, &test_camera, &bg);
+        let rendered = render(&gaussians, &test_camera, &bg);
         let psnr = compute_psnr(&rendered, &test_target_linear);
         final_psnr_sum += psnr;
 
