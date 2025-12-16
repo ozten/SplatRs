@@ -38,6 +38,7 @@ fn main() {
     let mut prune_opacity_threshold: f32 = 0.01;
     let mut split_sigma_threshold: f32 = 0.05;
     let mut seed: Option<u64> = None;
+    let mut use_gpu: bool = false;
 
     fn apply_preset(
         name: &str,
@@ -260,6 +261,7 @@ fn main() {
             "--prune-opacity-threshold" => prune_opacity_threshold = args.next().unwrap().parse().unwrap(),
             "--split-sigma-threshold" => split_sigma_threshold = args.next().unwrap().parse().unwrap(),
             "--seed" => seed = Some(args.next().unwrap().parse().unwrap()),
+            "--gpu" => use_gpu = true,
             "--help" | "-h" => {
                 eprintln!("Usage:");
                 eprintln!("  sugar-train --preset m7|m8-smoke|m8|m9|m10 [--dataset-root <root> | --scene <sparse/0>] [--images <dir>] [overrides...]");
@@ -325,6 +327,7 @@ fn main() {
             densify_grad_threshold,
             prune_opacity_threshold,
             split_sigma_threshold,
+            use_gpu,
         };
 
         let out = sugar_rs::optim::trainer::train_multiview_color_only(&cfg)
@@ -364,6 +367,7 @@ fn main() {
             loss,
             log_interval,
             rng_seed: seed,
+            use_gpu,
         };
 
         let out =

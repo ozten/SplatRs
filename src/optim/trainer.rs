@@ -15,6 +15,9 @@
 
 use crate::core::{init_from_colmap_points_visible_stratified, Camera, Gaussian};
 use crate::io::load_colmap_scene;
+
+#[cfg(feature = "gpu")]
+use crate::gpu::GpuRenderer;
 use crate::optim::adam::{AdamF32, AdamSh16, AdamSo3, AdamVec3};
 use crate::optim::loss::{
     l1_dssim_image_loss_and_grad_weighted, l2_image_loss_and_grad_weighted, LossKind,
@@ -54,6 +57,8 @@ pub struct TrainConfig {
     pub log_interval: usize,
     /// Optional RNG seed for deterministic runs.
     pub rng_seed: Option<u64>,
+    /// Use GPU for forward rendering.
+    pub use_gpu: bool,
 }
 
 pub struct TrainOutputs {
@@ -126,6 +131,23 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
     let cloud =
         init_from_colmap_points_visible_stratified(&scene.points, &camera, cfg.max_gaussians, 8);
     let mut gaussians: Vec<Gaussian> = cloud.gaussians;
+
+    // Initialize GPU renderer if requested
+    #[cfg(feature = "gpu")]
+    let gpu_renderer = if cfg.use_gpu {
+        eprintln!("Initializing GPU renderer...");
+        Some(GpuRenderer::new().expect("Failed to initialize GPU"))
+    } else {
+        None
+    };
+
+    #[cfg(not(feature = "gpu"))]
+    let gpu_renderer: Option<()> = None;
+
+    #[cfg(not(feature = "gpu"))]
+    if cfg.use_gpu {
+        return Err(anyhow::anyhow!("GPU rendering requested but not compiled with --features gpu"));
+    }
 
     // Heuristic: set per-point isotropic 3D sigma so that the projected footprint is ~constant in pixel-space.
     // This reduces the "salt-and-pepper" look from tiny splats when using sparse COLMAP points.
@@ -213,9 +235,24 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
     let mut rotations: Vec<nalgebra::UnitQuaternion<f32>> =
         gaussians.iter().map(|g| g.rotation).collect();
 
+    // Conditional render function: GPU if available, otherwise CPU
+    #[cfg(feature = "gpu")]
+    let render = |gaussians: &[Gaussian], camera: &Camera, bg: &Vector3<f32>| {
+        if let Some(ref renderer) = gpu_renderer {
+            renderer.render(gaussians, camera, bg)
+        } else {
+            render_full_linear(gaussians, camera, bg)
+        }
+    };
+
+    #[cfg(not(feature = "gpu"))]
+    let render = |gaussians: &[Gaussian], camera: &Camera, bg: &Vector3<f32>| {
+        render_full_linear(gaussians, camera, bg)
+    };
+
     // Initial render for output.
     let initial_render_u8 = linear_vec_to_rgb8_img(
-        &render_full_linear(&gaussians, &camera, &bg),
+        &render(&gaussians, &camera, &bg),
         camera.width,
         camera.height,
     );
@@ -253,7 +290,7 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
         }
 
         let t0 = Instant::now();
-        let rendered_linear = render_full_linear(&gaussians, &camera, &bg);
+        let rendered_linear = render(&gaussians, &camera, &bg);
         let t_forward = t0.elapsed();
         let (loss, d_image) = match cfg.loss {
             crate::optim::loss::LossKind::L2 => {
@@ -343,7 +380,7 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
             g.rotation = rotations[i];
         }
         linear_vec_to_rgb8_img(
-            &render_full_linear(&gaussians, &camera, &bg),
+            &render(&gaussians, &camera, &bg),
             camera.width,
             camera.height,
         )
@@ -463,6 +500,8 @@ pub struct MultiViewTrainConfig {
     pub prune_opacity_threshold: f32,
     /// If average world sigma (exp(log_scale)) is above this, SPLIT; otherwise CLONE.
     pub split_sigma_threshold: f32,
+    /// Use GPU for forward rendering.
+    pub use_gpu: bool,
 }
 
 pub struct MultiViewTrainOutputs {
