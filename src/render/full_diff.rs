@@ -595,6 +595,10 @@ pub fn debug_overlay_means(
         .enumerate()
         .filter_map(|(i, g)| project_gaussian(g, camera, i))
         .collect();
+
+    // Filter out invalid Gaussians (NaN or inf depth) before sorting
+    projected.retain(|g| g.mean.z.is_finite());
+
     projected.sort_by(|a, b| a.mean.z.partial_cmp(&b.mean.z).unwrap());
 
     let mut out = target.clone();
@@ -703,6 +707,15 @@ pub fn coverage_mask_bool(gaussians: &[Gaussian], camera: &Camera) -> Vec<bool> 
         .enumerate()
         .filter_map(|(i, g)| project_gaussian(g, camera, i))
         .collect();
+
+    // Filter out invalid Gaussians (NaN or inf depth) before sorting
+    let original_count = projected.len();
+    projected.retain(|g| g.mean.z.is_finite());
+    let filtered_count = original_count - projected.len();
+    if filtered_count > 0 {
+        eprintln!("[CPU WARNING] coverage_mask_bool filtered {} Gaussians with invalid depth values", filtered_count);
+    }
+
     projected.sort_by(|a, b| a.mean.z.partial_cmp(&b.mean.z).unwrap());
     let prepared = prepare(&projected, gaussians, camera);
 
@@ -747,6 +760,10 @@ pub fn debug_final_transmittance(gaussians: &[Gaussian], camera: &Camera) -> Rgb
         .enumerate()
         .filter_map(|(i, g)| project_gaussian(g, camera, i))
         .collect();
+
+    // Filter out invalid Gaussians (NaN or inf depth) before sorting
+    projected.retain(|g| g.mean.z.is_finite());
+
     projected.sort_by(|a, b| a.mean.z.partial_cmp(&b.mean.z).unwrap());
     let prepared = prepare(&projected, gaussians, camera);
 
@@ -793,6 +810,10 @@ pub fn debug_contrib_count(gaussians: &[Gaussian], camera: &Camera, clamp_max: u
         .enumerate()
         .filter_map(|(i, g)| project_gaussian(g, camera, i))
         .collect();
+
+    // Filter out invalid Gaussians (NaN or inf depth) before sorting
+    projected.retain(|g| g.mean.z.is_finite());
+
     projected.sort_by(|a, b| a.mean.z.partial_cmp(&b.mean.z).unwrap());
     let prepared = prepare(&projected, gaussians, camera);
 

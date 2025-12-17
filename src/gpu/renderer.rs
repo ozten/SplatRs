@@ -1095,12 +1095,7 @@ impl GpuRenderer {
         };
 
         // Run forward pass once to get pixels and intermediates
-        // (This is shared for all tiles - we only tile the backward pass)
-        let pixels = self.render(gaussians, camera, background);
-
-        if enable_timing {
-            eprintln!("[GPU] Forward pass: {:?}", t_start.as_ref().unwrap().elapsed());
-        }
+        // (Forward pass is shared - we only tile the backward pass)
 
         // Convert inputs to GPU format (shared across all tiles)
         let gaussians_gpu: Vec<crate::gpu::types::GaussianGPU> =
@@ -1266,6 +1261,24 @@ impl GpuRenderer {
         }
 
         self.ctx.queue.submit(Some(encoder.finish()));
+
+        if enable_timing {
+            eprintln!("[GPU] Forward pass (project + rasterize): {:?}", t_start.as_ref().unwrap().elapsed());
+        }
+
+        // Download rendered pixels from forward pass
+        let output: Vec<[f32; 4]> = buffers::read_buffer_blocking(
+            &self.ctx.device,
+            &self.ctx.queue,
+            &output_buffer,
+            num_pixels,
+        )
+        .expect("Failed to read output pixels");
+
+        let pixels: Vec<Vector3<f32>> = output
+            .iter()
+            .map(|rgba| Vector3::new(rgba[0], rgba[1], rgba[2]))
+            .collect();
 
         // Initialize final gradients
         let mut final_grads = crate::gpu::gradients::GaussianGradients2D::zeros(num_gaussians);

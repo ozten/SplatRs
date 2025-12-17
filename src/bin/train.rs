@@ -197,6 +197,38 @@ fn main() {
                 *split_sigma_threshold = 0.05;
                 *seed = Some(0);
             }
+            "micro" => {
+                // Fast smoke test preset: ~10-15 minutes
+                *multiview = true;
+                *iters = 100;  // Reduced from 500
+                *lr = 0.002;
+                *lr_position = 0.00016;
+                *lr_rotation = 0.001;
+                *lr_scale = 0.005;
+                *lr_opacity = 0.05;
+                *lr_sh = 0.0025;
+                *lr_background = 0.001;
+                *downsample = 0.25;
+                *max_gaussians = 3_000;  // Reduced from 5,000
+                *log_interval = 20;  // Log more frequently for short runs
+                *learn_background = true;
+                *learn_opacity = true;
+                *learn_position = true;
+                *learn_scale = true;
+                *learn_rotation = true;
+                *learn_sh = true;
+                *loss = sugar_rs::optim::loss::LossKind::L2;
+                *train_fraction = 0.8;
+                *val_interval = 50;  // Validate at 50 and 100
+                *max_test_views_for_metrics = 3;  // Reduced from 5
+                *max_images = 15;  // Reduced from 25 (12 train, 3 test)
+                *densify_interval = 25;  // Densify at 25, 50, 75
+                *densify_max_gaussians = 5_000;  // Reduced from 10,000
+                *densify_grad_threshold = 0.0002;
+                *prune_opacity_threshold = 0.005;
+                *split_sigma_threshold = 0.1;
+                *seed = Some(0);
+            }
             "m10" | "m10-quick" => {
                 *multiview = true;
                 *iters = 2_000;
@@ -231,7 +263,7 @@ fn main() {
             }
             other => {
                 return Err(format!(
-                    "Unknown preset `{other}` (expected one of: m7, m8-smoke, m8, m9, m10, m10-quick)"
+                    "Unknown preset `{other}` (expected one of: m7, m8-smoke, m8, m9, micro, m10, m10-quick)"
                 ));
             }
         }
