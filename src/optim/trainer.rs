@@ -316,8 +316,8 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
         let (_img_u8, d_color, d_opacity_logits, d_positions, d_log_scales, d_rot_vecs, d_bg) = {
             #[cfg(feature = "gpu")]
             if let Some(ref renderer) = gpu_renderer {
-                // Try GPU tiled backward pass (handles large scenes)
-                let (_pixels, grads_2d) = renderer.render_with_gradients_tiled(&gaussians, &camera, &bg, &d_image);
+                // Use GPU backward pass with sparse atomic gradients (efficient for <10k Gaussians)
+                let (_pixels, grads_2d) = renderer.render_with_gradients(&gaussians, &camera, &bg, &d_image);
 
                 // Check if GPU fallback occurred (empty gradients)
                 if grads_2d.d_colors.is_empty() {
@@ -363,9 +363,28 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
         }
         if cfg.learn_position {
             position_opt.step(&mut positions, &d_positions);
+
+            // Clip positions to scene bounds to prevent Gaussians escaping to infinity
+            const MAX_SCENE_RADIUS: f32 = 1000.0;
+            for pos in positions.iter_mut() {
+                let pos_mag = pos.norm();
+                if pos_mag > MAX_SCENE_RADIUS {
+                    *pos = *pos * (MAX_SCENE_RADIUS / pos_mag);
+                }
+            }
         }
         if cfg.learn_scale {
             scale_opt.step(&mut log_scales, &d_log_scales);
+
+            // Clamp log-space scales to prevent exp() overflow
+            // exp(20) ≈ 485M (very large), exp(-20) ≈ 2e-9 (very small but valid)
+            const MAX_LOG_SCALE: f32 = 20.0;
+            const MIN_LOG_SCALE: f32 = -20.0;
+            for scale in log_scales.iter_mut() {
+                scale.x = scale.x.clamp(MIN_LOG_SCALE, MAX_LOG_SCALE);
+                scale.y = scale.y.clamp(MIN_LOG_SCALE, MAX_LOG_SCALE);
+                scale.z = scale.z.clamp(MIN_LOG_SCALE, MAX_LOG_SCALE);
+            }
         }
         if cfg.learn_rotation {
             rotation_opt.step(&mut rotations, &d_rot_vecs);
@@ -1200,8 +1219,8 @@ pub fn train_multiview_color_only(
         let (_img_u8, d_color, d_opacity_logits, d_positions, d_log_scales, d_rot_vecs, d_bg) = {
             #[cfg(feature = "gpu")]
             if let Some(ref renderer) = gpu_renderer {
-                // Try GPU tiled backward pass (handles large scenes)
-                let (_pixels, grads_2d) = renderer.render_with_gradients_tiled(&gaussians, &train_camera, &bg, &d_image);
+                // Use GPU backward pass with sparse atomic gradients (efficient for <10k Gaussians)
+                let (_pixels, grads_2d) = renderer.render_with_gradients(&gaussians, &train_camera, &bg, &d_image);
 
                 // Check if GPU fallback occurred (empty gradients)
                 if grads_2d.d_colors.is_empty() {
@@ -1247,9 +1266,28 @@ pub fn train_multiview_color_only(
         }
         if cfg.learn_position {
             position_opt.step(&mut positions, &d_positions);
+
+            // Clip positions to scene bounds to prevent Gaussians escaping to infinity
+            const MAX_SCENE_RADIUS: f32 = 1000.0;
+            for pos in positions.iter_mut() {
+                let pos_mag = pos.norm();
+                if pos_mag > MAX_SCENE_RADIUS {
+                    *pos = *pos * (MAX_SCENE_RADIUS / pos_mag);
+                }
+            }
         }
         if cfg.learn_scale {
             scale_opt.step(&mut log_scales, &d_log_scales);
+
+            // Clamp log-space scales to prevent exp() overflow
+            // exp(20) ≈ 485M (very large), exp(-20) ≈ 2e-9 (very small but valid)
+            const MAX_LOG_SCALE: f32 = 20.0;
+            const MIN_LOG_SCALE: f32 = -20.0;
+            for scale in log_scales.iter_mut() {
+                scale.x = scale.x.clamp(MIN_LOG_SCALE, MAX_LOG_SCALE);
+                scale.y = scale.y.clamp(MIN_LOG_SCALE, MAX_LOG_SCALE);
+                scale.z = scale.z.clamp(MIN_LOG_SCALE, MAX_LOG_SCALE);
+            }
         }
         if cfg.learn_rotation {
             rotation_opt.step(&mut rotations, &d_rot_vecs);
@@ -1595,5 +1633,50 @@ mod tests {
         assert!(!stats.cap_hit);
         assert_relative_eq!(stats.grad_p50, 0.2, epsilon = 1e-6);
         assert_relative_eq!(stats.grad_p90, 0.2, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn test_compute_psnr_empty_vectors() {
+        // Empty vectors should return 0.0
+        let empty_rendered: Vec<Vector3<f32>> = vec![];
+        let empty_target: Vec<Vector3<f32>> = vec![];
+
+        let psnr = compute_psnr(&empty_rendered, &empty_target);
+        assert_eq!(psnr, 0.0, "PSNR for empty vectors should be 0.0");
+    }
+
+    #[test]
+    fn test_compute_psnr_mismatched_lengths() {
+        // Mismatched lengths should return 0.0
+        let rendered = vec![Vector3::new(0.5, 0.5, 0.5)];
+        let target = vec![Vector3::new(0.5, 0.5, 0.5), Vector3::new(0.6, 0.6, 0.6)];
+
+        let psnr = compute_psnr(&rendered, &target);
+        assert_eq!(psnr, 0.0, "PSNR for mismatched lengths should be 0.0");
+    }
+
+    #[test]
+    fn test_compute_psnr_perfect_match() {
+        // Perfect match should be capped at 100.0 dB
+        let rendered = vec![
+            Vector3::new(0.5, 0.6, 0.7),
+            Vector3::new(0.1, 0.2, 0.3),
+        ];
+        let target = rendered.clone();
+
+        let psnr = compute_psnr(&rendered, &target);
+        assert_eq!(psnr, 100.0, "PSNR for perfect match should be capped at 100.0");
+    }
+
+    #[test]
+    fn test_compute_psnr_normal_case() {
+        // Test normal case with known MSE
+        let rendered = vec![Vector3::new(0.5, 0.5, 0.5)];
+        let target = vec![Vector3::new(0.6, 0.6, 0.6)];
+
+        // MSE = ((0.1^2 + 0.1^2 + 0.1^2)) / 3 = 0.03 / 3 = 0.01
+        // PSNR = 10 * log10(1.0 / 0.01) = 10 * log10(100) = 20.0
+        let psnr = compute_psnr(&rendered, &target);
+        assert_relative_eq!(psnr, 20.0, epsilon = 1e-5);
     }
 }

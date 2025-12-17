@@ -2,7 +2,7 @@
 
 use crate::core::{Camera, Gaussian};
 use crate::gpu::{buffers, context::GpuContext, shaders, types::*};
-use nalgebra::Vector3;
+use nalgebra::{Vector2, Vector3};
 use wgpu::{BindGroup, BindGroupLayout, BufferUsages, ComputePipeline};
 
 pub struct GpuRenderer {
@@ -259,6 +259,7 @@ impl GpuRenderer {
     ) -> Vec<Vector3<f32>> {
         let enable_timing = std::env::var("SUGAR_GPU_TIMING").is_ok();
         let t_start = if enable_timing { Some(std::time::Instant::now()) } else { None };
+
         // Convert to GPU format
         let gaussians_gpu: Vec<GaussianGPU> =
             gaussians.iter().map(GaussianGPU::from_gaussian).collect();
@@ -513,14 +514,17 @@ impl GpuRenderer {
         background: &Vector3<f32>,
         d_pixels: &[Vector3<f32>],
     ) -> (Vec<Vector3<f32>>, crate::gpu::gradients::GaussianGradients2D) {
-        use crate::gpu::gradients::reduce_pixel_gradients;
         use crate::gpu::types::{ContributionGPU, GradientGPU, MAX_CONTRIBUTIONS_PER_PIXEL};
 
-        // Check if per-pixel gradient buffer would exceed GPU limit (256 MB)
+        // Constants for gradient buffer sizing
+        const GRADIENT_I32_PER_GAUSSIAN: usize = 16; // 16 i32s = 64 bytes per Gaussian
         const MAX_GPU_BUFFER_SIZE: u64 = 256 * 1024 * 1024; // 256 MB
+
+        // Check if per-Gaussian gradient buffer would exceed GPU limit
+        // With sparse atomic gradients, buffer size is just num_gaussians × 64 bytes
         let num_pixels = (camera.width * camera.height) as usize;
         let num_gaussians = gaussians.len();
-        let gradient_buffer_size = (num_pixels * num_gaussians * std::mem::size_of::<GradientGPU>()) as u64;
+        let gradient_buffer_size = (num_gaussians * GRADIENT_I32_PER_GAUSSIAN * std::mem::size_of::<i32>()) as u64;
 
         if gradient_buffer_size > MAX_GPU_BUFFER_SIZE {
             eprintln!("[GPU WARNING] Gradient buffer would be {} GB (> {} MB limit)",
@@ -841,13 +845,14 @@ impl GpuRenderer {
             BufferUsages::STORAGE,
         );
 
-        // Create per-pixel gradient buffer (initialized to zero)
-        // This avoids race conditions - each pixel gets its own gradient section
-        let total_grad_entries = num_pixels * num_gaussians;
-        let zero_grads = vec![GradientGPU::zero(); total_grad_entries];
+        // Create per-Gaussian gradient buffer as i32 (initialized to zero)
+        // Shader uses fixed-point i32 atomics (Metal-compatible)
+        // Each Gaussian has 16 i32s (64 bytes): 4 vec4 fields × 4 components = 16 i32s
+        let total_i32s = num_gaussians * GRADIENT_I32_PER_GAUSSIAN;
+        let zero_grads: Vec<i32> = vec![0i32; total_i32s];
         let pixel_grads_buffer = buffers::create_buffer_init(
             &self.ctx.device,
-            "Per-Pixel Gradients",
+            "Per-Gaussian Gradients (i32)",
             &zero_grads,
             BufferUsages::STORAGE | BufferUsages::COPY_SRC,
         );
@@ -962,13 +967,14 @@ impl GpuRenderer {
             None
         };
 
-        let pixel_grads: Vec<GradientGPU> = buffers::read_buffer_blocking(
+        // Read gradient buffer as i32 (fixed-point representation)
+        let pixel_grads_i32: Vec<i32> = buffers::read_buffer_blocking(
             &self.ctx.device,
             &self.ctx.queue,
             &pixel_grads_buffer,
-            num_pixels * num_gaussians,
+            total_i32s,
         )
-        .expect("Failed to read pixel gradients");
+        .expect("Failed to read per-Gaussian gradients");
 
         if enable_timing {
             eprintln!(
@@ -977,17 +983,31 @@ impl GpuRenderer {
             );
         }
 
-        // CPU reduction - sum across all pixels
-        let t_reduce = if enable_timing {
-            Some(std::time::Instant::now())
-        } else {
-            None
-        };
-
-        let final_grads = reduce_pixel_gradients(&pixel_grads, num_pixels, num_gaussians);
-
-        if enable_timing {
-            eprintln!("[GPU] CPU reduction: {:?}", t_reduce.unwrap().elapsed());
+        // Convert from fixed-point i32 to f32 gradients
+        // Shader uses FIXED_POINT_SCALE = 10000000.0
+        const FIXED_POINT_SCALE: f32 = 10000000.0;
+        let mut final_grads = crate::gpu::gradients::GaussianGradients2D::zeros(num_gaussians);
+        for i in 0..num_gaussians {
+            let base = i * GRADIENT_I32_PER_GAUSSIAN;
+            // d_color: offsets 0-2 (3 is padding)
+            final_grads.d_colors[i] = Vector3::new(
+                pixel_grads_i32[base + 0] as f32 / FIXED_POINT_SCALE,
+                pixel_grads_i32[base + 1] as f32 / FIXED_POINT_SCALE,
+                pixel_grads_i32[base + 2] as f32 / FIXED_POINT_SCALE,
+            );
+            // d_opacity_logit_pad: offset 4 (5-7 are padding)
+            final_grads.d_opacity_logits[i] = pixel_grads_i32[base + 4] as f32 / FIXED_POINT_SCALE;
+            // d_mean_px: offsets 8-9 (10-11 are padding)
+            final_grads.d_mean_px[i] = Vector2::new(
+                pixel_grads_i32[base + 8] as f32 / FIXED_POINT_SCALE,
+                pixel_grads_i32[base + 9] as f32 / FIXED_POINT_SCALE,
+            );
+            // d_cov_2d: offsets 12-14 (15 is padding)
+            final_grads.d_cov_2d[i] = Vector3::new(
+                pixel_grads_i32[base + 12] as f32 / FIXED_POINT_SCALE,
+                pixel_grads_i32[base + 13] as f32 / FIXED_POINT_SCALE,
+                pixel_grads_i32[base + 14] as f32 / FIXED_POINT_SCALE,
+            );
         }
 
         // Read output pixels
@@ -1018,7 +1038,7 @@ impl GpuRenderer {
     ///
     /// Returns tile size (32 or 16) or 0 if even tiling won't fit in memory.
     fn calculate_tile_size(num_gaussians: usize) -> u32 {
-        const MAX_BUFFER: u64 = 200 * 1024 * 1024; // 200 MB (leave margin below 256 MB limit)
+        const MAX_BUFFER: u64 = 128 * 1024 * 1024; // 128 MB (conservative for Apple Silicon)
         let grad_size = std::mem::size_of::<crate::gpu::types::GradientGPU>() as u64;
 
         // Try 32×32 first (optimal for most cases)
@@ -1436,5 +1456,33 @@ impl GpuRenderer {
         }
 
         (pixels, final_grads)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_calculate_tile_size_small_scene() {
+        // 1,000 gaussians with 64 bytes per gradient
+        // 32×32 = 1024 pixels × 1000 × 64 = 65.5 MB < 128 MB ✓
+        assert_eq!(GpuRenderer::calculate_tile_size(1000), 32);
+    }
+
+    #[test]
+    fn test_calculate_tile_size_medium_scene() {
+        // 3,000 gaussians with 64 bytes per gradient
+        // 32×32 = 1024 pixels × 3000 × 64 = 196.6 MB > 128 MB ❌
+        // 16×16 = 256 pixels × 3000 × 64 = 49.2 MB < 128 MB ✓
+        assert_eq!(GpuRenderer::calculate_tile_size(3000), 16);
+    }
+
+    #[test]
+    fn test_calculate_tile_size_huge_scene() {
+        // 100,000 gaussians with 64 bytes per gradient
+        // 16×16 = 256 pixels × 100000 × 64 = 1.6 GB > 128 MB ❌
+        // Should return 0 to signal CPU fallback
+        assert_eq!(GpuRenderer::calculate_tile_size(100000), 0);
     }
 }

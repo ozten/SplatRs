@@ -96,7 +96,12 @@ fn project_gaussians(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     // Cull if behind camera
     if (pos_cam.z <= 0.0) {
-        gaussians_out[idx].mean.z = -1.0; // Mark as culled
+        // Write sentinel values for all fields to ensure buffer is fully initialized
+        gaussians_out[idx].mean = vec4<f32>(0.0, 0.0, -1.0, 0.0); // Mark as culled with z=-1
+        gaussians_out[idx].cov = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+        gaussians_out[idx].color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+        gaussians_out[idx].opacity_pad = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+        gaussians_out[idx].gaussian_idx_pad = vec4<u32>(idx, 0u, 0u, 0u);
         return;
     }
 

@@ -129,16 +129,41 @@ impl AdamVec3 {
 
         for i in 0..params.len() {
             let g = grads[i];
+
+            // Skip update if gradient is invalid
+            if !g.x.is_finite() || !g.y.is_finite() || !g.z.is_finite() {
+                continue;
+            }
+
             self.m[i] = self.m[i] * b1 + g * (1.0 - b1);
             self.v[i] = self.v[i] * b2 + g.component_mul(&g) * (1.0 - b2);
 
             let m_hat = self.m[i] / bias1;
             let v_hat = self.v[i] / bias2;
 
-            // elementwise update
-            params[i].x -= self.lr * m_hat.x / (v_hat.x.sqrt() + self.eps);
-            params[i].y -= self.lr * m_hat.y / (v_hat.y.sqrt() + self.eps);
-            params[i].z -= self.lr * m_hat.z / (v_hat.z.sqrt() + self.eps);
+            // Compute update step
+            let step = Vector3::new(
+                self.lr * m_hat.x / (v_hat.x.sqrt() + self.eps),
+                self.lr * m_hat.y / (v_hat.y.sqrt() + self.eps),
+                self.lr * m_hat.z / (v_hat.z.sqrt() + self.eps),
+            );
+
+            // Skip update if step is invalid
+            let step_mag = step.norm();
+            if !step_mag.is_finite() {
+                continue;
+            }
+
+            // Clip step magnitude to prevent large jumps (similar to rotation clipping)
+            let max_step = 10.0;  // Max 10 units per step
+            let clamped_step = if step_mag > max_step {
+                step * (max_step / step_mag)
+            } else {
+                step
+            };
+
+            // Apply clamped step
+            params[i] -= clamped_step;
         }
     }
 }
