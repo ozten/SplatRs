@@ -115,13 +115,31 @@ fn test_gpu_vs_cpu_gradients() {
     let gpu_nonzero_count = gpu_grads.d_colors.iter().filter(|c| c.norm() > 0.0).count();
     println!("  GPU gradients with non-zero d_color: {} / {}", gpu_nonzero_count, gaussians.len());
 
-    // Print first few gradients
+    // Print first few gradients with ratios
     for i in 0..gaussians.len().min(3) {
+        let cpu_norm = cpu_d_colors[i].norm();
+        let gpu_norm = gpu_grads.d_colors[i].norm();
+        let ratio = if gpu_norm > 0.0 { cpu_norm / gpu_norm } else { 0.0 };
+
         println!("    Gaussian {}:", i);
-        println!("      CPU d_color:  [{:.6}, {:.6}, {:.6}]", cpu_d_colors[i].x, cpu_d_colors[i].y, cpu_d_colors[i].z);
-        println!("      GPU d_color:  [{:.6}, {:.6}, {:.6}]", gpu_grads.d_colors[i].x, gpu_grads.d_colors[i].y, gpu_grads.d_colors[i].z);
+        println!("      CPU d_color:  [{:.6}, {:.6}, {:.6}] (norm: {:.6})",
+            cpu_d_colors[i].x, cpu_d_colors[i].y, cpu_d_colors[i].z, cpu_norm);
+        println!("      GPU d_color:  [{:.6}, {:.6}, {:.6}] (norm: {:.6})",
+            gpu_grads.d_colors[i].x, gpu_grads.d_colors[i].y, gpu_grads.d_colors[i].z, gpu_norm);
+        println!("      Ratio (CPU/GPU): {:.2}x", ratio);
         println!("      CPU d_opacity_logit: {:.6}", cpu_d_opacity_logits[i]);
         println!("      GPU d_opacity_logit: {:.6}", gpu_grads.d_opacity_logits[i]);
+    }
+
+    // Check if ratio is consistent (might indicate systematic scaling issue)
+    let ratios: Vec<f32> = gaussians.iter().enumerate()
+        .filter(|(i, _)| gpu_grads.d_colors[*i].norm() > 1e-6)
+        .map(|(i, _)| cpu_d_colors[i].norm() / gpu_grads.d_colors[i].norm())
+        .collect();
+    if !ratios.is_empty() {
+        let avg_ratio = ratios.iter().sum::<f32>() / ratios.len() as f32;
+        println!("  Average CPU/GPU ratio: {:.2}x (suggests {}x scaling issue)",
+            avg_ratio, avg_ratio);
     }
 
     // Compare d_colors

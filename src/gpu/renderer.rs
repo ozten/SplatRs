@@ -504,7 +504,7 @@ impl GpuRenderer {
         background: &Vector3<f32>,
         d_pixels: &[Vector3<f32>],
     ) -> (Vec<Vector3<f32>>, crate::gpu::gradients::GaussianGradients2D) {
-        use crate::gpu::gradients::reduce_workgroup_gradients;
+        use crate::gpu::gradients::reduce_pixel_gradients;
         use crate::gpu::types::{ContributionGPU, GradientGPU, MAX_CONTRIBUTIONS_PER_PIXEL};
 
         let enable_timing = std::env::var("SUGAR_GPU_TIMING").is_ok();
@@ -726,17 +726,13 @@ impl GpuRenderer {
             BufferUsages::STORAGE,
         );
 
-        // Calculate number of workgroups
-        let num_workgroups_x = (width + 15) / 16;
-        let num_workgroups_y = (height + 15) / 16;
-        let total_workgroups = (num_workgroups_x * num_workgroups_y) as usize;
-
-        // Create workgroup gradients buffer (initialized to zero!)
-        let total_grad_entries = total_workgroups * num_gaussians;
+        // Create per-pixel gradient buffer (initialized to zero)
+        // This avoids race conditions - each pixel gets its own gradient section
+        let total_grad_entries = num_pixels * num_gaussians;
         let zero_grads = vec![GradientGPU::zero(); total_grad_entries];
-        let workgroup_grads_buffer = buffers::create_buffer_init(
+        let pixel_grads_buffer = buffers::create_buffer_init(
             &self.ctx.device,
-            "Workgroup Gradients",
+            "Per-Pixel Gradients",
             &zero_grads,
             BufferUsages::STORAGE | BufferUsages::COPY_SRC,
         );
@@ -748,7 +744,7 @@ impl GpuRenderer {
             width: u32,
             height: u32,
             num_gaussians: u32,
-            num_workgroups_x: u32,
+            pad: u32,
             background: [f32; 4],
         }
 
@@ -756,7 +752,7 @@ impl GpuRenderer {
             width,
             height,
             num_gaussians: num_gaussians as u32,
-            num_workgroups_x,
+            pad: 0,
             background: [background.x, background.y, background.z, 0.0],
         };
 
@@ -793,7 +789,7 @@ impl GpuRenderer {
                         },
                         wgpu::BindGroupEntry {
                             binding: 4,
-                            resource: workgroup_grads_buffer.as_entire_binding(),
+                            resource: pixel_grads_buffer.as_entire_binding(),
                         },
                     ],
                 });
@@ -813,7 +809,7 @@ impl GpuRenderer {
             });
             compute_pass.set_pipeline(&self.backward_pipeline);
             compute_pass.set_bind_group(0, &backward_bind_group, &[]);
-            compute_pass.dispatch_workgroups(num_workgroups_x, num_workgroups_y, 1);
+            compute_pass.dispatch_workgroups((width + 15) / 16, (height + 15) / 16, 1);
         }
 
         self.ctx.queue.submit(Some(encoder.finish()));
@@ -822,20 +818,20 @@ impl GpuRenderer {
             eprintln!("[GPU] Backward pass: {:?}", t_backward.unwrap().elapsed());
         }
 
-        // Download workgroup gradients
+        // Download per-pixel gradients
         let t_download = if enable_timing {
             Some(std::time::Instant::now())
         } else {
             None
         };
 
-        let workgroup_grads: Vec<GradientGPU> = buffers::read_buffer_blocking(
+        let pixel_grads: Vec<GradientGPU> = buffers::read_buffer_blocking(
             &self.ctx.device,
             &self.ctx.queue,
-            &workgroup_grads_buffer,
-            total_workgroups * num_gaussians,
+            &pixel_grads_buffer,
+            num_pixels * num_gaussians,
         )
-        .expect("Failed to read workgroup gradients");
+        .expect("Failed to read pixel gradients");
 
         if enable_timing {
             eprintln!(
@@ -844,15 +840,14 @@ impl GpuRenderer {
             );
         }
 
-        // CPU reduction
+        // CPU reduction - sum across all pixels
         let t_reduce = if enable_timing {
             Some(std::time::Instant::now())
         } else {
             None
         };
 
-        let final_grads =
-            reduce_workgroup_gradients(&workgroup_grads, total_workgroups, num_gaussians);
+        let final_grads = reduce_pixel_gradients(&pixel_grads, num_pixels, num_gaussians);
 
         if enable_timing {
             eprintln!("[GPU] CPU reduction: {:?}", t_reduce.unwrap().elapsed());

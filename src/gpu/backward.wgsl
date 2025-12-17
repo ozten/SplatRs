@@ -36,7 +36,7 @@ struct BackwardParams {
     width: u32,
     height: u32,
     num_gaussians: u32,
-    num_workgroups_x: u32,    // For workgroup buffer indexing
+    pad: u32,    // Padding (was num_workgroups_x, no longer needed)
     background: vec4<f32>,    // Background color
 }
 
@@ -44,7 +44,7 @@ struct BackwardParams {
 @group(0) @binding(1) var<storage, read> intermediates: array<Contribution>;
 @group(0) @binding(2) var<storage, read> gaussians: array<Gaussian2D>;
 @group(0) @binding(3) var<storage, read> d_pixels: array<vec4<f32>>;  // Upstream gradients
-@group(0) @binding(4) var<storage, read_write> workgroup_gradients: array<Gradient>;
+@group(0) @binding(4) var<storage, read_write> pixel_gradients: array<Gradient>;  // Per-pixel gradients (avoid races!)
 
 // Maximum contributions per pixel (must match Rust constant)
 const MAX_CONTRIBUTIONS_PER_PIXEL: u32 = 16u;
@@ -201,11 +201,16 @@ fn backward_pass(
     for (var i = 0u; i < num_contribs; i++) {
         let k = num_contribs - 1u - i;  // Reverse index
         let contrib = intermediates[base_contrib_idx + k];
-        let gaussian_idx = contrib.gaussian_idx;
+        let sorted_idx = contrib.gaussian_idx;  // This is the sorted index
         let alpha = contrib.alpha;
         let t_i = contrib.transmittance;
 
-        let g = gaussians[gaussian_idx];
+        // Read Gaussian from sorted array using sorted index
+        let g = gaussians[sorted_idx];
+
+        // Get original Gaussian index for gradient accumulation
+        let gaussian_idx = g.gaussian_idx_pad.x;
+
         let color = g.color.xyz;
         let opacity = g.opacity_pad.x;
         let mean_x = g.mean.x;
@@ -270,17 +275,15 @@ fn backward_pass(
             weight
         );
 
-        // Write to per-workgroup gradient buffer
-        let wg_linear = workgroup_id.y * params.num_workgroups_x + workgroup_id.x;
-        let grad_idx = wg_linear * params.num_gaussians + gaussian_idx;
+        // Write to per-pixel gradient buffer
+        // Each pixel has its own gradient buffer section to avoid race conditions
+        let grad_idx = pixel_idx * params.num_gaussians + gaussian_idx;
 
-        // Accumulate gradients atomically (wait, we can't use atomics for f32!)
-        // Instead, we use per-workgroup buffers and reduce on CPU.
-        // Each workgroup writes to its own section, no contention.
-        workgroup_gradients[grad_idx].d_color += d_color;
-        workgroup_gradients[grad_idx].d_opacity_logit += d_opacity_logit;
-        workgroup_gradients[grad_idx].d_mean_px += d_mean * d_weight;
-        workgroup_gradients[grad_idx].d_cov_2d += d_cov * d_weight;
+        // Accumulate gradients (no race condition - each pixel has its own section)
+        pixel_gradients[grad_idx].d_color += d_color;
+        pixel_gradients[grad_idx].d_opacity_logit += d_opacity_logit;
+        pixel_gradients[grad_idx].d_mean_px += d_mean * d_weight;
+        pixel_gradients[grad_idx].d_cov_2d += d_cov * d_weight;
     }
 
     // Background gradient contribution
