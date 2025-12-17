@@ -27,6 +27,12 @@ fn test_m8_multiview_train_smoke_tandt() {
         downsample_factor: 0.125, // 8x downsampling for speed
         iters: 5,
         lr: 0.01,
+        lr_position: 0.00016,
+        lr_rotation: 0.001,
+        lr_scale: 0.005,
+        lr_opacity: 0.05,
+        lr_sh: 0.0025,
+        lr_background: 0.001,
         learn_background: true,
         learn_opacity: false,
         loss: LossKind::L2,
@@ -45,7 +51,7 @@ fn test_m8_multiview_train_smoke_tandt() {
         densify_grad_threshold: 0.1,
         prune_opacity_threshold: 0.01,
         split_sigma_threshold: 0.05,
-        use_gpu: false,
+        use_gpu: true,
     };
 
     let result = train_multiview_color_only(&cfg).expect("Training failed");
@@ -103,6 +109,12 @@ fn test_m8_multiview_train_quality_tandt() {
         downsample_factor: 0.25,
         iters: 500,
         lr: 0.02,
+        lr_position: 0.00016,
+        lr_rotation: 0.001,
+        lr_scale: 0.005,
+        lr_opacity: 0.05,
+        lr_sh: 0.0025,
+        lr_background: 0.001,
         learn_background: true,
         learn_opacity: false,
         loss: LossKind::L2,
@@ -121,7 +133,7 @@ fn test_m8_multiview_train_quality_tandt() {
         densify_grad_threshold: 0.1,
         prune_opacity_threshold: 0.01,
         split_sigma_threshold: 0.05,
-        use_gpu: false,
+        use_gpu: true,
     };
 
     let result = train_multiview_color_only(&cfg).expect("Training failed");

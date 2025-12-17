@@ -37,6 +37,12 @@ fn test_m7_overfit_color_only_tandt_train() {
         downsample_factor: 0.125,
         iters: 150,
         lr: 0.05,
+        lr_position: 0.00016,
+        lr_rotation: 0.001,
+        lr_scale: 0.005,
+        lr_opacity: 0.05,
+        lr_sh: 0.0025,
+        lr_background: 0.001,
         learn_background: true,
         learn_opacity: false,
         loss: LossKind::L2,
@@ -46,7 +52,7 @@ fn test_m7_overfit_color_only_tandt_train() {
         learn_sh: false,
         log_interval: 10,
         rng_seed: Some(0),
-        use_gpu: false,
+        use_gpu: true,
     };
 
     let _out = train_single_image_color_only(&cfg).expect("Training failed");

@@ -30,6 +30,12 @@ fn test_m9_densify_smoke_tandt() {
         downsample_factor: 0.125,
         iters: 6,
         lr: 0.01,
+        lr_position: 0.00016,
+        lr_rotation: 0.001,
+        lr_scale: 0.005,
+        lr_opacity: 0.05,
+        lr_sh: 0.0025,
+        lr_background: 0.001,
         learn_background: true,
         learn_opacity: false,
         loss: LossKind::L2,
@@ -48,6 +54,7 @@ fn test_m9_densify_smoke_tandt() {
         densify_grad_threshold: -1.0, // force densify for smoke testing
         prune_opacity_threshold: 0.0, // disable pruning for smoke testing
         split_sigma_threshold: 1e9,   // force CLONE (avoid scale changes)
+        use_gpu: true,
     };
 
     let result = train_multiview_color_only(&cfg).expect("Training failed");
