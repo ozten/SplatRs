@@ -163,6 +163,38 @@ impl ContributionGPU {
 /// Conservative default: 16 contributions per pixel is enough for most scenes.
 pub const MAX_CONTRIBUTIONS_PER_PIXEL: u32 = 16;
 
+/// GPU representation of gradients for a single Gaussian.
+///
+/// This matches the CPU gradient structure but in GPU-friendly layout.
+/// Used for per-workgroup gradient accumulation during backward pass.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GradientGPU {
+    /// Gradient w.r.t. color (r, g, b, padding)
+    pub d_color: [f32; 4],
+
+    /// Gradient w.r.t. opacity logit and padding
+    pub d_opacity_logit_pad: [f32; 4],
+
+    /// Gradient w.r.t. 2D mean in pixel space (x, y, padding, padding)
+    pub d_mean_px: [f32; 4],
+
+    /// Gradient w.r.t. 2D covariance (xx, xy, yy, padding)
+    pub d_cov_2d: [f32; 4],
+}
+
+impl GradientGPU {
+    /// Create a zero gradient (for initialization).
+    pub const fn zero() -> Self {
+        Self {
+            d_color: [0.0; 4],
+            d_opacity_logit_pad: [0.0; 4],
+            d_mean_px: [0.0; 4],
+            d_cov_2d: [0.0; 4],
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

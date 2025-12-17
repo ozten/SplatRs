@@ -9,8 +9,10 @@ pub struct GpuRenderer {
     ctx: GpuContext,
     project_pipeline: ComputePipeline,
     rasterize_pipeline: ComputePipeline,
+    backward_pipeline: ComputePipeline,
     project_bind_group_layout: BindGroupLayout,
     rasterize_bind_group_layout: BindGroupLayout,
+    backward_bind_group_layout: BindGroupLayout,
 }
 
 impl GpuRenderer {
@@ -21,6 +23,7 @@ impl GpuRenderer {
         // Create shaders
         let project_shader = shaders::create_project_shader(&ctx.device);
         let rasterize_shader = shaders::create_rasterize_shader(&ctx.device);
+        let backward_shader = shaders::create_backward_shader(&ctx.device);
 
         // Create bind group layouts
         let project_bind_group_layout =
@@ -116,6 +119,69 @@ impl GpuRenderer {
                     ],
                 });
 
+        let backward_bind_group_layout =
+            ctx.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("Backward Bind Group Layout"),
+                    entries: &[
+                        // Backward params uniform
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        // Intermediates input (from forward pass)
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        // Gaussians 2D input
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 2,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        // Upstream gradients (d_pixels)
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 3,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        // Workgroup gradients output
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 4,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: false },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                    ],
+                });
+
         // Create pipeline layouts
         let project_pipeline_layout =
             ctx.device
@@ -152,12 +218,31 @@ impl GpuRenderer {
                     entry_point: "rasterize",
                 });
 
+        let backward_pipeline_layout =
+            ctx.device
+                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("Backward Pipeline Layout"),
+                    bind_group_layouts: &[&backward_bind_group_layout],
+                    push_constant_ranges: &[],
+                });
+
+        let backward_pipeline =
+            ctx.device
+                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("Backward Pipeline"),
+                    layout: Some(&backward_pipeline_layout),
+                    module: &backward_shader,
+                    entry_point: "backward_pass",
+                });
+
         Ok(Self {
             ctx,
             project_pipeline,
             rasterize_pipeline,
+            backward_pipeline,
             project_bind_group_layout,
             rasterize_bind_group_layout,
+            backward_bind_group_layout,
         })
     }
 

@@ -26,7 +26,8 @@ pub use context::GpuContext;
 pub use renderer::GpuRenderer;
 #[cfg(feature = "gpu")]
 pub use types::{
-    CameraGPU, ContributionGPU, Gaussian2DGPU, GaussianGPU, MAX_CONTRIBUTIONS_PER_PIXEL,
+    CameraGPU, ContributionGPU, Gaussian2DGPU, GaussianGPU, GradientGPU,
+    MAX_CONTRIBUTIONS_PER_PIXEL,
 };
 
 #[cfg(not(feature = "gpu"))]

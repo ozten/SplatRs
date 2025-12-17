@@ -181,3 +181,13 @@ pub fn create_rasterize_shader(device: &Device) -> ShaderModule {
     })
 }
 
+/// WGSL shader for backward pass (gradient computation).
+pub const BACKWARD_SHADER: &str = include_str!("backward.wgsl");
+
+pub fn create_backward_shader(device: &Device) -> ShaderModule {
+    device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Backward Shader"),
+        source: wgpu::ShaderSource::Wgsl(BACKWARD_SHADER.into()),
+    })
+}
+
