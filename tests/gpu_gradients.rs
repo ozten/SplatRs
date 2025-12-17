@@ -242,8 +242,10 @@ fn test_gpu_gradients_benchmark() {
 
     println!("\n=== GPU Gradients Performance Benchmark ===\n");
 
-    // Create a more realistic scene with more Gaussians
-    let num_gaussians = 500;
+    // Create a moderately-sized scene
+    // Note: Per-pixel gradients use num_pixels × num_gaussians × 64 bytes
+    // With 256 MB buffer limit, max is ~1M entries
+    let num_gaussians = 100;
     let mut gaussians = Vec::new();
 
     for i in 0..num_gaussians {
@@ -264,11 +266,11 @@ fn test_gpu_gradients_benchmark() {
         ));
     }
 
-    // Larger image for more realistic workload
+    // Moderately-sized image
     let camera = Camera::new(
         200.0, 200.0,
-        100.0, 100.0,
-        200, 200, // Larger resolution
+        64.0, 64.0,
+        128, 128, // 128×128 = 16K pixels × 100 gaussians = 1.6M entries (fits in 256MB)
         Matrix3::identity(),
         Vector3::zeros(),
     );
