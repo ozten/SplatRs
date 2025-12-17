@@ -731,13 +731,13 @@ impl GpuRenderer {
         let num_workgroups_y = (height + 15) / 16;
         let total_workgroups = (num_workgroups_x * num_workgroups_y) as usize;
 
-        // Create workgroup gradients buffer
-        let workgroup_grads_size =
-            (total_workgroups * num_gaussians * std::mem::size_of::<GradientGPU>()) as u64;
-        let workgroup_grads_buffer = buffers::create_buffer(
+        // Create workgroup gradients buffer (initialized to zero!)
+        let total_grad_entries = total_workgroups * num_gaussians;
+        let zero_grads = vec![GradientGPU::zero(); total_grad_entries];
+        let workgroup_grads_buffer = buffers::create_buffer_init(
             &self.ctx.device,
             "Workgroup Gradients",
-            workgroup_grads_size,
+            &zero_grads,
             BufferUsages::STORAGE | BufferUsages::COPY_SRC,
         );
 

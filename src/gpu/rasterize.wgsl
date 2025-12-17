@@ -120,7 +120,7 @@ fn rasterize(@builtin(global_invocation_id) global_id: vec3<u32>) {
             intermediates[intermediate_idx] = Contribution(
                 transmittance,  // T before this Gaussian
                 alpha,          // α of this Gaussian
-                i,              // Gaussian index in sorted list
+                g.gaussian_idx_pad.x,  // ORIGINAL Gaussian index (not sorted index)
                 0u              // padding
             );
             contrib_count += 1u;

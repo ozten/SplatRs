@@ -49,6 +49,30 @@ struct BackwardParams {
 // Maximum contributions per pixel (must match Rust constant)
 const MAX_CONTRIBUTIONS_PER_PIXEL: u32 = 16u;
 
+// Evaluate 2D Gaussian at a pixel (same as in rasterize.wgsl)
+fn eval_gaussian_2d(mean_x: f32, mean_y: f32, cov_xx: f32, cov_xy: f32, cov_yy: f32,
+                     pixel_x: f32, pixel_y: f32) -> f32 {
+    let dx = pixel_x - mean_x;
+    let dy = pixel_y - mean_y;
+
+    // Compute inverse covariance
+    let det = cov_xx * cov_yy - cov_xy * cov_xy;
+    if (det <= 0.0) {
+        return 0.0;
+    }
+
+    let inv_det = 1.0 / det;
+    let inv_xx = cov_yy * inv_det;
+    let inv_xy = -cov_xy * inv_det;
+    let inv_yy = cov_xx * inv_det;
+
+    // Quadratic form: (x - μ)^T Σ^-1 (x - μ)
+    let quad_form = inv_xx * dx * dx + 2.0 * inv_xy * dx * dy + inv_yy * dy * dy;
+
+    // Gaussian weight
+    return exp(-0.5 * quad_form);
+}
+
 // Zero gradient initializer
 fn zero_gradient() -> Gradient {
     return Gradient(
@@ -213,17 +237,19 @@ fn backward_pass(
         // alpha = min(opacity * weight, 0.99)
         // opacity = sigmoid(opacity_logit)
         //
-        // d(alpha)/d(opacity_logit) = d(alpha)/d(opacity) * d(opacity)/d(logit)
-        //                            = weight * opacity * (1 - opacity)  [if alpha < 0.99]
-        //                            = 0                                  [if alpha >= 0.99]
-        //
-        // Compute weight from alpha and opacity
-        let weight = alpha / opacity;  // Reverse: weight = alpha / opacity (if alpha < 0.99)
+        // We need to recompute weight from the Gaussian evaluation
+        let weight = eval_gaussian_2d(
+            mean_x, mean_y,
+            cov_xx, cov_xy, cov_yy,
+            pixel_x, pixel_y
+        );
 
         // Check if alpha was clamped
         let alpha_raw = opacity * weight;
         let was_clamped = alpha_raw >= 0.99;
 
+        // d(alpha)/d(opacity) = weight (if not clamped), 0 (if clamped)
+        // d(alpha)/d(weight) = opacity (if not clamped), 0 (if clamped)
         let d_opacity = select(d_alpha * weight, 0.0, was_clamped);
         let d_weight = select(d_alpha * opacity, 0.0, was_clamped);
 
