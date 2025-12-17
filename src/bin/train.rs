@@ -47,7 +47,7 @@ fn main() {
     let mut prune_opacity_threshold: f32 = 0.01;
     let mut split_sigma_threshold: f32 = 0.05;
     let mut seed: Option<u64> = None;
-    let mut use_gpu: bool = false;
+    let mut use_gpu: bool = true;
 
     fn apply_preset(
         name: &str,
@@ -198,9 +198,9 @@ fn main() {
                 *seed = Some(0);
             }
             "micro" => {
-                // Fast smoke test preset: ~10-15 minutes
+                // Ultra-fast preset for GPU profiling and UI dev: ~5 minutes
                 *multiview = true;
-                *iters = 100;  // Reduced from 500
+                *iters = 50;  // Reduced from 100 for faster iteration
                 *lr = 0.002;
                 *lr_position = 0.00016;
                 *lr_rotation = 0.001;
@@ -208,9 +208,9 @@ fn main() {
                 *lr_opacity = 0.05;
                 *lr_sh = 0.0025;
                 *lr_background = 0.001;
-                *downsample = 0.25;
-                *max_gaussians = 3_000;  // Reduced from 5,000
-                *log_interval = 20;  // Log more frequently for short runs
+                *downsample = 0.20;  // 20% resolution (down from 25%)
+                *max_gaussians = 2_000;  // Lighter initial scene
+                *log_interval = 10;  // More frequent logging for short runs
                 *learn_background = true;
                 *learn_opacity = true;
                 *learn_position = true;
@@ -218,12 +218,12 @@ fn main() {
                 *learn_rotation = true;
                 *learn_sh = true;
                 *loss = sugar_rs::optim::loss::LossKind::L2;
-                *train_fraction = 0.8;
-                *val_interval = 50;  // Validate at 50 and 100
-                *max_test_views_for_metrics = 3;  // Reduced from 5
-                *max_images = 15;  // Reduced from 25 (12 train, 3 test)
-                *densify_interval = 25;  // Densify at 25, 50, 75
-                *densify_max_gaussians = 5_000;  // Reduced from 10,000
+                *train_fraction = 0.75;  // 6 train, 2 test with 8 images
+                *val_interval = 25;  // Single validation at midpoint
+                *max_test_views_for_metrics = 2;  // Faster validation
+                *max_images = 8;  // Significantly reduced for speed
+                *densify_interval = 25;  // Densify at 25, 50
+                *densify_max_gaussians = 4_000;  // Lower cap for faster processing
                 *densify_grad_threshold = 0.0002;
                 *prune_opacity_threshold = 0.005;
                 *split_sigma_threshold = 0.1;
@@ -350,10 +350,12 @@ fn main() {
             "--split-sigma-threshold" => split_sigma_threshold = args.next().unwrap().parse().unwrap(),
             "--seed" => seed = Some(args.next().unwrap().parse().unwrap()),
             "--gpu" => use_gpu = true,
+            "--cpu" | "--no-gpu" => use_gpu = false,
             "--help" | "-h" => {
                 eprintln!("Usage:");
                 eprintln!("  sugar-train --preset m7|m8-smoke|m8|m9|m10 [--dataset-root <root> | --scene <sparse/0>] [--images <dir>] [overrides...]");
                 eprintln!("  Note: presets apply immediately; later flags override preset values.");
+                eprintln!("  Note: GPU rendering is enabled by default. Use --cpu to force CPU rendering.");
                 eprintln!();
                 eprintln!("  # M7 (single-view / overfit)");
                 eprintln!("  sugar-train --scene <sparse/0> [--images <dir>] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--image-index I] [--log-interval N] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--learn-position] [--learn-scale] [--learn-rotation] [--learn-sh] [--seed U64] [--out-dir DIR]");
