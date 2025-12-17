@@ -179,17 +179,6 @@ impl GpuRenderer {
                             },
                             count: None,
                         },
-                        // Debug info output
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 5,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::Buffer {
-                                ty: wgpu::BufferBindingType::Storage { read_only: false },
-                                has_dynamic_offset: false,
-                                min_binding_size: None,
-                            },
-                            count: None,
-                        },
                     ],
                 });
 
@@ -867,23 +856,6 @@ impl GpuRenderer {
             BufferUsages::UNIFORM,
         );
 
-        // Create debug buffer (one vec4<u32> per pixel)
-        #[repr(C)]
-        #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-        struct DebugInfo {
-            pixel_idx: u32,
-            num_contribs: u32,
-            first_grad_idx: u32,
-            first_gaussian_idx: u32,
-        }
-        let zero_debug = vec![DebugInfo { pixel_idx: 0, num_contribs: 0, first_grad_idx: 0, first_gaussian_idx: 0 }; num_pixels];
-        let debug_buffer = buffers::create_buffer_init(
-            &self.ctx.device,
-            "Debug Info",
-            &zero_debug,
-            BufferUsages::STORAGE | BufferUsages::COPY_SRC,
-        );
-
         // Create backward bind group
         let backward_bind_group =
             self.ctx
@@ -911,10 +883,6 @@ impl GpuRenderer {
                         wgpu::BindGroupEntry {
                             binding: 4,
                             resource: pixel_grads_buffer.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 5,
-                            resource: debug_buffer.as_entire_binding(),
                         },
                     ],
                 });
@@ -972,124 +940,6 @@ impl GpuRenderer {
                 "[GPU] Download gradients: {:?}",
                 t_download.unwrap().elapsed()
             );
-        }
-
-        // Debug: Read debug buffer to see what the shader computed
-        if std::env::var("SUGAR_GPU_DEBUG").is_ok() {
-            let debug_data: Vec<DebugInfo> = buffers::read_buffer_blocking(
-                &self.ctx.device,
-                &self.ctx.queue,
-                &debug_buffer,
-                num_pixels,
-            ).expect("Failed to read debug buffer");
-
-            eprintln!("[GPU DEBUG] Shader debug info:");
-            eprintln!("  Checking pixels 1103-1110 (should have intermediates):");
-            for px in 1103..=1110 {
-                let info = &debug_data[px];
-                let expected_grad_idx = px * num_gaussians + info.first_gaussian_idx as usize;
-                eprintln!("    Pixel {}: num_contribs={}, writes_to_grad_idx={} (expected={}), gaussian_idx={}",
-                    px, info.num_contribs, info.first_grad_idx, expected_grad_idx, info.first_gaussian_idx);
-            }
-
-            eprintln!("  Checking pixels 828-830 (should NOT have intermediates):");
-            for px in 828..=830 {
-                let info = &debug_data[px];
-                eprintln!("    Pixel {}: num_contribs={}, first_grad_idx={}, first_gaussian_idx={}",
-                    px, info.num_contribs, info.first_grad_idx, info.first_gaussian_idx);
-            }
-
-            // Find pixels where shader found contributions
-            let mut pixels_with_shader_contribs = Vec::new();
-            for (px_idx, info) in debug_data.iter().enumerate() {
-                if info.num_contribs > 0 {
-                    pixels_with_shader_contribs.push(px_idx);
-                }
-            }
-            eprintln!("  Total pixels where shader found contributions: {}", pixels_with_shader_contribs.len());
-            if pixels_with_shader_contribs.len() <= 10 {
-                eprintln!("  First pixels where shader found contribs: {:?}", pixels_with_shader_contribs);
-            } else {
-                eprintln!("  First 10 pixels where shader found contribs: {:?}", &pixels_with_shader_contribs[0..10]);
-            }
-        }
-
-        // Debug: Check how many pixels have non-zero gradients
-        if std::env::var("SUGAR_GPU_DEBUG").is_ok() {
-            let mut pixels_with_grads = 0;
-            let mut total_nonzero_grads = 0;
-
-            for px_idx in 0..num_pixels {
-                let px_base = px_idx * num_gaussians;
-                let mut has_grad = false;
-
-                for g_idx in 0..num_gaussians {
-                    let grad = &pixel_grads[px_base + g_idx];
-                    let has_nonzero = grad.d_color[0].abs() > 1e-10
-                        || grad.d_color[1].abs() > 1e-10
-                        || grad.d_color[2].abs() > 1e-10;
-
-                    if has_nonzero {
-                        has_grad = true;
-                        total_nonzero_grads += 1;
-                    }
-                }
-
-                if has_grad {
-                    pixels_with_grads += 1;
-                }
-            }
-
-            eprintln!("[GPU DEBUG] Pixels with gradients: {} / {}", pixels_with_grads, num_pixels);
-            eprintln!("[GPU DEBUG] Total non-zero gradient entries: {} / {}",
-                total_nonzero_grads, num_pixels * num_gaussians);
-            eprintln!("[GPU DEBUG] Expected if all pixels contribute: {} entries",
-                num_pixels * num_gaussians);
-
-            // Re-read intermediates to compare with gradients
-            let intermediates_data = buffers::read_buffer_blocking::<ContributionGPU>(
-                &self.ctx.device,
-                &self.ctx.queue,
-                &intermediates_buffer,
-                num_pixels * MAX_CONTRIBUTIONS_PER_PIXEL as usize,
-            ).expect("Failed to re-read intermediates");
-
-            // Check pixels 1103-1110 (which have intermediates) to see if they have gradients
-            eprintln!("[GPU DEBUG] Checking pixels 1103-1110 (which HAVE intermediates):");
-            for px_idx in 1103..=1110 {
-                let px_base = px_idx * num_gaussians;
-                let int_base = px_idx * MAX_CONTRIBUTIONS_PER_PIXEL as usize;
-                let has_intermediate = intermediates_data[int_base].gaussian_idx != 0xFFFFFFFF;
-                let mut has_grad = false;
-                eprintln!("  Pixel {}:", px_idx);
-                for g_idx in 0..num_gaussians {
-                    let grad_idx = px_base + g_idx;
-                    let grad = &pixel_grads[grad_idx];
-                    let norm = (grad.d_color[0].powi(2) + grad.d_color[1].powi(2) + grad.d_color[2].powi(2)).sqrt();
-                    if norm > 1e-10 {
-                        has_grad = true;
-                    }
-                    eprintln!("    grad[{}] (g={}): d_color=[{:.12}, {:.12}, {:.12}], norm={:.12}",
-                        grad_idx, g_idx, grad.d_color[0], grad.d_color[1], grad.d_color[2], norm);
-                }
-                eprintln!("    has_intermediate={}, has_gradient={}", has_intermediate, has_grad);
-            }
-
-            // Also check pixels 828-830 (which DON'T have intermediates but have gradients)
-            eprintln!("[GPU DEBUG] Checking pixels 828-830 (which DON'T have intermediates but have gradients):");
-            for px_idx in 828..=830 {
-                let px_base = px_idx * num_gaussians;
-                let int_base = px_idx * MAX_CONTRIBUTIONS_PER_PIXEL as usize;
-                let has_intermediate = intermediates_data[int_base].gaussian_idx != 0xFFFFFFFF;
-                eprintln!("  Pixel {}: has_intermediate={}", px_idx, has_intermediate);
-                for g_idx in 0..num_gaussians {
-                    let grad = &pixel_grads[px_base + g_idx];
-                    if grad.d_color[0].abs() > 1e-10 || grad.d_color[1].abs() > 1e-10 || grad.d_color[2].abs() > 1e-10 {
-                        eprintln!("    Gaussian {}: d_color=[{:.9}, {:.9}, {:.9}]",
-                            g_idx, grad.d_color[0], grad.d_color[1], grad.d_color[2]);
-                    }
-                }
-            }
         }
 
         // CPU reduction - sum across all pixels

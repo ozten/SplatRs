@@ -45,6 +45,7 @@ fn test_m8_multiview_train_smoke_tandt() {
         densify_grad_threshold: 0.1,
         prune_opacity_threshold: 0.01,
         split_sigma_threshold: 0.05,
+        use_gpu: false,
     };
 
     let result = train_multiview_color_only(&cfg).expect("Training failed");
@@ -120,6 +121,7 @@ fn test_m8_multiview_train_quality_tandt() {
         densify_grad_threshold: 0.1,
         prune_opacity_threshold: 0.01,
         split_sigma_threshold: 0.05,
+        use_gpu: false,
     };
 
     let result = train_multiview_color_only(&cfg).expect("Training failed");

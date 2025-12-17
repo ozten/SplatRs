@@ -45,7 +45,6 @@ struct BackwardParams {
 @group(0) @binding(2) var<storage, read> gaussians: array<Gaussian2D>;
 @group(0) @binding(3) var<storage, read> d_pixels: array<vec4<f32>>;  // Upstream gradients
 @group(0) @binding(4) var<storage, read_write> pixel_gradients: array<Gradient>;  // Per-pixel gradients (avoid races!)
-@group(0) @binding(5) var<storage, read_write> debug_info: array<vec4<u32>>;  // Debug: (pixel_idx, num_contribs, first_grad_idx, first_gaussian_idx)
 
 // Maximum contributions per pixel (must match Rust constant)
 const MAX_CONTRIBUTIONS_PER_PIXEL: u32 = 16u;
@@ -188,10 +187,6 @@ fn backward_pass(
         num_contribs += 1u;
     }
 
-    // Debug: Will be updated if we process any contributions
-    var first_grad_idx = 0u;
-    var first_gaussian_idx = 0u;
-
     // Blend backward pass (same logic as CPU blend_backward_with_bg)
     //
     // We backpropagate through:
@@ -284,21 +279,12 @@ fn backward_pass(
         // Each pixel has its own gradient buffer section to avoid race conditions
         let grad_idx = pixel_idx * params.num_gaussians + gaussian_idx;
 
-        // Debug: Capture first gradient write
-        if (i == 0u) {
-            first_grad_idx = grad_idx;
-            first_gaussian_idx = gaussian_idx;
-        }
-
         // Accumulate gradients (no race condition - each pixel has its own section)
         pixel_gradients[grad_idx].d_color += vec4<f32>(d_color, 0.0);
         pixel_gradients[grad_idx].d_opacity_logit_pad.x += d_opacity_logit;
         pixel_gradients[grad_idx].d_mean_px += vec4<f32>(d_mean * d_weight, 0.0, 0.0);
         pixel_gradients[grad_idx].d_cov_2d += vec4<f32>(d_cov * d_weight, 0.0);
     }
-
-    // Debug: Write pixel info AFTER processing
-    debug_info[pixel_idx] = vec4<u32>(pixel_idx, num_contribs, first_grad_idx, first_gaussian_idx);
 
     // Background gradient contribution
     // out = ... + T_final * bg
