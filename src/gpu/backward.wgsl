@@ -14,12 +14,12 @@ struct Contribution {
     pad: u32,                 // Alignment
 }
 
-// Gradient structure for a single Gaussian
+// Gradient structure for a single Gaussian (must match GradientGPU in Rust!)
 struct Gradient {
-    d_color: vec3<f32>,       // dL/d(color)
-    d_opacity_logit: f32,     // dL/d(opacity_logit)
-    d_mean_px: vec2<f32>,     // dL/d(mean_px)
-    d_cov_2d: vec3<f32>,      // dL/d(cov_2d) as (xx, xy, yy)
+    d_color: vec4<f32>,              // dL/d(color) + padding
+    d_opacity_logit_pad: vec4<f32>,  // dL/d(opacity_logit) + padding
+    d_mean_px: vec4<f32>,            // dL/d(mean_px) + padding
+    d_cov_2d: vec4<f32>,             // dL/d(cov_2d) + padding
 }
 
 // Gaussian 2D structure (same as rasterize.wgsl)
@@ -45,6 +45,7 @@ struct BackwardParams {
 @group(0) @binding(2) var<storage, read> gaussians: array<Gaussian2D>;
 @group(0) @binding(3) var<storage, read> d_pixels: array<vec4<f32>>;  // Upstream gradients
 @group(0) @binding(4) var<storage, read_write> pixel_gradients: array<Gradient>;  // Per-pixel gradients (avoid races!)
+@group(0) @binding(5) var<storage, read_write> debug_info: array<vec4<u32>>;  // Debug: (pixel_idx, num_contribs, first_grad_idx, first_gaussian_idx)
 
 // Maximum contributions per pixel (must match Rust constant)
 const MAX_CONTRIBUTIONS_PER_PIXEL: u32 = 16u;
@@ -76,10 +77,10 @@ fn eval_gaussian_2d(mean_x: f32, mean_y: f32, cov_xx: f32, cov_xy: f32, cov_yy: 
 // Zero gradient initializer
 fn zero_gradient() -> Gradient {
     return Gradient(
-        vec3<f32>(0.0, 0.0, 0.0),
-        0.0,
-        vec2<f32>(0.0, 0.0),
-        vec3<f32>(0.0, 0.0, 0.0)
+        vec4<f32>(0.0, 0.0, 0.0, 0.0),
+        vec4<f32>(0.0, 0.0, 0.0, 0.0),
+        vec4<f32>(0.0, 0.0, 0.0, 0.0),
+        vec4<f32>(0.0, 0.0, 0.0, 0.0)
     );
 }
 
@@ -187,6 +188,10 @@ fn backward_pass(
         num_contribs += 1u;
     }
 
+    // Debug: Will be updated if we process any contributions
+    var first_grad_idx = 0u;
+    var first_gaussian_idx = 0u;
+
     // Blend backward pass (same logic as CPU blend_backward_with_bg)
     //
     // We backpropagate through:
@@ -279,12 +284,21 @@ fn backward_pass(
         // Each pixel has its own gradient buffer section to avoid race conditions
         let grad_idx = pixel_idx * params.num_gaussians + gaussian_idx;
 
+        // Debug: Capture first gradient write
+        if (i == 0u) {
+            first_grad_idx = grad_idx;
+            first_gaussian_idx = gaussian_idx;
+        }
+
         // Accumulate gradients (no race condition - each pixel has its own section)
-        pixel_gradients[grad_idx].d_color += d_color;
-        pixel_gradients[grad_idx].d_opacity_logit += d_opacity_logit;
-        pixel_gradients[grad_idx].d_mean_px += d_mean * d_weight;
-        pixel_gradients[grad_idx].d_cov_2d += d_cov * d_weight;
+        pixel_gradients[grad_idx].d_color += vec4<f32>(d_color, 0.0);
+        pixel_gradients[grad_idx].d_opacity_logit_pad.x += d_opacity_logit;
+        pixel_gradients[grad_idx].d_mean_px += vec4<f32>(d_mean * d_weight, 0.0, 0.0);
+        pixel_gradients[grad_idx].d_cov_2d += vec4<f32>(d_cov * d_weight, 0.0);
     }
+
+    // Debug: Write pixel info AFTER processing
+    debug_info[pixel_idx] = vec4<u32>(pixel_idx, num_contribs, first_grad_idx, first_gaussian_idx);
 
     // Background gradient contribution
     // out = ... + T_final * bg
