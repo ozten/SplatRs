@@ -56,68 +56,6 @@ impl GaussianGradients2D {
     }
 }
 
-/// Reduce per-pixel gradients to final per-Gaussian gradients.
-///
-/// Each pixel has written gradients for all Gaussians to its own buffer section.
-/// This function sums across all pixels to get the final gradients.
-///
-/// # Arguments
-/// * `pixel_grads` - Flat array of GradientGPU: [px0_g0, px0_g1, ..., px1_g0, px1_g1, ...]
-/// * `num_pixels` - Total number of pixels
-/// * `num_gaussians` - Number of Gaussians
-///
-/// # Performance
-/// This is a CPU reduction but should be fast (~5-10ms for typical scenes):
-/// - 64×64 pixels × 3 Gaussians = ~12K gradient entries (test scene)
-/// - 200×200 pixels × 500 Gaussians = ~20M gradient entries (larger scene)
-/// - Simple addition, highly cache-friendly
-pub fn reduce_pixel_gradients(
-    pixel_grads: &[GradientGPU],
-    num_pixels: usize,
-    num_gaussians: usize,
-) -> GaussianGradients2D {
-    assert_eq!(
-        pixel_grads.len(),
-        num_pixels * num_gaussians,
-        "Pixel gradients buffer size mismatch"
-    );
-
-    let mut final_grads = GaussianGradients2D::zeros(num_gaussians);
-
-    // Sum across all pixels for each Gaussian
-    for px_idx in 0..num_pixels {
-        let px_base = px_idx * num_gaussians;
-
-        for g_idx in 0..num_gaussians {
-            let grad = &pixel_grads[px_base + g_idx];
-
-            final_grads.d_colors[g_idx] += Vector3::new(
-                grad.d_color[0],
-                grad.d_color[1],
-                grad.d_color[2],
-            );
-
-            final_grads.d_opacity_logits[g_idx] += grad.d_opacity_logit_pad[0];
-
-            final_grads.d_mean_px[g_idx] += Vector2::new(
-                grad.d_mean_px[0],
-                grad.d_mean_px[1],
-            );
-
-            final_grads.d_cov_2d[g_idx] += Vector3::new(
-                grad.d_cov_2d[0],
-                grad.d_cov_2d[1],
-                grad.d_cov_2d[2],
-            );
-        }
-    }
-
-    // Background gradient would need special handling (not implemented yet)
-    // For now, d_background remains zero
-
-    final_grads
-}
-
 /// Accumulate per-tile gradients into existing per-Gaussian gradients.
 ///
 /// This is used for tiled GPU backward pass where we process the image in tiles

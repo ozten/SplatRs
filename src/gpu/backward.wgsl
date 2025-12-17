@@ -48,10 +48,15 @@ struct BackwardParams {
 @group(0) @binding(1) var<storage, read> intermediates: array<Contribution>;
 @group(0) @binding(2) var<storage, read> gaussians: array<Gaussian2D>;
 @group(0) @binding(3) var<storage, read> d_pixels: array<vec4<f32>>;  // Upstream gradients
-@group(0) @binding(4) var<storage, read_write> pixel_gradients: array<Gradient>;  // Per-pixel gradients (avoid races!)
+@group(0) @binding(4) var<storage, read_write> gradient_atomic: array<atomic<i32>>;  // Per-Gaussian gradients as atomic i32 (16 i32s per Gaussian)
 
 // Maximum contributions per pixel (must match Rust constant)
 const MAX_CONTRIBUTIONS_PER_PIXEL: u32 = 16u;
+
+// Fixed-point scale for gradient accumulation
+// Gradients are multiplied by this before converting to i32
+// This preserves precision while using integer atomics (Metal-compatible)
+const FIXED_POINT_SCALE: f32 = 10000000.0;  // 7 decimal places of precision
 
 // Evaluate 2D Gaussian at a pixel (same as in rasterize.wgsl)
 fn eval_gaussian_2d(mean_x: f32, mean_y: f32, cov_xx: f32, cov_xy: f32, cov_yy: f32,
@@ -86,6 +91,22 @@ fn zero_gradient() -> Gradient {
         vec4<f32>(0.0, 0.0, 0.0, 0.0)
     );
 }
+
+// Atomic add for f32 using fixed-point integer atomics
+// Metal doesn't support atomicCompareExchange, so we use fixed-point arithmetic
+// Convert f32 to scaled i32, use atomicAdd, then convert back to f32 on CPU
+fn atomic_add_f32(index: u32, value: f32) {
+    let scaled = i32(value * FIXED_POINT_SCALE);
+    atomicAdd(&gradient_atomic[index], scaled);
+}
+
+// Gradient buffer layout (16 i32s per Gaussian):
+// [0-3]: d_color (vec4<f32> as fixed-point i32)
+// [4-7]: d_opacity_logit_pad (vec4<f32> as fixed-point i32)
+// [8-11]: d_mean_px (vec4<f32> as fixed-point i32)
+// [12-15]: d_cov_2d (vec4<f32> as fixed-point i32)
+const GRADIENT_STRIDE: u32 = 16u;  // 16 i32s = 64 bytes per Gaussian
+
 
 // Compute gradient of Gaussian 2D evaluation w.r.t. mean
 //
@@ -291,15 +312,26 @@ fn backward_pass(
             weight
         );
 
-        // Write to per-tile gradient buffer (tile-local indexing)
-        // Each pixel within the tile has its own gradient section to avoid race conditions
-        let grad_idx = tile_pixel_idx * params.num_gaussians + gaussian_idx;
+        // Accumulate to per-Gaussian gradients using atomic operations
+        // Each Gaussian has 16 u32s in the gradient_atomic buffer
+        let base_idx = gaussian_idx * GRADIENT_STRIDE;
 
-        // Accumulate gradients (no race condition - tile-local per-pixel sections)
-        pixel_gradients[grad_idx].d_color += vec4<f32>(d_color, 0.0);
-        pixel_gradients[grad_idx].d_opacity_logit_pad.x += d_opacity_logit;
-        pixel_gradients[grad_idx].d_mean_px += vec4<f32>(d_mean * d_weight, 0.0, 0.0);
-        pixel_gradients[grad_idx].d_cov_2d += vec4<f32>(d_cov * d_weight, 0.0);
+        // d_color (offsets 0-2 for RGB, 3 is padding)
+        atomic_add_f32(base_idx + 0u, d_color.x);
+        atomic_add_f32(base_idx + 1u, d_color.y);
+        atomic_add_f32(base_idx + 2u, d_color.z);
+
+        // d_opacity_logit_pad (offset 4 for opacity, 5-7 are padding)
+        atomic_add_f32(base_idx + 4u, d_opacity_logit);
+
+        // d_mean_px (offsets 8-9 for x,y; 10-11 are padding)
+        atomic_add_f32(base_idx + 8u, d_mean.x * d_weight);
+        atomic_add_f32(base_idx + 9u, d_mean.y * d_weight);
+
+        // d_cov_2d (offsets 12-14 for xx,xy,yy; 15 is padding)
+        atomic_add_f32(base_idx + 12u, d_cov.x * d_weight);
+        atomic_add_f32(base_idx + 13u, d_cov.y * d_weight);
+        atomic_add_f32(base_idx + 14u, d_cov.z * d_weight);
     }
 
     // Background gradient contribution

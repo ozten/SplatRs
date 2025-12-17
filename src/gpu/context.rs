@@ -33,6 +33,11 @@ impl GpuContext {
         let info = adapter.get_info();
         eprintln!("GPU: {} ({:?})", info.name, info.backend);
 
+        // Log adapter limits
+        let limits = adapter.limits();
+        eprintln!("GPU max storage buffer binding size: {} MB",
+            limits.max_storage_buffer_binding_size / (1024 * 1024));
+
         // Request device and queue
         let (device, queue) = adapter
             .request_device(
