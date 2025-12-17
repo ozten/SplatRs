@@ -102,6 +102,17 @@ impl GpuRenderer {
                             },
                             count: None,
                         },
+                        // Intermediates buffer (for backward pass)
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 3,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: false },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
                     ],
                 });
 
@@ -282,7 +293,7 @@ impl GpuRenderer {
             width: u32,
             height: u32,
             num_gaussians: u32,
-            pad: u32,
+            save_intermediates: u32,
             background: [f32; 4],
         }
 
@@ -290,7 +301,7 @@ impl GpuRenderer {
             width,
             height,
             num_gaussians: num_gaussians as u32,
-            pad: 0,
+            save_intermediates: 0, // Don't save intermediates in regular render
             background: [background.x, background.y, background.z, 0.0],
         };
 
@@ -306,6 +317,16 @@ impl GpuRenderer {
             "Output Buffer",
             (num_pixels * 4 * std::mem::size_of::<f32>()) as u64,
             BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+        );
+
+        // Create dummy intermediates buffer (not used when save_intermediates=0)
+        use crate::gpu::types::{ContributionGPU, MAX_CONTRIBUTIONS_PER_PIXEL};
+        let intermediates_buffer = buffers::create_buffer(
+            &self.ctx.device,
+            "Intermediates Buffer (dummy)",
+            (num_pixels * MAX_CONTRIBUTIONS_PER_PIXEL as usize
+                * std::mem::size_of::<ContributionGPU>()) as u64,
+            BufferUsages::STORAGE,
         );
 
         // Create rasterize bind group
@@ -327,6 +348,10 @@ impl GpuRenderer {
                         wgpu::BindGroupEntry {
                             binding: 2,
                             resource: output_buffer.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: intermediates_buffer.as_entire_binding(),
                         },
                     ],
                 });
