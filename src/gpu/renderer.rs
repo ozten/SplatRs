@@ -507,6 +507,24 @@ impl GpuRenderer {
         use crate::gpu::gradients::reduce_pixel_gradients;
         use crate::gpu::types::{ContributionGPU, GradientGPU, MAX_CONTRIBUTIONS_PER_PIXEL};
 
+        // Check if per-pixel gradient buffer would exceed GPU limit (256 MB)
+        const MAX_GPU_BUFFER_SIZE: u64 = 256 * 1024 * 1024; // 256 MB
+        let num_pixels = (camera.width * camera.height) as usize;
+        let num_gaussians = gaussians.len();
+        let gradient_buffer_size = (num_pixels * num_gaussians * std::mem::size_of::<GradientGPU>()) as u64;
+
+        if gradient_buffer_size > MAX_GPU_BUFFER_SIZE {
+            eprintln!("[GPU WARNING] Gradient buffer would be {} GB (> {} MB limit)",
+                gradient_buffer_size / (1024 * 1024 * 1024),
+                MAX_GPU_BUFFER_SIZE / (1024 * 1024));
+            eprintln!("[GPU WARNING] Scene too large for GPU gradients: {} gaussians × {}×{} pixels",
+                num_gaussians, camera.width, camera.height);
+            eprintln!("[GPU WARNING] Falling back to CPU for backward pass");
+
+            // Return empty gradients to signal fallback
+            return (vec![], crate::gpu::gradients::GaussianGradients2D::zeros(num_gaussians));
+        }
+
         let enable_timing = std::env::var("SUGAR_GPU_TIMING").is_ok();
         let t_start = if enable_timing {
             Some(std::time::Instant::now())

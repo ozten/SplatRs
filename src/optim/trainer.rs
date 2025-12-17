@@ -307,8 +307,30 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
 
         // Backward: get dL/d(color_i) and dL/d(opacity_logit_i) per Gaussian.
         let t1 = Instant::now();
-        let (_img_u8, d_color, d_opacity_logits, d_positions, d_log_scales, d_rot_vecs, d_bg) =
-            render_full_color_grads(&gaussians, &camera, &d_image, &bg);
+        let (_img_u8, d_color, d_opacity_logits, d_positions, d_log_scales, d_rot_vecs, d_bg) = {
+            #[cfg(feature = "gpu")]
+            if let Some(ref renderer) = gpu_renderer {
+                // Try GPU backward pass
+                let (_pixels, grads_2d) = renderer.render_with_gradients(&gaussians, &camera, &bg, &d_image);
+
+                // Check if GPU fallback occurred (empty gradients)
+                if grads_2d.d_colors.is_empty() {
+                    // Fall back to CPU
+                    render_full_color_grads(&gaussians, &camera, &d_image, &bg)
+                } else {
+                    // GPU gradients succeeded
+                    let (d_pos, d_scales, d_rots, d_background) = crate::gpu::chain_2d_to_3d_gradients(&grads_2d, &gaussians, &camera);
+                    let dummy_img = image::RgbImage::new(camera.width, camera.height);
+                    (dummy_img, grads_2d.d_colors, grads_2d.d_opacity_logits, d_pos, d_scales, d_rots, d_background)
+                }
+            } else {
+                // CPU backward pass
+                render_full_color_grads(&gaussians, &camera, &d_image, &bg)
+            }
+
+            #[cfg(not(feature = "gpu"))]
+            render_full_color_grads(&gaussians, &camera, &d_image, &bg)
+        };
         let t_backward = t1.elapsed();
 
         // Convert dL/d(color) -> dL/d(SH coeffs) using per-Gaussian SH basis.
@@ -1123,8 +1145,30 @@ pub fn train_multiview_color_only(
 
         // Backward
         let t1 = Instant::now();
-        let (_img_u8, d_color, d_opacity_logits, d_positions, d_log_scales, d_rot_vecs, d_bg) =
-            render_full_color_grads(&gaussians, &train_camera, &d_image, &bg);
+        let (_img_u8, d_color, d_opacity_logits, d_positions, d_log_scales, d_rot_vecs, d_bg) = {
+            #[cfg(feature = "gpu")]
+            if let Some(ref renderer) = gpu_renderer {
+                // Try GPU backward pass
+                let (_pixels, grads_2d) = renderer.render_with_gradients(&gaussians, &train_camera, &bg, &d_image);
+
+                // Check if GPU fallback occurred (empty gradients)
+                if grads_2d.d_colors.is_empty() {
+                    // Fall back to CPU
+                    render_full_color_grads(&gaussians, &train_camera, &d_image, &bg)
+                } else {
+                    // GPU gradients succeeded
+                    let (d_pos, d_scales, d_rots, d_background) = crate::gpu::chain_2d_to_3d_gradients(&grads_2d, &gaussians, &train_camera);
+                    let dummy_img = image::RgbImage::new(train_camera.width, train_camera.height);
+                    (dummy_img, grads_2d.d_colors, grads_2d.d_opacity_logits, d_pos, d_scales, d_rots, d_background)
+                }
+            } else {
+                // CPU backward pass
+                render_full_color_grads(&gaussians, &train_camera, &d_image, &bg)
+            }
+
+            #[cfg(not(feature = "gpu"))]
+            render_full_color_grads(&gaussians, &train_camera, &d_image, &bg)
+        };
         let t_backward = t1.elapsed();
 
         // Convert dL/d(color) -> dL/d(SH coeffs) using per-Gaussian SH basis.

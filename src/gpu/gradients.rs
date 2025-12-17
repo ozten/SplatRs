@@ -1,7 +1,14 @@
 ///! GPU gradient computation structures and reduction.
 
+use crate::core::Gaussian;
+use crate::core::Camera;
+use crate::diff::covariance_grad::{
+    project_covariance_2d_grad_log_scale, project_covariance_2d_grad_point_cam,
+    project_covariance_2d_grad_rotation_vector_at_r0,
+};
+use crate::diff::project_grad::project_point_grad_point_cam;
 use crate::gpu::types::GradientGPU;
-use nalgebra::{Vector2, Vector3};
+use nalgebra::{Matrix2, Vector2, Vector3};
 
 /// Gradient buffers for a set of Gaussians (2D gradients only).
 ///
@@ -145,6 +152,81 @@ pub fn reduce_workgroup_gradients(
     }
 
     final_grads
+}
+
+/// Chain 2D gradients from GPU to 3D Gaussian parameters.
+///
+/// This takes the 2D gradients (d_mean_px, d_cov_2d) and chains them through
+/// the projection operations to get gradients w.r.t. 3D parameters (position,
+/// scale, rotation).
+///
+/// Returns: (d_positions, d_log_scales, d_rot_vecs, d_background)
+pub fn chain_2d_to_3d_gradients(
+    grads_2d: &GaussianGradients2D,
+    gaussians: &[Gaussian],
+    camera: &Camera,
+) -> (Vec<Vector3<f32>>, Vec<Vector3<f32>>, Vec<Vector3<f32>>, Vector3<f32>) {
+    let num_gaussians = gaussians.len();
+    let mut d_positions = vec![Vector3::<f32>::zeros(); num_gaussians];
+    let mut d_log_scales = vec![Vector3::<f32>::zeros(); num_gaussians];
+    let mut d_rot_vecs = vec![Vector3::<f32>::zeros(); num_gaussians];
+
+    for (gi, gaussian) in gaussians.iter().enumerate() {
+        let mut d_point_cam_total = Vector3::<f32>::zeros();
+
+        // Chain rule: d_mean_px -> d_point_cam
+        let d_uv = grads_2d.d_mean_px[gi];
+        if d_uv != Vector2::zeros() {
+            // Compute camera-space position
+            let point_cam = camera.world_to_camera(&gaussian.position);
+            d_point_cam_total += project_point_grad_point_cam(&point_cam, camera.fx, camera.fy, &d_uv);
+        }
+
+        // Chain rule: d_cov_2d -> d_point_cam, d_log_scales, d_rot_vecs
+        let d_cov = grads_2d.d_cov_2d[gi];
+        if d_cov != Vector3::zeros() {
+            let point_cam = camera.world_to_camera(&gaussian.position);
+            let gaussian_r = crate::core::quaternion_to_matrix(&gaussian.rotation);
+            let log_scale = gaussian.scale;
+            let d_sigma2d = Matrix2::new(d_cov.x, d_cov.y, d_cov.y, d_cov.z);
+
+            // d_cov_2d -> d_point_cam (via Jacobian dependence)
+            d_point_cam_total += project_covariance_2d_grad_point_cam(
+                &point_cam,
+                camera.fx,
+                camera.fy,
+                &camera.rotation,
+                &gaussian_r,
+                &log_scale,
+                &d_sigma2d,
+            );
+
+            // d_cov_2d -> d_log_scales
+            let j = camera.projection_jacobian(&point_cam);
+            d_log_scales[gi] = project_covariance_2d_grad_log_scale(
+                &camera.rotation,
+                &j,
+                &gaussian_r,
+                &log_scale,
+                &d_sigma2d,
+            );
+
+            // d_cov_2d -> d_rot_vecs
+            d_rot_vecs[gi] = project_covariance_2d_grad_rotation_vector_at_r0(
+                &camera.rotation,
+                &j,
+                &gaussian_r,
+                &log_scale,
+                &d_sigma2d,
+            );
+        }
+
+        // d_point_cam -> d_position (via camera rotation transpose)
+        // point_cam = R * p_world + t  =>  dL/dp_world = R^T * dL/dpoint_cam
+        d_positions[gi] = camera.rotation.transpose() * d_point_cam_total;
+    }
+
+    (d_positions, d_log_scales, d_rot_vecs, grads_2d.d_background)
 }
 
 #[cfg(test)]
