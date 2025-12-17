@@ -859,6 +859,10 @@ impl GpuRenderer {
             width: u32,
             height: u32,
             num_gaussians: u32,
+            tile_start_x: u32,
+            tile_start_y: u32,
+            tile_width: u32,
+            tile_height: u32,
             pad: u32,
             background: [f32; 4],
         }
@@ -872,6 +876,10 @@ impl GpuRenderer {
             width,
             height,
             num_gaussians: num_gaussians as u32,
+            tile_start_x: 0,      // Non-tiled: full image
+            tile_start_y: 0,      // Non-tiled: full image
+            tile_width: width,    // Non-tiled: full image
+            tile_height: height,  // Non-tiled: full image
             pad: 0,
             background: [background.x, background.y, background.z, 0.0],
         };
@@ -999,6 +1007,417 @@ impl GpuRenderer {
         if enable_timing {
             eprintln!(
                 "[GPU] Total render_with_gradients time: {:?}",
+                t_start.unwrap().elapsed()
+            );
+        }
+
+        (pixels, final_grads)
+    }
+
+    /// Calculate optimal tile size based on memory constraints.
+    ///
+    /// Returns tile size (32 or 16) or 0 if even tiling won't fit in memory.
+    fn calculate_tile_size(num_gaussians: usize) -> u32 {
+        const MAX_BUFFER: u64 = 200 * 1024 * 1024; // 200 MB (leave margin below 256 MB limit)
+        let grad_size = std::mem::size_of::<crate::gpu::types::GradientGPU>() as u64;
+
+        // Try 32×32 first (optimal for most cases)
+        let tile_32_pixels = 32 * 32;
+        let tile_32_buffer = (tile_32_pixels as u64) * (num_gaussians as u64) * grad_size;
+        if tile_32_buffer <= MAX_BUFFER {
+            return 32;
+        }
+
+        // Fall back to 16×16 (for very large scenes)
+        let tile_16_pixels = 16 * 16;
+        let tile_16_buffer = (tile_16_pixels as u64) * (num_gaussians as u64) * grad_size;
+        if tile_16_buffer <= MAX_BUFFER {
+            return 16;
+        }
+
+        // Still too large - signal CPU fallback
+        eprintln!("[GPU WARNING] Even 16×16 tiles would exceed memory limit");
+        eprintln!("[GPU WARNING] Required: {} MB per tile", tile_16_buffer / (1024 * 1024));
+        0
+    }
+
+    /// Render Gaussians with gradient computation using tiled backward pass.
+    ///
+    /// This method processes the image in tiles to reduce memory usage for large scenes.
+    /// Each tile is processed independently on the GPU, then gradients are accumulated on CPU.
+    ///
+    /// # Arguments
+    /// * `gaussians` - Input Gaussians
+    /// * `camera` - Camera parameters
+    /// * `background` - Background color
+    /// * `d_pixels` - Upstream gradients (dL/d(pixel)) for each pixel
+    ///
+    /// # Returns
+    /// * Rendered pixels (linear RGB)
+    /// * Gradients w.r.t. Gaussian parameters
+    pub fn render_with_gradients_tiled(
+        &self,
+        gaussians: &[Gaussian],
+        camera: &Camera,
+        background: &Vector3<f32>,
+        d_pixels: &[Vector3<f32>],
+    ) -> (Vec<Vector3<f32>>, crate::gpu::gradients::GaussianGradients2D) {
+        use crate::gpu::gradients::accumulate_tile_gradients;
+        use crate::gpu::types::{ContributionGPU, GradientGPU, MAX_CONTRIBUTIONS_PER_PIXEL};
+
+        let num_gaussians = gaussians.len();
+        let width = camera.width;
+        let height = camera.height;
+        let num_pixels = (width * height) as usize;
+
+        // Validate inputs
+        assert_eq!(
+            d_pixels.len(),
+            num_pixels,
+            "d_pixels length must match number of pixels"
+        );
+
+        // Determine optimal tile size
+        let tile_size = Self::calculate_tile_size(num_gaussians);
+        if tile_size == 0 {
+            eprintln!("[GPU WARNING] Scene too large even for tiled gradients");
+            eprintln!("[GPU WARNING] Falling back to CPU for backward pass");
+            return (vec![], crate::gpu::gradients::GaussianGradients2D::empty());
+        }
+
+        eprintln!("[GPU INFO] Using {}×{} tiles for {} gaussians", tile_size, tile_size, num_gaussians);
+
+        let enable_timing = std::env::var("SUGAR_GPU_TIMING").is_ok();
+        let t_start = if enable_timing {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
+
+        // Run forward pass once to get pixels and intermediates
+        // (This is shared for all tiles - we only tile the backward pass)
+        let pixels = self.render(gaussians, camera, background);
+
+        if enable_timing {
+            eprintln!("[GPU] Forward pass: {:?}", t_start.as_ref().unwrap().elapsed());
+        }
+
+        // Convert inputs to GPU format (shared across all tiles)
+        let gaussians_gpu: Vec<crate::gpu::types::GaussianGPU> =
+            gaussians.iter().map(crate::gpu::types::GaussianGPU::from_gaussian).collect();
+        let camera_gpu = crate::gpu::types::CameraGPU::from_camera(camera);
+
+        // Create shared buffers (used for all tiles)
+        let camera_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "Camera Buffer",
+            &[camera_gpu],
+            BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        );
+
+        let gaussians_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "Gaussians Buffer",
+            &gaussians_gpu,
+            BufferUsages::STORAGE | BufferUsages::COPY_DST,
+        );
+
+        let projected_buffer = buffers::create_buffer(
+            &self.ctx.device,
+            "Projected Buffer",
+            (num_gaussians * std::mem::size_of::<crate::gpu::types::Gaussian2DGPU>()) as u64,
+            BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+        );
+
+        // Project Gaussians
+        let project_bind_group = self.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Project Bind Group"),
+            layout: &self.project_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: camera_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: gaussians_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: projected_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let mut encoder = self.ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Project Encoder"),
+        });
+
+        {
+            let workgroups = (num_gaussians as u32 + 255) / 256;
+            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Project Pass"),
+                timestamp_writes: None,
+            });
+            compute_pass.set_pipeline(&self.project_pipeline);
+            compute_pass.set_bind_group(0, &project_bind_group, &[]);
+            compute_pass.dispatch_workgroups(workgroups, 1, 1);
+        }
+
+        self.ctx.queue.submit(Some(encoder.finish()));
+
+        // Download and sort projected Gaussians on CPU
+        let projected: Vec<crate::gpu::types::Gaussian2DGPU> = buffers::read_buffer_blocking(
+            &self.ctx.device,
+            &self.ctx.queue,
+            &projected_buffer,
+            num_gaussians,
+        )
+        .expect("Failed to read projected Gaussians");
+
+        let mut projected = projected;
+        projected.retain(|g| g.mean[2].is_finite());
+        projected.sort_by(|a, b| a.mean[2].partial_cmp(&b.mean[2]).unwrap());
+
+        let sorted_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "Sorted Buffer",
+            &projected,
+            BufferUsages::STORAGE,
+        );
+
+        // Rasterize forward pass with intermediates
+        let output_buffer = buffers::create_buffer(
+            &self.ctx.device,
+            "Output Buffer",
+            (num_pixels * 4 * std::mem::size_of::<f32>()) as u64,
+            BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+        );
+
+        let intermediates_buffer = buffers::create_buffer(
+            &self.ctx.device,
+            "Intermediates Buffer",
+            (num_pixels * MAX_CONTRIBUTIONS_PER_PIXEL as usize * std::mem::size_of::<ContributionGPU>()) as u64,
+            BufferUsages::STORAGE,
+        );
+
+        #[repr(C)]
+        #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+        struct RenderParams {
+            width: u32,
+            height: u32,
+            num_gaussians: u32,
+            save_intermediates: u32,
+            background: [f32; 4],
+        }
+
+        let rasterize_params = RenderParams {
+            width,
+            height,
+            num_gaussians: num_gaussians as u32,
+            save_intermediates: 1,
+            background: [background.x, background.y, background.z, 0.0],
+        };
+
+        let rasterize_params_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "Rasterize Params",
+            &[rasterize_params],
+            BufferUsages::UNIFORM,
+        );
+
+        let rasterize_bind_group = self.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Rasterize Bind Group"),
+            layout: &self.rasterize_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: rasterize_params_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: sorted_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: output_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: intermediates_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let mut encoder = self.ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Rasterize Encoder"),
+        });
+
+        {
+            let wg_x = (width + 15) / 16;
+            let wg_y = (height + 15) / 16;
+            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Rasterize Pass"),
+                timestamp_writes: None,
+            });
+            compute_pass.set_pipeline(&self.rasterize_pipeline);
+            compute_pass.set_bind_group(0, &rasterize_bind_group, &[]);
+            compute_pass.dispatch_workgroups(wg_x, wg_y, 1);
+        }
+
+        self.ctx.queue.submit(Some(encoder.finish()));
+
+        // Initialize final gradients
+        let mut final_grads = crate::gpu::gradients::GaussianGradients2D::zeros(num_gaussians);
+
+        // Upload upstream gradients
+        let d_pixels_gpu: Vec<[f32; 4]> = d_pixels
+            .iter()
+            .map(|v| [v.x, v.y, v.z, 0.0])
+            .collect();
+
+        let d_pixels_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "d_pixels",
+            &d_pixels_gpu,
+            BufferUsages::STORAGE,
+        );
+
+        // Process each tile
+        let tiles_x = (width + tile_size - 1) / tile_size;
+        let tiles_y = (height + tile_size - 1) / tile_size;
+
+        eprintln!("[GPU INFO] Processing {} tiles ({}×{})", tiles_x * tiles_y, tiles_x, tiles_y);
+
+        let t_tiles_start = if enable_timing {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
+
+        for tile_y in 0..tiles_y {
+            for tile_x in 0..tiles_x {
+                // Compute tile bounds
+                let start_x = tile_x * tile_size;
+                let start_y = tile_y * tile_size;
+                let end_x = (start_x + tile_size).min(width);
+                let end_y = (start_y + tile_size).min(height);
+                let tile_width = end_x - start_x;
+                let tile_height = end_y - start_y;
+                let tile_pixels = (tile_width * tile_height) as usize;
+
+                // Create per-tile gradient buffer
+                let tile_grad_entries = tile_pixels * num_gaussians;
+                let zero_grads = vec![GradientGPU::zero(); tile_grad_entries];
+                let tile_grads_buffer = buffers::create_buffer_init(
+                    &self.ctx.device,
+                    &format!("Tile Gradients ({},{})", tile_x, tile_y),
+                    &zero_grads,
+                    BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+                );
+
+                // Create backward params for this tile
+                #[repr(C)]
+                #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+                struct BackwardParams {
+                    width: u32,
+                    height: u32,
+                    num_gaussians: u32,
+                    tile_start_x: u32,
+                    tile_start_y: u32,
+                    tile_width: u32,
+                    tile_height: u32,
+                    pad: u32,
+                    background: [f32; 4],
+                }
+
+                let backward_params = BackwardParams {
+                    width,
+                    height,
+                    num_gaussians: num_gaussians as u32,
+                    tile_start_x: start_x,
+                    tile_start_y: start_y,
+                    tile_width,
+                    tile_height,
+                    pad: 0,
+                    background: [background.x, background.y, background.z, 0.0],
+                };
+
+                let backward_params_buffer = buffers::create_buffer_init(
+                    &self.ctx.device,
+                    "Backward Params",
+                    &[backward_params],
+                    BufferUsages::UNIFORM,
+                );
+
+                // Create backward bind group for this tile
+                let backward_bind_group = self.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some(&format!("Backward Bind Group ({},{})", tile_x, tile_y)),
+                    layout: &self.backward_bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: backward_params_buffer.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: intermediates_buffer.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: sorted_buffer.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: d_pixels_buffer.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 4,
+                            resource: tile_grads_buffer.as_entire_binding(),
+                        },
+                    ],
+                });
+
+                // Execute backward pass for this tile
+                let mut encoder = self.ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some(&format!("Backward Encoder ({},{})", tile_x, tile_y)),
+                });
+
+                {
+                    let wg_x = (tile_width + 15) / 16;
+                    let wg_y = (tile_height + 15) / 16;
+                    let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some(&format!("Backward Pass ({},{})", tile_x, tile_y)),
+                        timestamp_writes: None,
+                    });
+                    compute_pass.set_pipeline(&self.backward_pipeline);
+                    compute_pass.set_bind_group(0, &backward_bind_group, &[]);
+                    compute_pass.dispatch_workgroups(wg_x, wg_y, 1);
+                }
+
+                self.ctx.queue.submit(Some(encoder.finish()));
+
+                // Download tile gradients
+                let tile_grads: Vec<GradientGPU> = buffers::read_buffer_blocking(
+                    &self.ctx.device,
+                    &self.ctx.queue,
+                    &tile_grads_buffer,
+                    tile_grad_entries,
+                )
+                .expect("Failed to read tile gradients");
+
+                // Accumulate into final gradients
+                accumulate_tile_gradients(&tile_grads, &mut final_grads, tile_pixels, num_gaussians);
+            }
+        }
+
+        if enable_timing {
+            eprintln!(
+                "[GPU] All tiles processed: {:?}",
+                t_tiles_start.unwrap().elapsed()
+            );
+            eprintln!(
+                "[GPU] Total render_with_gradients_tiled time: {:?}",
                 t_start.unwrap().elapsed()
             );
         }

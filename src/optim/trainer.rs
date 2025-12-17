@@ -316,8 +316,8 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
         let (_img_u8, d_color, d_opacity_logits, d_positions, d_log_scales, d_rot_vecs, d_bg) = {
             #[cfg(feature = "gpu")]
             if let Some(ref renderer) = gpu_renderer {
-                // Try GPU backward pass
-                let (_pixels, grads_2d) = renderer.render_with_gradients(&gaussians, &camera, &bg, &d_image);
+                // Try GPU tiled backward pass (handles large scenes)
+                let (_pixels, grads_2d) = renderer.render_with_gradients_tiled(&gaussians, &camera, &bg, &d_image);
 
                 // Check if GPU fallback occurred (empty gradients)
                 if grads_2d.d_colors.is_empty() {
@@ -1178,8 +1178,8 @@ pub fn train_multiview_color_only(
         let (_img_u8, d_color, d_opacity_logits, d_positions, d_log_scales, d_rot_vecs, d_bg) = {
             #[cfg(feature = "gpu")]
             if let Some(ref renderer) = gpu_renderer {
-                // Try GPU backward pass
-                let (_pixels, grads_2d) = renderer.render_with_gradients(&gaussians, &train_camera, &bg, &d_image);
+                // Try GPU tiled backward pass (handles large scenes)
+                let (_pixels, grads_2d) = renderer.render_with_gradients_tiled(&gaussians, &train_camera, &bg, &d_image);
 
                 // Check if GPU fallback occurred (empty gradients)
                 if grads_2d.d_colors.is_empty() {

@@ -33,10 +33,14 @@ struct Gaussian2D {
 
 // Uniforms for backward pass
 struct BackwardParams {
-    width: u32,
-    height: u32,
+    width: u32,          // Full image width (for intermediates indexing)
+    height: u32,         // Full image height
     num_gaussians: u32,
-    pad: u32,    // Padding (was num_workgroups_x, no longer needed)
+    tile_start_x: u32,   // Tile offset in global coordinates
+    tile_start_y: u32,   // Tile offset in global coordinates
+    tile_width: u32,     // Tile dimensions (for boundary checks)
+    tile_height: u32,    // Tile dimensions
+    pad: u32,            // Padding for alignment
     background: vec4<f32>,    // Background color
 }
 
@@ -160,16 +164,28 @@ fn backward_pass(
     @builtin(global_invocation_id) global_id: vec3<u32>,
     @builtin(workgroup_id) workgroup_id: vec3<u32>,
 ) {
-    let px = global_id.x;
-    let py = global_id.y;
+    // Tile-local coordinates (within this tile)
+    let tile_px = global_id.x;
+    let tile_py = global_id.y;
 
-    if (px >= params.width || py >= params.height) {
+    // Check tile bounds
+    if (tile_px >= params.tile_width || tile_py >= params.tile_height) {
         return;
     }
 
-    let pixel_idx = py * params.width + px;
-    let pixel_x = f32(px) + 0.5;
-    let pixel_y = f32(py) + 0.5;
+    // Compute global pixel coordinates (in full image)
+    let global_px = params.tile_start_x + tile_px;
+    let global_py = params.tile_start_y + tile_py;
+
+    // Global pixel index (for intermediates lookup in full image)
+    let pixel_idx = global_py * params.width + global_px;
+
+    // Tile-local pixel index (for gradient buffer writes)
+    let tile_pixel_idx = tile_py * params.tile_width + tile_px;
+
+    // Pixel center in global coordinates (for Gaussian evaluation)
+    let pixel_x = f32(global_px) + 0.5;
+    let pixel_y = f32(global_py) + 0.5;
 
     // Get upstream gradient for this pixel
     let d_out = d_pixels[pixel_idx].xyz;
@@ -275,11 +291,11 @@ fn backward_pass(
             weight
         );
 
-        // Write to per-pixel gradient buffer
-        // Each pixel has its own gradient buffer section to avoid race conditions
-        let grad_idx = pixel_idx * params.num_gaussians + gaussian_idx;
+        // Write to per-tile gradient buffer (tile-local indexing)
+        // Each pixel within the tile has its own gradient section to avoid race conditions
+        let grad_idx = tile_pixel_idx * params.num_gaussians + gaussian_idx;
 
-        // Accumulate gradients (no race condition - each pixel has its own section)
+        // Accumulate gradients (no race condition - tile-local per-pixel sections)
         pixel_gradients[grad_idx].d_color += vec4<f32>(d_color, 0.0);
         pixel_gradients[grad_idx].d_opacity_logit_pad.x += d_opacity_logit;
         pixel_gradients[grad_idx].d_mean_px += vec4<f32>(d_mean * d_weight, 0.0, 0.0);

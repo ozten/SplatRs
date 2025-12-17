@@ -455,6 +455,19 @@ pub fn render_full_linear(
         .enumerate()
         .filter_map(|(i, g)| project_gaussian(g, camera, i))
         .collect();
+
+    // Be robust to upstream numerical issues (e.g., NaN depth after training).
+    // If we try to sort with NaNs present, `partial_cmp` returns `None` and panics on unwrap.
+    let original_count = projected.len();
+    projected.retain(|g| g.mean.z.is_finite());
+    let filtered_count = original_count - projected.len();
+    if filtered_count > 0 {
+        eprintln!(
+            "[CPU WARNING] Filtered {} Gaussians with invalid depth values",
+            filtered_count
+        );
+    }
+
     projected.sort_by(|a, b| a.mean.z.partial_cmp(&b.mean.z).unwrap());
     let prepared = prepare(&projected, gaussians, camera);
 

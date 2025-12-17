@@ -118,6 +118,65 @@ pub fn reduce_pixel_gradients(
     final_grads
 }
 
+/// Accumulate per-tile gradients into existing per-Gaussian gradients.
+///
+/// This is used for tiled GPU backward pass where we process the image in tiles
+/// and accumulate gradients from each tile sequentially.
+///
+/// # Arguments
+/// * `tile_grads` - Flat array of GradientGPU for this tile: [px0_g0, px0_g1, ..., px1_g0, px1_g1, ...]
+/// * `final_grads` - Existing gradients to accumulate into (modified in-place)
+/// * `tile_pixels` - Number of pixels in this tile (e.g., 32×32 = 1024)
+/// * `num_gaussians` - Number of Gaussians
+pub fn accumulate_tile_gradients(
+    tile_grads: &[GradientGPU],
+    final_grads: &mut GaussianGradients2D,
+    tile_pixels: usize,
+    num_gaussians: usize,
+) {
+    assert_eq!(
+        tile_grads.len(),
+        tile_pixels * num_gaussians,
+        "Tile gradients buffer size mismatch"
+    );
+
+    assert_eq!(
+        final_grads.d_colors.len(),
+        num_gaussians,
+        "Final gradients size mismatch"
+    );
+
+    // Sum across all pixels in this tile for each Gaussian
+    for px_idx in 0..tile_pixels {
+        let px_base = px_idx * num_gaussians;
+
+        for g_idx in 0..num_gaussians {
+            let grad = &tile_grads[px_base + g_idx];
+
+            final_grads.d_colors[g_idx] += Vector3::new(
+                grad.d_color[0],
+                grad.d_color[1],
+                grad.d_color[2],
+            );
+
+            final_grads.d_opacity_logits[g_idx] += grad.d_opacity_logit_pad[0];
+
+            final_grads.d_mean_px[g_idx] += Vector2::new(
+                grad.d_mean_px[0],
+                grad.d_mean_px[1],
+            );
+
+            final_grads.d_cov_2d[g_idx] += Vector3::new(
+                grad.d_cov_2d[0],
+                grad.d_cov_2d[1],
+                grad.d_cov_2d[2],
+            );
+        }
+    }
+
+    // Background gradient accumulation would go here if needed
+}
+
 /// DEPRECATED: Old per-workgroup reduction (had race conditions).
 /// Kept for reference. Use reduce_pixel_gradients instead.
 #[allow(dead_code)]
