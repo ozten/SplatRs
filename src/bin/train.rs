@@ -198,9 +198,9 @@ fn main() {
                 *seed = Some(0);
             }
             "micro" => {
-                // Ultra-fast preset for GPU profiling and UI dev: ~5 minutes
+                // Fast preset for GPU profiling and UI dev: ~5 minutes
                 *multiview = true;
-                *iters = 50;  // Reduced from 100 for faster iteration
+                *iters = 2000;  // Scaled up for 5-minute target
                 *lr = 0.002;
                 *lr_position = 0.00016;
                 *lr_rotation = 0.001;
@@ -208,9 +208,9 @@ fn main() {
                 *lr_opacity = 0.05;
                 *lr_sh = 0.0025;
                 *lr_background = 0.001;
-                *downsample = 0.20;  // 20% resolution (down from 25%)
-                *max_gaussians = 2_000;  // Lighter initial scene
-                *log_interval = 10;  // More frequent logging for short runs
+                *downsample = 0.40;  // 40% resolution (balanced workload within GPU limits)
+                *max_gaussians = 8_000;  // More Gaussians for realistic testing
+                *log_interval = 100;  // Log every 100 iterations
                 *learn_background = true;
                 *learn_opacity = true;
                 *learn_position = true;
@@ -218,12 +218,12 @@ fn main() {
                 *learn_rotation = true;
                 *learn_sh = true;
                 *loss = sugar_rs::optim::loss::LossKind::L2;
-                *train_fraction = 0.75;  // 6 train, 2 test with 8 images
-                *val_interval = 25;  // Single validation at midpoint
-                *max_test_views_for_metrics = 2;  // Faster validation
-                *max_images = 8;  // Significantly reduced for speed
-                *densify_interval = 25;  // Densify at 25, 50
-                *densify_max_gaussians = 4_000;  // Lower cap for faster processing
+                *train_fraction = 0.75;  // 15 train, 5 test with 20 images
+                *val_interval = 500;  // Validate at 500, 1000, 1500, 2000
+                *max_test_views_for_metrics = 3;
+                *max_images = 20;  // More views for better testing
+                *densify_interval = 500;  // Densify at 500, 1000, 1500
+                *densify_max_gaussians = 15_000;  // Higher cap for realistic growth
                 *densify_grad_threshold = 0.0002;
                 *prune_opacity_threshold = 0.005;
                 *split_sigma_threshold = 0.1;
