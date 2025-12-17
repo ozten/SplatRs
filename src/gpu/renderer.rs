@@ -482,4 +482,403 @@ impl GpuRenderer {
 
         result
     }
+
+    /// Render Gaussians with gradient computation.
+    ///
+    /// Runs forward pass (saving intermediates), then backward pass on GPU,
+    /// followed by CPU gradient reduction.
+    ///
+    /// # Arguments
+    /// * `gaussians` - Input Gaussians
+    /// * `camera` - Camera parameters
+    /// * `background` - Background color
+    /// * `d_pixels` - Upstream gradients (dL/d(pixel)) for each pixel
+    ///
+    /// # Returns
+    /// * Rendered pixels (linear RGB)
+    /// * Gradients w.r.t. Gaussian parameters
+    pub fn render_with_gradients(
+        &self,
+        gaussians: &[Gaussian],
+        camera: &Camera,
+        background: &Vector3<f32>,
+        d_pixels: &[Vector3<f32>],
+    ) -> (Vec<Vector3<f32>>, crate::gpu::gradients::GaussianGradients2D) {
+        use crate::gpu::gradients::reduce_workgroup_gradients;
+        use crate::gpu::types::{ContributionGPU, GradientGPU, MAX_CONTRIBUTIONS_PER_PIXEL};
+
+        let enable_timing = std::env::var("SUGAR_GPU_TIMING").is_ok();
+        let t_start = if enable_timing {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
+
+        // Convert to GPU format
+        let gaussians_gpu: Vec<GaussianGPU> =
+            gaussians.iter().map(GaussianGPU::from_gaussian).collect();
+        let camera_gpu = CameraGPU::from_camera(camera);
+
+        let num_gaussians = gaussians.len();
+        let width = camera.width;
+        let height = camera.height;
+        let num_pixels = (width * height) as usize;
+
+        // Validate d_pixels
+        assert_eq!(
+            d_pixels.len(),
+            num_pixels,
+            "d_pixels length must match number of pixels"
+        );
+
+        // Create buffers
+        let camera_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "Camera Buffer",
+            &[camera_gpu],
+            BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        );
+
+        let gaussians_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "Gaussians Buffer",
+            &gaussians_gpu,
+            BufferUsages::STORAGE | BufferUsages::COPY_DST,
+        );
+
+        let projected_buffer = buffers::create_buffer(
+            &self.ctx.device,
+            "Projected Buffer",
+            (num_gaussians * std::mem::size_of::<Gaussian2DGPU>()) as u64,
+            BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+        );
+
+        // Execute projection
+        let project_bind_group = self.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Project Bind Group"),
+            layout: &self.project_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: camera_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: gaussians_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: projected_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        let mut encoder = self
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Project Encoder"),
+            });
+
+        {
+            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Project Pass"),
+                timestamp_writes: None,
+            });
+            compute_pass.set_pipeline(&self.project_pipeline);
+            compute_pass.set_bind_group(0, &project_bind_group, &[]);
+            compute_pass.dispatch_workgroups((num_gaussians as u32 + 255) / 256, 1, 1);
+        }
+
+        self.ctx.queue.submit(Some(encoder.finish()));
+
+        // Download, sort, and re-upload projected Gaussians
+        let mut projected: Vec<Gaussian2DGPU> = buffers::read_buffer_blocking(
+            &self.ctx.device,
+            &self.ctx.queue,
+            &projected_buffer,
+            num_gaussians,
+        )
+        .expect("Failed to read projected Gaussians");
+
+        projected.sort_by(|a, b| a.mean[2].partial_cmp(&b.mean[2]).unwrap());
+
+        let sorted_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "Sorted Gaussians",
+            &projected,
+            BufferUsages::STORAGE,
+        );
+
+        // Create render params with save_intermediates=1
+        #[repr(C)]
+        #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+        struct RenderParams {
+            width: u32,
+            height: u32,
+            num_gaussians: u32,
+            save_intermediates: u32,
+            background: [f32; 4],
+        }
+
+        let params = RenderParams {
+            width,
+            height,
+            num_gaussians: num_gaussians as u32,
+            save_intermediates: 1, // SAVE INTERMEDIATES
+            background: [background.x, background.y, background.z, 0.0],
+        };
+
+        let params_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "Render Params",
+            &[params],
+            BufferUsages::UNIFORM,
+        );
+
+        let output_buffer = buffers::create_buffer(
+            &self.ctx.device,
+            "Output Buffer",
+            (num_pixels * 4 * std::mem::size_of::<f32>()) as u64,
+            BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+        );
+
+        // Create intermediates buffer (ACTUALLY USED this time)
+        let intermediates_buffer = buffers::create_buffer(
+            &self.ctx.device,
+            "Intermediates Buffer",
+            (num_pixels * MAX_CONTRIBUTIONS_PER_PIXEL as usize
+                * std::mem::size_of::<ContributionGPU>()) as u64,
+            BufferUsages::STORAGE | BufferUsages::COPY_SRC, // Allow reading back
+        );
+
+        // Create rasterize bind group
+        let rasterize_bind_group =
+            self.ctx
+                .device
+                .create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("Rasterize Bind Group"),
+                    layout: &self.rasterize_bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: params_buffer.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: sorted_buffer.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: output_buffer.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: intermediates_buffer.as_entire_binding(),
+                        },
+                    ],
+                });
+
+        // Execute forward pass (rasterization)
+        let mut encoder = self
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Forward Encoder"),
+            });
+
+        {
+            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Forward Pass"),
+                timestamp_writes: None,
+            });
+            compute_pass.set_pipeline(&self.rasterize_pipeline);
+            compute_pass.set_bind_group(0, &rasterize_bind_group, &[]);
+            compute_pass.dispatch_workgroups((width + 15) / 16, (height + 15) / 16, 1);
+        }
+
+        self.ctx.queue.submit(Some(encoder.finish()));
+
+        if enable_timing {
+            eprintln!(
+                "[GPU] Forward pass (with intermediates): {:?}",
+                t_start.unwrap().elapsed()
+            );
+        }
+
+        // Prepare for backward pass
+        let t_backward = if enable_timing {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
+
+        // Upload upstream gradients (d_pixels)
+        let d_pixels_gpu: Vec<[f32; 4]> = d_pixels
+            .iter()
+            .map(|v| [v.x, v.y, v.z, 0.0])
+            .collect();
+
+        let d_pixels_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "d_pixels",
+            &d_pixels_gpu,
+            BufferUsages::STORAGE,
+        );
+
+        // Calculate number of workgroups
+        let num_workgroups_x = (width + 15) / 16;
+        let num_workgroups_y = (height + 15) / 16;
+        let total_workgroups = (num_workgroups_x * num_workgroups_y) as usize;
+
+        // Create workgroup gradients buffer
+        let workgroup_grads_size =
+            (total_workgroups * num_gaussians * std::mem::size_of::<GradientGPU>()) as u64;
+        let workgroup_grads_buffer = buffers::create_buffer(
+            &self.ctx.device,
+            "Workgroup Gradients",
+            workgroup_grads_size,
+            BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+        );
+
+        // Create backward params
+        #[repr(C)]
+        #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+        struct BackwardParams {
+            width: u32,
+            height: u32,
+            num_gaussians: u32,
+            num_workgroups_x: u32,
+            background: [f32; 4],
+        }
+
+        let backward_params = BackwardParams {
+            width,
+            height,
+            num_gaussians: num_gaussians as u32,
+            num_workgroups_x,
+            background: [background.x, background.y, background.z, 0.0],
+        };
+
+        let backward_params_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "Backward Params",
+            &[backward_params],
+            BufferUsages::UNIFORM,
+        );
+
+        // Create backward bind group
+        let backward_bind_group =
+            self.ctx
+                .device
+                .create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("Backward Bind Group"),
+                    layout: &self.backward_bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: backward_params_buffer.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: intermediates_buffer.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: sorted_buffer.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: d_pixels_buffer.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 4,
+                            resource: workgroup_grads_buffer.as_entire_binding(),
+                        },
+                    ],
+                });
+
+        // Execute backward pass
+        let mut encoder = self
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Backward Encoder"),
+            });
+
+        {
+            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Backward Pass"),
+                timestamp_writes: None,
+            });
+            compute_pass.set_pipeline(&self.backward_pipeline);
+            compute_pass.set_bind_group(0, &backward_bind_group, &[]);
+            compute_pass.dispatch_workgroups(num_workgroups_x, num_workgroups_y, 1);
+        }
+
+        self.ctx.queue.submit(Some(encoder.finish()));
+
+        if enable_timing {
+            eprintln!("[GPU] Backward pass: {:?}", t_backward.unwrap().elapsed());
+        }
+
+        // Download workgroup gradients
+        let t_download = if enable_timing {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
+
+        let workgroup_grads: Vec<GradientGPU> = buffers::read_buffer_blocking(
+            &self.ctx.device,
+            &self.ctx.queue,
+            &workgroup_grads_buffer,
+            total_workgroups * num_gaussians,
+        )
+        .expect("Failed to read workgroup gradients");
+
+        if enable_timing {
+            eprintln!(
+                "[GPU] Download gradients: {:?}",
+                t_download.unwrap().elapsed()
+            );
+        }
+
+        // CPU reduction
+        let t_reduce = if enable_timing {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
+
+        let final_grads =
+            reduce_workgroup_gradients(&workgroup_grads, total_workgroups, num_gaussians);
+
+        if enable_timing {
+            eprintln!("[GPU] CPU reduction: {:?}", t_reduce.unwrap().elapsed());
+        }
+
+        // Read output pixels
+        let output: Vec<[f32; 4]> = buffers::read_buffer_blocking(
+            &self.ctx.device,
+            &self.ctx.queue,
+            &output_buffer,
+            num_pixels,
+        )
+        .expect("Failed to read output");
+
+        let pixels = output
+            .iter()
+            .map(|rgba| Vector3::new(rgba[0], rgba[1], rgba[2]))
+            .collect();
+
+        if enable_timing {
+            eprintln!(
+                "[GPU] Total render_with_gradients time: {:?}",
+                t_start.unwrap().elapsed()
+            );
+        }
+
+        (pixels, final_grads)
+    }
 }

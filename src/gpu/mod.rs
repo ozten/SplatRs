@@ -19,9 +19,13 @@ mod types;
 mod shaders;
 #[cfg(feature = "gpu")]
 mod renderer;
+#[cfg(feature = "gpu")]
+mod gradients;
 
 #[cfg(feature = "gpu")]
 pub use context::GpuContext;
+#[cfg(feature = "gpu")]
+pub use gradients::GaussianGradients2D;
 #[cfg(feature = "gpu")]
 pub use renderer::GpuRenderer;
 #[cfg(feature = "gpu")]
