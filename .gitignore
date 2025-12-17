@@ -26,3 +26,14 @@ checkpoints/
 
 # Local datasets / scratch
 datasets/
+
+# Code coverage artifacts
+target/coverage/
+*.profraw
+*.profdata
+
+# Flamegraph profiling artifacts
+flamegraph.svg
+perf.data
+perf.data.old
+*.folded

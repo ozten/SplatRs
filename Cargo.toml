@@ -102,3 +102,11 @@ opt-level = 1
 opt-level = 3
 lto = true
 codegen-units = 1
+
+[profile.profiling]
+# Profile for performance profiling with flamegraphs
+# Inherits from release but includes debug symbols
+inherits = "release"
+debug = true
+# Disable LTO for faster compilation during profiling iterations
+lto = false
