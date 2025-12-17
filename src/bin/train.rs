@@ -17,6 +17,12 @@ fn main() {
     let mut images: Option<std::path::PathBuf> = None;
     let mut iters: usize = 200;
     let mut lr: f32 = 0.05;
+    let mut lr_position: f32 = 0.00016;
+    let mut lr_rotation: f32 = 0.001;
+    let mut lr_scale: f32 = 0.005;
+    let mut lr_opacity: f32 = 0.05;
+    let mut lr_sh: f32 = 0.0025;
+    let mut lr_background: f32 = 0.05;
     let mut downsample: f32 = 0.25;
     let mut max_gaussians: usize = 20_000;
     let mut image_index: usize = 0;
@@ -48,6 +54,12 @@ fn main() {
         multiview: &mut bool,
         iters: &mut usize,
         lr: &mut f32,
+        lr_position: &mut f32,
+        lr_rotation: &mut f32,
+        lr_scale: &mut f32,
+        lr_opacity: &mut f32,
+        lr_sh: &mut f32,
+        lr_background: &mut f32,
         downsample: &mut f32,
         max_gaussians: &mut usize,
         image_index: &mut usize,
@@ -75,6 +87,13 @@ fn main() {
                 *multiview = false;
                 *iters = 1000;
                 *lr = 0.05;
+                // Use same LR for all params (only color trained in M7)
+                *lr_position = *lr;
+                *lr_rotation = *lr;
+                *lr_scale = *lr;
+                *lr_opacity = *lr;
+                *lr_sh = *lr;
+                *lr_background = *lr;
                 *downsample = 0.25;
                 *max_gaussians = 20_000;
                 *image_index = 0;
@@ -92,6 +111,13 @@ fn main() {
                 *multiview = true;
                 *iters = 50;
                 *lr = 0.01;
+                // Use same LR for all params (only color trained)
+                *lr_position = *lr;
+                *lr_rotation = *lr;
+                *lr_scale = *lr;
+                *lr_opacity = *lr;
+                *lr_sh = *lr;
+                *lr_background = *lr;
                 *downsample = 0.125;
                 *max_gaussians = 2_000;
                 *log_interval = 1;
@@ -114,6 +140,13 @@ fn main() {
                 *multiview = true;
                 *iters = 500;
                 *lr = 0.01;
+                // Use same LR for all params (only color trained)
+                *lr_position = *lr;
+                *lr_rotation = *lr;
+                *lr_scale = *lr;
+                *lr_opacity = *lr;
+                *lr_sh = *lr;
+                *lr_background = *lr;
                 *downsample = 0.25;
                 *max_gaussians = 10_000;
                 *log_interval = 10;
@@ -136,6 +169,13 @@ fn main() {
                 *multiview = true;
                 *iters = 1000;
                 *lr = 0.01;
+                // Use same LR for all params (only color + opacity trained)
+                *lr_position = *lr;
+                *lr_rotation = *lr;
+                *lr_scale = *lr;
+                *lr_opacity = *lr;
+                *lr_sh = *lr;
+                *lr_background = *lr;
                 *downsample = 0.25;
                 *max_gaussians = 10_000;
                 *log_interval = 10;
@@ -160,7 +200,14 @@ fn main() {
             "m10" | "m10-quick" => {
                 *multiview = true;
                 *iters = 2_000;
-                *lr = 0.002;
+                *lr = 0.002; // Fallback (not used when per-param LRs are set)
+                // Per-parameter learning rates based on reference Gaussian Splatting
+                *lr_position = 0.00016;  // Very small to prevent position explosion
+                *lr_rotation = 0.001;    // Moderate for rotation
+                *lr_scale = 0.005;       // Higher for scale
+                *lr_opacity = 0.05;      // Highest for opacity
+                *lr_sh = 0.0025;         // Moderate for spherical harmonics
+                *lr_background = 0.001;  // Conservative for background
                 *downsample = 0.25;
                 *max_gaussians = 20_000;
                 *log_interval = 10;
@@ -200,6 +247,12 @@ fn main() {
                     &mut multiview,
                     &mut iters,
                     &mut lr,
+                    &mut lr_position,
+                    &mut lr_rotation,
+                    &mut lr_scale,
+                    &mut lr_opacity,
+                    &mut lr_sh,
+                    &mut lr_background,
                     &mut downsample,
                     &mut max_gaussians,
                     &mut image_index,
@@ -312,6 +365,12 @@ fn main() {
             downsample_factor: downsample,
             iters,
             lr,
+            lr_position,
+            lr_rotation,
+            lr_scale,
+            lr_opacity,
+            lr_sh,
+            lr_background,
             learn_background,
             learn_opacity,
             learn_position,
@@ -383,6 +442,12 @@ fn main() {
             downsample_factor: downsample,
             iters,
             lr,
+            lr_position,
+            lr_rotation,
+            lr_scale,
+            lr_opacity,
+            lr_sh,
+            lr_background,
             learn_background,
             learn_opacity,
             learn_position,

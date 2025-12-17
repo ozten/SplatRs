@@ -351,6 +351,15 @@ impl GpuRenderer {
         }
 
         let t_cpu_sort = if enable_timing { Some(std::time::Instant::now()) } else { None };
+
+        // Filter out invalid Gaussians (NaN or inf depth) before sorting
+        let original_count = projected.len();
+        projected.retain(|g| g.mean[2].is_finite());
+        let filtered_count = original_count - projected.len();
+        if filtered_count > 0 {
+            eprintln!("[GPU WARNING] Filtered {} Gaussians with invalid depth values", filtered_count);
+        }
+
         projected.sort_by(|a, b| a.mean[2].partial_cmp(&b.mean[2]).unwrap());
 
         if enable_timing {
@@ -522,7 +531,7 @@ impl GpuRenderer {
             eprintln!("[GPU WARNING] Falling back to CPU for backward pass");
 
             // Return empty gradients to signal fallback
-            return (vec![], crate::gpu::gradients::GaussianGradients2D::zeros(num_gaussians));
+            return (vec![], crate::gpu::gradients::GaussianGradients2D::empty());
         }
 
         let enable_timing = std::env::var("SUGAR_GPU_TIMING").is_ok();

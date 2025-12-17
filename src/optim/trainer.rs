@@ -45,7 +45,13 @@ pub struct TrainConfig {
     pub max_gaussians: usize,
     pub downsample_factor: f32,
     pub iters: usize,
-    pub lr: f32,
+    pub lr: f32, // Default/fallback learning rate
+    pub lr_position: f32,
+    pub lr_rotation: f32,
+    pub lr_scale: f32,
+    pub lr_opacity: f32,
+    pub lr_sh: f32,
+    pub lr_background: f32,
     pub learn_background: bool,
     pub learn_opacity: bool,
     pub loss: LossKind,
@@ -209,14 +215,14 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
         }
         acc / (target_linear.len() as f32).max(1.0)
     };
-    let mut bg_opt = AdamVec3::new(cfg.lr, 0.9, 0.999, 1e-8);
+    let mut bg_opt = AdamVec3::new(cfg.lr_background, 0.9, 0.999, 1e-8);
 
     // Optimizer state for SH coeffs (RGB × 16).
-    let mut sh_opt = AdamSh16::new(cfg.lr, 0.9, 0.999, 1e-8);
-    let mut opacity_opt = AdamF32::new(cfg.lr, 0.9, 0.999, 1e-8);
-    let mut position_opt = AdamVec3::new(cfg.lr, 0.9, 0.999, 1e-8);
-    let mut scale_opt = AdamVec3::new(cfg.lr, 0.9, 0.999, 1e-8);
-    let mut rotation_opt = AdamSo3::new(cfg.lr, 0.9, 0.999, 1e-8);
+    let mut sh_opt = AdamSh16::new(cfg.lr_sh, 0.9, 0.999, 1e-8);
+    let mut opacity_opt = AdamF32::new(cfg.lr_opacity, 0.9, 0.999, 1e-8);
+    let mut position_opt = AdamVec3::new(cfg.lr_position, 0.9, 0.999, 1e-8);
+    let mut scale_opt = AdamVec3::new(cfg.lr_scale, 0.9, 0.999, 1e-8);
+    let mut rotation_opt = AdamSo3::new(cfg.lr_rotation, 0.9, 0.999, 1e-8);
 
     // Pull initial SH params.
     let mut sh_params: Vec<[Vector3<f32>; 16]> = gaussians
@@ -493,7 +499,13 @@ pub struct MultiViewTrainConfig {
     pub max_gaussians: usize,
     pub downsample_factor: f32,
     pub iters: usize,
-    pub lr: f32,
+    pub lr: f32, // Default/fallback learning rate
+    pub lr_position: f32,
+    pub lr_rotation: f32,
+    pub lr_scale: f32,
+    pub lr_opacity: f32,
+    pub lr_sh: f32,
+    pub lr_background: f32,
     pub learn_background: bool,
     pub learn_opacity: bool,
     pub loss: LossKind,
@@ -964,14 +976,14 @@ pub fn train_multiview_color_only(
         }
         acc / (first_target_linear.len() as f32).max(1.0)
     };
-    let mut bg_opt = AdamVec3::new(cfg.lr, 0.9, 0.999, 1e-8);
+    let mut bg_opt = AdamVec3::new(cfg.lr_background, 0.9, 0.999, 1e-8);
 
     // Optimizer state for SH coeffs (RGB × 16)
-    let mut sh_opt = AdamSh16::new(cfg.lr, 0.9, 0.999, 1e-8);
-    let mut opacity_opt = AdamF32::new(cfg.lr, 0.9, 0.999, 1e-8);
-    let mut position_opt = AdamVec3::new(cfg.lr, 0.9, 0.999, 1e-8);
-    let mut scale_opt = AdamVec3::new(cfg.lr, 0.9, 0.999, 1e-8);
-    let mut rotation_opt = AdamSo3::new(cfg.lr, 0.9, 0.999, 1e-8);
+    let mut sh_opt = AdamSh16::new(cfg.lr_sh, 0.9, 0.999, 1e-8);
+    let mut opacity_opt = AdamF32::new(cfg.lr_opacity, 0.9, 0.999, 1e-8);
+    let mut position_opt = AdamVec3::new(cfg.lr_position, 0.9, 0.999, 1e-8);
+    let mut scale_opt = AdamVec3::new(cfg.lr_scale, 0.9, 0.999, 1e-8);
+    let mut rotation_opt = AdamSo3::new(cfg.lr_rotation, 0.9, 0.999, 1e-8);
 
     // Pull initial SH params.
     let mut sh_params: Vec<[Vector3<f32>; 16]> = gaussians
@@ -1042,10 +1054,28 @@ pub fn train_multiview_color_only(
 
     eprintln!("Initial test PSNR: {:.2} dB", initial_psnr);
 
+    // Learning rate scheduling: exponential decay
+    // Decay all LRs by 10× over the full training (exponential)
+    let lr_decay_rate = 0.1f32.powf(1.0 / cfg.iters as f32);
+    let initial_lr_position = cfg.lr_position;
+    let initial_lr_rotation = cfg.lr_rotation;
+    let initial_lr_scale = cfg.lr_scale;
+    let initial_lr_opacity = cfg.lr_opacity;
+    let initial_lr_sh = cfg.lr_sh;
+    let initial_lr_background = cfg.lr_background;
+
     // Training loop: sample random views
     let mut train_loss = 0.0f32;
     let mut densify_events: usize = 0;
     for iter in 0..cfg.iters {
+        // Apply LR schedule: exponential decay
+        let lr_multiplier = lr_decay_rate.powi(iter as i32);
+        position_opt.lr = initial_lr_position * lr_multiplier;
+        rotation_opt.lr = initial_lr_rotation * lr_multiplier;
+        scale_opt.lr = initial_lr_scale * lr_multiplier;
+        opacity_opt.lr = initial_lr_opacity * lr_multiplier;
+        sh_opt.lr = initial_lr_sh * lr_multiplier;
+        bg_opt.lr = initial_lr_background * lr_multiplier;
         let should_log =
             cfg.log_interval > 0 && (iter == 0 || iter % cfg.log_interval == 0 || iter + 1 == cfg.iters);
         let iter_start = if should_log { Some(Instant::now()) } else { None };
@@ -1223,7 +1253,9 @@ pub fn train_multiview_color_only(
         // Validation
         if (iter + 1) % cfg.val_interval == 0 || iter + 1 == cfg.iters {
             let mut test_psnr_sum = 0.0f32;
-            for &test_idx in test_indices_for_metrics {
+            let mut first_test_rendered: Option<RgbImage> = None;
+
+            for (i, &test_idx) in test_indices_for_metrics.iter().enumerate() {
                 let (test_camera, test_target_linear) = if let Some(v) = view_cache.get(&test_idx) {
                     (v.camera.clone(), v.target_linear.clone())
                 } else {
@@ -1252,8 +1284,27 @@ pub fn train_multiview_color_only(
                 let rendered = render(&gaussians, &test_camera, &bg);
                 let psnr = compute_psnr(&rendered, &test_target_linear);
                 test_psnr_sum += psnr;
+
+                // Capture first test view for incremental rendering
+                if i == 0 {
+                    first_test_rendered = Some(linear_vec_to_rgb8_img(
+                        &rendered,
+                        test_camera.width,
+                        test_camera.height,
+                    ));
+                }
             }
             let avg_test_psnr = test_psnr_sum / (test_indices_for_metrics.len() as f32);
+
+            // Save incremental test view every 100 iterations
+            if (iter + 1) % 100 == 0 && first_test_rendered.is_some() {
+                let output_path = PathBuf::from(format!("test_output/m8_test_view_rendered_{:04}.png", iter + 1));
+                if let Some(parent) = output_path.parent() {
+                    std::fs::create_dir_all(parent).ok();
+                }
+                first_test_rendered.as_ref().unwrap().save(&output_path)
+                    .unwrap_or_else(|e| eprintln!("Warning: Failed to save incremental test view: {}", e));
+            }
 
             eprintln!(
                 "iter {}/{}  train_loss={loss:.6}  test_psnr={avg_test_psnr:.2} dB  bg=({:.3},{:.3},{:.3})",

@@ -43,6 +43,17 @@ impl GaussianGradients2D {
             d_background: Vector3::zeros(),
         }
     }
+
+    /// Create empty gradients to signal fallback to CPU.
+    pub fn empty() -> Self {
+        Self {
+            d_colors: vec![],
+            d_opacity_logits: vec![],
+            d_mean_px: vec![],
+            d_cov_2d: vec![],
+            d_background: Vector3::zeros(),
+        }
+    }
 }
 
 /// Reduce per-pixel gradients to final per-Gaussian gradients.

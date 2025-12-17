@@ -193,6 +193,15 @@ pub fn render_full_color_grads(
         .enumerate()
         .filter_map(|(i, g)| project_gaussian(g, camera, i))
         .collect();
+
+    // Filter out invalid Gaussians (NaN or inf depth) before sorting
+    let original_count = projected.len();
+    projected.retain(|g| g.mean.z.is_finite());
+    let filtered_count = original_count - projected.len();
+    if filtered_count > 0 {
+        eprintln!("[CPU WARNING] Filtered {} Gaussians with invalid depth values", filtered_count);
+    }
+
     projected.sort_by(|a, b| a.mean.z.partial_cmp(&b.mean.z).unwrap());
 
     let prepared = prepare(&projected, gaussians, camera);
