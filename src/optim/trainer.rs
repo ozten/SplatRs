@@ -588,6 +588,7 @@ struct DensifyStats {
     after: usize,
     kept: usize,
     pruned: usize,
+    pruned_outliers: usize,
     split: usize,
     cloned: usize,
     cap_hit: bool,
@@ -644,6 +645,7 @@ fn densify_and_prune<R: Rng + ?Sized>(
             after: before,
             kept: before,
             pruned: 0,
+            pruned_outliers: 0,
             split: 0,
             cloned: 0,
             cap_hit: false,
@@ -651,6 +653,16 @@ fn densify_and_prune<R: Rng + ?Sized>(
             grad_p90: f32::NAN,
         };
     }
+
+    // Compute scene center for outlier detection
+    let scene_center = {
+        let mut sum = nalgebra::Vector3::zeros();
+        for pos in positions.iter() {
+            sum += pos;
+        }
+        sum / (positions.len() as f32)
+    };
+    const OUTLIER_DISTANCE_THRESHOLD: f32 = 50.0; // 50 meters from center
 
     let cap = if max_gaussians == 0 {
         usize::MAX
@@ -671,12 +683,21 @@ fn densify_and_prune<R: Rng + ?Sized>(
 
     let mut kept = 0usize;
     let mut pruned = 0usize;
+    let mut pruned_outliers = 0usize;
     let mut split = 0usize;
     let mut cloned = 0usize;
     let mut cap_hit = false;
     let mut kept_avg_grads: Vec<f32> = Vec::new();
 
     for i in 0..gaussians.len() {
+        // Prune outliers: gaussians too far from scene center
+        let distance_from_center = (positions[i] - scene_center).norm();
+        if distance_from_center > OUTLIER_DISTANCE_THRESHOLD {
+            pruned_outliers += 1;
+            pruned += 1;
+            continue;
+        }
+
         let opacity = sigmoid(opacity_logits[i]);
         if opacity < prune_opacity_threshold {
             pruned += 1;
@@ -795,6 +816,7 @@ fn densify_and_prune<R: Rng + ?Sized>(
         after: gaussians.len(),
         kept,
         pruned,
+        pruned_outliers,
         split,
         cloned,
         cap_hit,
@@ -1306,11 +1328,36 @@ pub fn train_multiview_color_only(
                     .unwrap_or_else(|e| eprintln!("Warning: Failed to save incremental test view: {}", e));
             }
 
+            // Track scene drift by computing gaussian center and bounds
+            let scene_center = {
+                let mut sum = nalgebra::Vector3::zeros();
+                for g in gaussians.iter() {
+                    sum += g.position;
+                }
+                sum / (gaussians.len() as f32)
+            };
+            let (scene_min, scene_max) = {
+                let mut min = nalgebra::Vector3::new(f32::INFINITY, f32::INFINITY, f32::INFINITY);
+                let mut max = nalgebra::Vector3::new(f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY);
+                for g in gaussians.iter() {
+                    min.x = min.x.min(g.position.x);
+                    min.y = min.y.min(g.position.y);
+                    min.z = min.z.min(g.position.z);
+                    max.x = max.x.max(g.position.x);
+                    max.y = max.y.max(g.position.y);
+                    max.z = max.z.max(g.position.z);
+                }
+                (min, max)
+            };
+
             eprintln!(
-                "iter {}/{}  train_loss={loss:.6}  test_psnr={avg_test_psnr:.2} dB  bg=({:.3},{:.3},{:.3})",
+                "iter {}/{}  train_loss={loss:.6}  test_psnr={avg_test_psnr:.2} dB  bg=({:.3},{:.3},{:.3})  center=({:.2},{:.2},{:.2})  bounds=[{:.2},{:.2},{:.2}]->[{:.2},{:.2},{:.2}]",
                 iter + 1,
                 cfg.iters,
-                bg.x, bg.y, bg.z
+                bg.x, bg.y, bg.z,
+                scene_center.x, scene_center.y, scene_center.z,
+                scene_min.x, scene_min.y, scene_min.z,
+                scene_max.x, scene_max.y, scene_max.z
             );
         } else if should_log {
             let total = iter_start.unwrap().elapsed();
@@ -1357,14 +1404,20 @@ pub fn train_multiview_color_only(
             rotation_opt.reset_moments_keep_t(rotations.len());
             grad_window_iters = 0;
             densify_events += 1;
+            let outlier_msg = if stats.pruned_outliers > 0 {
+                format!(" pruned_outliers={}", stats.pruned_outliers)
+            } else {
+                String::new()
+            };
             eprintln!(
-                "densify @iter {}/{}: gaussians {} -> {} (kept={} pruned={} split={} cloned={} cap_hit={} grad_p50={:.4} grad_p90={:.4})",
+                "densify @iter {}/{}: gaussians {} -> {} (kept={} pruned={}{} split={} cloned={} cap_hit={} grad_p50={:.4} grad_p90={:.4})",
                 iter + 1,
                 cfg.iters,
                 before,
                 gaussians.len(),
                 stats.kept,
                 stats.pruned,
+                outlier_msg,
                 stats.split,
                 stats.cloned,
                 stats.cap_hit,
