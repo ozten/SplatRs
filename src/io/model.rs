@@ -14,7 +14,10 @@
 //!   - Training iterations: u64 (8 bytes)
 //!   - Training PSNR: f32 (4 bytes)
 //!   - Compression: u32 (4 bytes) - 0=none, 1=lz4
-//!   - Reserved: 188 bytes (for future use)
+//!   - Training width: u32 (4 bytes) - training image width
+//!   - Training height: u32 (4 bytes) - training image height
+//!   - Training downsample factor: f32 (4 bytes) - 0.25 = 25% resolution
+//!   - Reserved: 176 bytes (for future use)
 //!
 //! Gaussian Data (per Gaussian):
 //!   - Position: 3 × f32 (12 bytes)
@@ -36,7 +39,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 
 const MAGIC: &[u8; 8] = b"GSPLAT\0\0";
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;  // Version 2: added dataset_path field
 const HEADER_SIZE: usize = 256;
 
 /// Compression method
@@ -70,6 +73,18 @@ pub struct ModelMetadata {
 
     /// Compression method used
     pub compression: Compression,
+
+    /// Training image width (after downsampling)
+    pub training_width: u32,
+
+    /// Training image height (after downsampling)
+    pub training_height: u32,
+
+    /// Downsample factor applied during training (e.g., 0.25 = 25% of original)
+    pub training_downsample_factor: f32,
+
+    /// Dataset path used for training (for COLMAP camera access)
+    pub dataset_path: String,
 }
 
 impl Default for ModelMetadata {
@@ -82,6 +97,10 @@ impl Default for ModelMetadata {
             training_iterations: 0,
             training_psnr: 0.0,
             compression: Compression::None,
+            training_width: 0,
+            training_height: 0,
+            training_downsample_factor: 1.0,
+            dataset_path: String::new(),
         }
     }
 }
@@ -128,6 +147,12 @@ pub fn save_model<P: AsRef<Path>>(
     // Write header
     write_header(&mut writer, cloud, metadata)?;
 
+    // Write dataset path (variable length string)
+    let dataset_path_bytes = metadata.dataset_path.as_bytes();
+    let path_len = dataset_path_bytes.len() as u32;
+    writer.write_all(&path_len.to_le_bytes())?;
+    writer.write_all(dataset_path_bytes)?;
+
     // Write Gaussian data
     write_gaussians(&mut writer, &cloud.gaussians, metadata.compression)?;
 
@@ -140,7 +165,25 @@ pub fn load_model<P: AsRef<Path>>(path: P) -> Result<(GaussianCloud, ModelMetada
     let mut reader = std::io::BufReader::new(file);
 
     // Read header
-    let metadata = read_header(&mut reader)?;
+    let mut metadata = read_header(&mut reader)?;
+
+    // Read dataset path (variable length string) - only for version 2+
+    if metadata.num_gaussians > 0 {  // Use this as a proxy for valid file
+        // Try to read dataset path length
+        let mut len_buf = [0u8; 4];
+        if reader.read_exact(&mut len_buf).is_ok() {
+            let path_len = u32::from_le_bytes(len_buf) as usize;
+            // Sanity check - path shouldn't be more than 4KB
+            if path_len < 4096 {
+                let mut path_buf = vec![0u8; path_len];
+                if reader.read_exact(&mut path_buf).is_ok() {
+                    if let Ok(dataset_path) = String::from_utf8(path_buf) {
+                        metadata.dataset_path = dataset_path;
+                    }
+                }
+            }
+        }
+    }
 
     // Read Gaussian data
     let gaussians = read_gaussians(&mut reader, metadata.num_gaussians as usize, metadata.compression)?;
@@ -203,7 +246,20 @@ fn write_header<W: Write>(
     header[offset..offset + 4].copy_from_slice(&(metadata.compression as u32).to_le_bytes());
     offset += 4;
 
-    // Reserved (188 bytes) - already zeroed
+    // Training width
+    header[offset..offset + 4].copy_from_slice(&metadata.training_width.to_le_bytes());
+    offset += 4;
+
+    // Training height
+    header[offset..offset + 4].copy_from_slice(&metadata.training_height.to_le_bytes());
+    offset += 4;
+
+    // Training downsample factor
+    header[offset..offset + 4].copy_from_slice(&metadata.training_downsample_factor.to_le_bytes());
+    offset += 4;
+
+    // Reserved (176 bytes) - already zeroed
+    // offset is now at 80 (68 + 12)
 
     writer.write_all(&header)?;
     Ok(())
@@ -273,6 +329,28 @@ fn read_header<R: Read>(reader: &mut R) -> Result<ModelMetadata, ModelError> {
         1 => return Err(ModelError::UnsupportedCompression(compression_u32)),
         _ => return Err(ModelError::UnsupportedCompression(compression_u32)),
     };
+    offset += 4;
+
+    // Training resolution (backward compatible - default to 0 if not present)
+    let training_width = if offset + 4 <= header.len() {
+        u32::from_le_bytes(header[offset..offset + 4].try_into().unwrap())
+    } else {
+        0
+    };
+    offset += 4;
+
+    let training_height = if offset + 4 <= header.len() {
+        u32::from_le_bytes(header[offset..offset + 4].try_into().unwrap())
+    } else {
+        0
+    };
+    offset += 4;
+
+    let training_downsample_factor = if offset + 4 <= header.len() {
+        f32::from_le_bytes(header[offset..offset + 4].try_into().unwrap())
+    } else {
+        1.0
+    };
 
     Ok(ModelMetadata {
         num_gaussians,
@@ -282,6 +360,10 @@ fn read_header<R: Read>(reader: &mut R) -> Result<ModelMetadata, ModelError> {
         training_iterations,
         training_psnr,
         compression,
+        training_width,
+        training_height,
+        training_downsample_factor,
+        dataset_path: String::new(),  // Will be populated in load_model for v2+
     })
 }
 
@@ -506,6 +588,9 @@ mod tests {
             training_iterations: 1000,
             training_psnr: 25.5,
             compression: Compression::None,
+            training_width: 256,
+            training_height: 256,
+            training_downsample_factor: 0.25,
         };
 
         // Save and load
@@ -519,6 +604,9 @@ mod tests {
         assert_eq!(loaded_metadata.sh_degree, 3);
         assert_eq!(loaded_metadata.training_iterations, 1000);
         assert_relative_eq!(loaded_metadata.training_psnr, 25.5, epsilon = 1e-6);
+        assert_eq!(loaded_metadata.training_width, 256);
+        assert_eq!(loaded_metadata.training_height, 256);
+        assert_relative_eq!(loaded_metadata.training_downsample_factor, 0.25, epsilon = 1e-6);
 
         // Verify Gaussians
         assert_eq!(loaded_cloud.len(), 10);

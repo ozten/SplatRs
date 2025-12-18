@@ -1,5 +1,5 @@
-use crate::core::Camera;
-use crate::io;
+use crate::core::{Camera, quaternion_to_matrix};
+use crate::io::{self, load_colmap_scene};
 use crate::viewer::state::AppState;
 use image::ImageEncoder;
 use nalgebra::{Matrix3, Vector3};
@@ -12,6 +12,8 @@ use tauri::State;
 pub struct ModelInfo {
     pub name: String,
     pub path: String,
+    #[serde(skip)]
+    pub created_timestamp: u64, // Unix timestamp for sorting (not sent to frontend)
 }
 
 #[derive(Serialize)]
@@ -21,6 +23,9 @@ pub struct ModelMetadataResponse {
     pub bounds_max: [f32; 3],
     pub center: [f32; 3],
     pub suggested_camera_distance: f32,
+    pub training_width: u32,
+    pub training_height: u32,
+    pub dataset_path: String,
 }
 
 #[derive(Deserialize)]
@@ -37,30 +42,97 @@ pub async fn log_to_stdout(message: String) {
     println!("[JS] {}", message);
 }
 
-#[tauri::command]
-pub async fn list_models() -> Result<Vec<ModelInfo>, String> {
-    println!("[VIEWER] list_models called");
-    let test_output = PathBuf::from("test_output");
-    if !test_output.exists() {
-        println!("[VIEWER] test_output directory does not exist");
-        return Ok(vec![]);
+/// Recursively scan a directory for .gs files
+fn scan_directory_for_models(dir: &PathBuf, models: &mut Vec<ModelInfo>) {
+    if !dir.exists() {
+        return;
     }
 
-    let mut models = vec![];
-    for entry in fs::read_dir(test_output).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) == Some("gs") {
-            models.push(ModelInfo {
-                name: path
-                    .file_name()
+
+        if path.is_dir() {
+            // Recursively scan subdirectories
+            scan_directory_for_models(&path, models);
+        } else if path.extension().and_then(|s| s.to_str()) == Some("gs") {
+            // Get file metadata for timestamp
+            let timestamp = if let Ok(metadata) = fs::metadata(&path) {
+                // Try created time first, fall back to modified time
+                metadata
+                    .created()
+                    .or_else(|_| metadata.modified())
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+
+            // Create a friendly display name (show parent dir if from runs/)
+            let name = if let Some(parent) = path.parent() {
+                if let Some(parent_name) = parent.file_name().and_then(|n| n.to_str()) {
+                    // If parent looks like a timestamped run directory, include it
+                    if parent_name.contains('_') && parent.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str()) == Some("runs") {
+                        format!("{}/{}",
+                            parent_name,
+                            path.file_name().and_then(|n| n.to_str()).unwrap_or("model.gs")
+                        )
+                    } else {
+                        path.file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("model.gs")
+                            .to_string()
+                    }
+                } else {
+                    path.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("model.gs")
+                        .to_string()
+                }
+            } else {
+                path.file_name()
                     .and_then(|n| n.to_str())
-                    .unwrap_or("unknown")
-                    .to_string(),
+                    .unwrap_or("model.gs")
+                    .to_string()
+            };
+
+            models.push(ModelInfo {
+                name,
                 path: path.to_str().unwrap_or("").to_string(),
+                created_timestamp: timestamp,
             });
         }
     }
+}
+
+#[tauri::command]
+pub async fn list_models() -> Result<Vec<ModelInfo>, String> {
+    println!("[VIEWER] list_models called");
+
+    let mut models = vec![];
+
+    // Scan runs/ directory (contains timestamped subdirectories)
+    let runs_dir = PathBuf::from("runs");
+    if runs_dir.exists() {
+        println!("[VIEWER] Scanning runs/ directory...");
+        scan_directory_for_models(&runs_dir, &mut models);
+    }
+
+    // Scan test_output/ directory (legacy location)
+    let test_output = PathBuf::from("test_output");
+    if test_output.exists() {
+        println!("[VIEWER] Scanning test_output/ directory...");
+        scan_directory_for_models(&test_output, &mut models);
+    }
+
+    // Sort by timestamp descending (newest first)
+    models.sort_by(|a, b| b.created_timestamp.cmp(&a.created_timestamp));
+
     println!("[VIEWER] Found {} models", models.len());
     Ok(models)
 }
@@ -102,6 +174,11 @@ pub async fn load_model(
     println!("[VIEWER] Center: [{}, {}, {}]", center.x, center.y, center.z);
     println!("[VIEWER] Suggested distance: {}", suggested_distance);
 
+    // Extract training resolution and dataset path before moving metadata
+    let training_width = metadata.training_width;
+    let training_height = metadata.training_height;
+    let dataset_path = metadata.dataset_path.clone();
+
     *state.model.lock().unwrap() = Some((cloud, metadata));
 
     Ok(ModelMetadataResponse {
@@ -110,6 +187,9 @@ pub async fn load_model(
         bounds_max: [max.x, max.y, max.z],
         center: [center.x, center.y, center.z],
         suggested_camera_distance: suggested_distance,
+        training_width,
+        training_height,
+        dataset_path,
     })
 }
 
@@ -209,4 +289,81 @@ pub async fn render_frame(
     }
 
     Ok(encoded)
+}
+
+#[derive(Serialize)]
+pub struct CameraInfo {
+    pub position: [f32; 3],
+    pub rotation: [[f32; 3]; 3], // Row-major rotation matrix
+    pub fx: f32,
+    pub fy: f32,
+    pub cx: f32,
+    pub cy: f32,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[tauri::command]
+pub async fn get_camera_by_id(
+    camera_id: usize,
+    dataset_root: String,
+) -> Result<CameraInfo, String> {
+    println!("[VIEWER] get_camera_by_id called: id={}, root={}", camera_id, dataset_root);
+
+    let dataset_path = PathBuf::from(&dataset_root);
+    let sparse_dir = dataset_path.join("sparse/0");
+
+    if !sparse_dir.exists() {
+        return Err(format!("COLMAP sparse directory not found: {:?}", sparse_dir));
+    }
+
+    // Load COLMAP scene
+    let scene = load_colmap_scene(&sparse_dir).map_err(|e| e.to_string())?;
+
+    // Check if camera_id is valid
+    if camera_id >= scene.images.len() {
+        return Err(format!(
+            "Camera ID {} out of range (max: {})",
+            camera_id,
+            scene.images.len() - 1
+        ));
+    }
+
+    // Get image info for this camera
+    let image_info = &scene.images[camera_id];
+
+    // Get camera intrinsics
+    let camera_intrinsics = scene
+        .cameras
+        .get(&image_info.camera_id)
+        .ok_or_else(|| format!("Camera intrinsics not found for ID {}", image_info.camera_id))?;
+
+    // Convert quaternion to rotation matrix
+    let rotation_matrix = quaternion_to_matrix(&image_info.rotation);
+
+    // Camera position: try positive sign (COLMAP may use opposite convention)
+    let position = rotation_matrix.transpose() * image_info.translation;
+
+    // Convert rotation matrix to row-major format for frontend
+    let rotation = [
+        [rotation_matrix[(0, 0)], rotation_matrix[(0, 1)], rotation_matrix[(0, 2)]],
+        [rotation_matrix[(1, 0)], rotation_matrix[(1, 1)], rotation_matrix[(1, 2)]],
+        [rotation_matrix[(2, 0)], rotation_matrix[(2, 1)], rotation_matrix[(2, 2)]],
+    ];
+
+    println!(
+        "[VIEWER] Camera {} found: pos=[{}, {}, {}]",
+        camera_id, position.x, position.y, position.z
+    );
+
+    Ok(CameraInfo {
+        position: [position.x, position.y, position.z],
+        rotation,
+        fx: camera_intrinsics.fx,
+        fy: camera_intrinsics.fy,
+        cx: camera_intrinsics.cx,
+        cy: camera_intrinsics.cy,
+        width: camera_intrinsics.width,
+        height: camera_intrinsics.height,
+    })
 }

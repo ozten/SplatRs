@@ -56,12 +56,15 @@ anyhow = "1.0"
 # Random number generation (for multi-view training)
 rand = "0.8"
 
+# Date/time formatting for run directories
+time = { version = "0.3", features = ["formatting", "local-offset"] }
+
 # KD-tree for neighbor queries (needed for SuGaR phase)
 # We'll add this later when we reach M13
 # kiddo = "2.0"
 
 # Tauri desktop app framework
-tauri = { version = "2.0", optional = true }
+tauri = { version = "2.0", optional = true, features = ["devtools"] }
 base64 = { version = "0.22", optional = true }
 
 # LZ4 compression for model files

@@ -15,14 +15,27 @@
                     <option value="">-- Select Model --</option>
                 </select>
             </div>
+            <div class="control-group">
+                <label for="datasetRootInput">Dataset Root:</label>
+                <input type="text" id="datasetRootInput" placeholder="e.g., datasets/tandt_db/tandt/train" style="width: 100%;">
+            </div>
+            <div class="control-group">
+                <label for="cameraIdInput">Camera ID:</label>
+                <div style="display: flex; gap: 5px;">
+                    <input type="number" id="cameraIdInput" placeholder="Enter camera ID" min="0" style="flex: 1;">
+                    <button id="goCameraButton" onclick="goToCamera()">Go</button>
+                </div>
+            </div>
             <div class="status" id="status">Ready</div>
             <div class="help">
                 <h3>Controls:</h3>
                 <ul>
-                    <li><b>Mouse Drag:</b> Orbit camera</li>
-                    <li><b>Mouse Wheel:</b> Zoom in/out</li>
+                    <li><b>Mouse Drag:</b> Look around (yaw/pitch)</li>
+                    <li><b>Mouse Wheel:</b> Adjust movement speed</li>
                     <li><b>W/S:</b> Move forward/backward</li>
                     <li><b>A/D:</b> Strafe left/right</li>
+                    <li><b>Q/E:</b> Move down/up (world space)</li>
+                    <li><b>Shift:</b> Sprint (2x speed)</li>
                 </ul>
             </div>
         </div>

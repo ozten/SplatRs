@@ -21,6 +21,8 @@ fn main() {
     let mut dataset_root: Option<PathBuf> = None;
     let mut out_path: PathBuf = PathBuf::from("render.png");
     let mut background: Vector3<f32> = Vector3::new(0.0, 0.0, 0.0);
+    let mut width_override: Option<u32> = None;
+    let mut height_override: Option<u32> = None;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -55,6 +57,22 @@ fn main() {
                     std::process::exit(1);
                 }
                 background = Vector3::new(parts[0], parts[1], parts[2]);
+            }
+            "--width" => {
+                width_override = Some(
+                    args.next()
+                        .expect("Missing --width argument")
+                        .parse()
+                        .expect("Invalid width"),
+                );
+            }
+            "--height" => {
+                height_override = Some(
+                    args.next()
+                        .expect("Missing --height argument")
+                        .parse()
+                        .expect("Invalid height"),
+                );
             }
             "--help" | "-h" => {
                 print_help();
@@ -95,6 +113,29 @@ fn main() {
         "Scene bounds: min={:?}, max={:?}",
         metadata.bounds_min, metadata.bounds_max
     );
+    println!(
+        "Training resolution: {}×{} (downsample: {})",
+        metadata.training_width, metadata.training_height, metadata.training_downsample_factor
+    );
+
+    // Check if model has training resolution
+    let use_training_resolution = metadata.training_width > 0
+        && metadata.training_height > 0
+        && width_override.is_none()
+        && height_override.is_none();
+
+    if use_training_resolution {
+        println!(
+            "Using training resolution: {}×{} (downsample: {:.2})",
+            metadata.training_width, metadata.training_height, metadata.training_downsample_factor
+        );
+    } else if width_override.is_some() || height_override.is_some() {
+        println!(
+            "Using override resolution: {}×{}",
+            width_override.unwrap_or(0),
+            height_override.unwrap_or(0)
+        );
+    }
 
     // Get camera
     let camera = if let Some(cam_id) = camera_id {
@@ -122,7 +163,7 @@ fn main() {
             .expect("Camera ID not found in cameras map");
 
         // Combine intrinsics with extrinsics
-        Camera::new(
+        let mut camera = Camera::new(
             camera_intrinsics.fx,
             camera_intrinsics.fy,
             camera_intrinsics.cx,
@@ -131,12 +172,53 @@ fn main() {
             camera_intrinsics.height,
             quaternion_to_matrix(&image_info.rotation),
             image_info.translation,
-        )
+        );
+
+        // Apply training resolution if available and no overrides
+        if use_training_resolution {
+            let downsample = metadata.training_downsample_factor;
+            camera.width = metadata.training_width;
+            camera.height = metadata.training_height;
+            camera.fx *= downsample;
+            camera.fy *= downsample;
+            camera.cx *= downsample;
+            camera.cy *= downsample;
+        } else if let (Some(w), Some(h)) = (width_override, height_override) {
+            // Explicit override - scale intrinsics proportionally
+            let scale_w = (w as f32) / (camera.width as f32);
+            let scale_h = (h as f32) / (camera.height as f32);
+            let scale = scale_w.min(scale_h); // Maintain aspect ratio
+
+            camera.width = w;
+            camera.height = h;
+            camera.fx *= scale;
+            camera.fy *= scale;
+            camera.cx *= scale;
+            camera.cy *= scale;
+        }
+
+        camera
     } else if let Some(json_path) = camera_json {
         // Load from JSON
         println!("Loading camera from {:?}...", json_path);
         let json_str = std::fs::read_to_string(&json_path).expect("Failed to read camera JSON");
-        serde_json::from_str::<Camera>(&json_str).expect("Failed to parse camera JSON")
+        let mut camera = serde_json::from_str::<Camera>(&json_str).expect("Failed to parse camera JSON");
+
+        // Apply resolution overrides if specified
+        if let (Some(w), Some(h)) = (width_override, height_override) {
+            let scale_w = (w as f32) / (camera.width as f32);
+            let scale_h = (h as f32) / (camera.height as f32);
+            let scale = scale_w.min(scale_h); // Maintain aspect ratio
+
+            camera.width = w;
+            camera.height = h;
+            camera.fx *= scale;
+            camera.fy *= scale;
+            camera.cx *= scale;
+            camera.cy *= scale;
+        }
+
+        camera
     } else {
         unreachable!()
     };
@@ -177,7 +259,14 @@ OPTIONS:
     --dataset-root PATH      Path to COLMAP dataset root (needed for --camera-id)
     --out PATH               Output image path [default: render.png]
     --background R,G,B       Background color as comma-separated floats [default: 0,0,0]
+    --width WIDTH            Override render width (default: use training resolution)
+    --height HEIGHT          Override render height (default: use training resolution)
     --help, -h               Print this help message
+
+RESOLUTION HANDLING:
+    By default, renders at the training resolution stored in model metadata.
+    Use --width and --height together to override for higher or lower resolution renders.
+    Old models without metadata will use camera resolution from COLMAP.
 
 EXAMPLES:
     # Render using camera 5 from a COLMAP dataset

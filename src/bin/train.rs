@@ -5,6 +5,84 @@
 
 use sugar_rs::io::{compute_bounds, save_model, Compression, ModelMetadata};
 use sugar_rs::core::GaussianCloud;
+use std::path::PathBuf;
+
+/// Create timestamped run directory
+fn create_run_directory(preset_name: &str) -> std::io::Result<PathBuf> {
+    use time::OffsetDateTime;
+
+    // Get current local time
+    let now = OffsetDateTime::now_utc();
+
+    // Format timestamp as YYYYMMDD_HHMM in UTC
+    // Note: Using UTC to avoid timezone issues. If local time is needed,
+    // would need to handle platform-specific timezone access.
+    let year = now.year();
+    let month = now.month() as u8;
+    let day = now.day();
+    let hour = now.hour();
+    let minute = now.minute();
+
+    // Sanitize preset name
+    let sanitized_preset = preset_name
+        .replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
+
+    let dir_name = format!(
+        "runs/{:04}{:02}{:02}_{:02}{:02}_{}",
+        year, month, day, hour, minute, sanitized_preset
+    );
+
+    let mut path = PathBuf::from(&dir_name);
+
+    // Handle collisions
+    let mut counter = 1;
+    while path.exists() {
+        path = PathBuf::from(format!("{}.{}", dir_name, counter));
+        counter += 1;
+    }
+
+    std::fs::create_dir_all(&path)?;
+    Ok(path)
+}
+
+/// Save run metadata to text file
+fn save_run_metadata(
+    out_dir: &std::path::Path,
+    args: &[String],
+    seed_used: Option<u64>,
+) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::time::SystemTime;
+
+    let metadata_path = out_dir.join("run_metadata.txt");
+    let mut file = std::fs::File::create(metadata_path)?;
+
+    writeln!(file, "=== Training Run Metadata ===")?;
+    writeln!(file)?;
+    writeln!(file, "Command:")?;
+    let binary_name = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|s| s.to_string_lossy().to_string()))
+        .unwrap_or_else(|| "sugar-train".to_string());
+    writeln!(file, "{} {}", binary_name, args[1..].join(" "))?;
+    writeln!(file)?;
+
+    writeln!(file, "Started: {:?}", SystemTime::now())?;
+    writeln!(file)?;
+
+    // Write seed used for reproducibility
+    if let Some(seed) = seed_used {
+        writeln!(file, "Seed: {}", seed)?;
+        writeln!(file)?;
+    }
+
+    writeln!(file, "System:")?;
+    writeln!(file, "  Platform: {}", std::env::consts::OS)?;
+    writeln!(file, "  Architecture: {}", std::env::consts::ARCH)?;
+    writeln!(file, "  Package version: {}", env!("CARGO_PKG_VERSION"))?;
+
+    Ok(())
+}
 
 fn main() {
     println!("sugar-train v{}", sugar_rs::VERSION);
@@ -40,7 +118,8 @@ fn main() {
     let mut val_interval: usize = 50;
     let mut max_test_views_for_metrics: usize = 0;
     let mut max_images: usize = 0;
-    let mut out_dir: std::path::PathBuf = std::path::PathBuf::from("test_output");
+    let mut out_dir: Option<std::path::PathBuf> = None;
+    let mut preset_name: Option<String> = None;
     let mut densify_interval: usize = 0;
     let mut densify_max_gaussians: usize = 0;
     let mut densify_grad_threshold: f32 = 0.1;
@@ -338,6 +417,7 @@ fn main() {
         match a.as_str() {
             "--preset" => {
                 let preset = args.next().unwrap();
+                preset_name = Some(preset.clone());
                 if let Err(msg) = apply_preset(
                     &preset,
                     &mut multiview,
@@ -406,7 +486,7 @@ fn main() {
             "--val-interval" => val_interval = args.next().unwrap().parse().unwrap(),
             "--max-test-views" => max_test_views_for_metrics = args.next().unwrap().parse().unwrap(),
             "--max-images" => max_images = args.next().unwrap().parse().unwrap(),
-            "--out-dir" => out_dir = args.next().unwrap().into(),
+            "--out-dir" => out_dir = Some(args.next().unwrap().into()),
             "--densify-interval" => densify_interval = args.next().unwrap().parse().unwrap(),
             "--densify-max-gaussians" => densify_max_gaussians = args.next().unwrap().parse().unwrap(),
             "--densify-grad-threshold" => densify_grad_threshold = args.next().unwrap().parse().unwrap(),
@@ -453,7 +533,26 @@ fn main() {
         (scene, images_dir)
     };
 
-    std::fs::create_dir_all(&out_dir).ok();
+    // Determine output directory: use --out-dir if specified, otherwise create timestamped directory
+    let final_out_dir = if let Some(dir) = out_dir {
+        std::fs::create_dir_all(&dir).ok();
+        dir
+    } else {
+        let preset = preset_name.as_deref().unwrap_or("custom");
+        create_run_directory(preset)
+            .expect("Failed to create run directory")
+    };
+
+    // Save run metadata (seed will be updated after training)
+    let all_args: Vec<String> = std::env::args().collect();
+    save_run_metadata(&final_out_dir, &all_args, None)
+        .unwrap_or_else(|e| eprintln!("Warning: Failed to save metadata: {}", e));
+
+    // Derive dataset root from scene path before scene is moved (scene is sparse/0, so go up two levels)
+    let dataset_path = scene.parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
 
     if multiview {
         let cfg = sugar_rs::optim::trainer::MultiViewTrainConfig {
@@ -488,10 +587,16 @@ fn main() {
             prune_opacity_threshold,
             split_sigma_threshold,
             use_gpu,
+            csv_output_path: Some(final_out_dir.join("metrics.csv")),
+            out_dir: final_out_dir.clone(),
         };
 
         let out = sugar_rs::optim::trainer::train_multiview_color_only(&cfg)
             .expect("Multi-view training failed");
+
+        // Update metadata with actual seed used
+        save_run_metadata(&final_out_dir, &all_args, Some(out.seed_used))
+            .unwrap_or_else(|e| eprintln!("Warning: Failed to update metadata: {}", e));
 
         eprintln!(
             "M8 metrics: initial_psnr={:.2}dB final_psnr={:.2}dB train_loss={:.6} gaussians={}->{} densify_events={}",
@@ -503,15 +608,15 @@ fn main() {
             out.densify_events
         );
 
-        let rendered_path = out_dir.join("m8_test_view_rendered.png");
-        let target_path = out_dir.join("m8_test_view_target.png");
+        let rendered_path = final_out_dir.join("m8_test_view_rendered.png");
+        let target_path = final_out_dir.join("m8_test_view_target.png");
         out.test_view_sample.save(&rendered_path).ok();
         out.test_view_target.save(&target_path).ok();
         eprintln!("Saved `{}`", rendered_path.display());
         eprintln!("Saved `{}`", target_path.display());
 
         // Save trained model
-        let model_path = out_dir.join("model.gs");
+        let model_path = final_out_dir.join("model.gs");
         let cloud = GaussianCloud::from_gaussians(out.gaussians);
         let (bounds_min, bounds_max) = compute_bounds(&cloud.gaussians);
 
@@ -528,6 +633,10 @@ fn main() {
             training_iterations: iters as u64,
             training_psnr: out.final_psnr,
             compression,
+            training_width: out.training_width,
+            training_height: out.training_height,
+            training_downsample_factor: out.downsample_factor,
+            dataset_path,
         };
         save_model(&model_path, &cloud, &metadata).expect("Failed to save model");
         eprintln!("Saved model to `{}`", model_path.display());
@@ -556,22 +665,27 @@ fn main() {
             log_interval,
             rng_seed: seed,
             use_gpu,
+            csv_output_path: Some(final_out_dir.join("metrics.csv")),
         };
 
         let out =
             sugar_rs::optim::trainer::train_single_image_color_only(&cfg).expect("Training failed");
         eprintln!("Training image: {}", out.image_name);
 
-        out.target.save(out_dir.join("m7_target.png")).ok();
-        out.overlay.save(out_dir.join("m7_overlay.png")).ok();
-        out.coverage.save(out_dir.join("m7_coverage.png")).ok();
-        out.t_final.save(out_dir.join("m7_t_final.png")).ok();
+        // Update metadata with actual seed used
+        save_run_metadata(&final_out_dir, &all_args, Some(out.seed_used))
+            .unwrap_or_else(|e| eprintln!("Warning: Failed to update metadata with seed: {}", e));
+
+        out.target.save(final_out_dir.join("m7_target.png")).ok();
+        out.overlay.save(final_out_dir.join("m7_overlay.png")).ok();
+        out.coverage.save(final_out_dir.join("m7_coverage.png")).ok();
+        out.t_final.save(final_out_dir.join("m7_t_final.png")).ok();
         out.contrib_count
-            .save(out_dir.join("m7_contrib_count.png"))
+            .save(final_out_dir.join("m7_contrib_count.png"))
             .ok();
-        out.initial.save(out_dir.join("m7_initial.png")).ok();
-        out.final_img.save(out_dir.join("m7_final.png")).ok();
-        eprintln!("Saved M7 outputs under `{}`", out_dir.display());
+        out.initial.save(final_out_dir.join("m7_initial.png")).ok();
+        out.final_img.save(final_out_dir.join("m7_final.png")).ok();
+        eprintln!("Saved M7 outputs under `{}`", final_out_dir.display());
 
         // Note: Single-image trainer doesn't currently return gaussians
         // TODO: Add model saving when trainer is updated to return trained gaussians

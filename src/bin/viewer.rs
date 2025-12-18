@@ -10,7 +10,8 @@ fn main() {
             log_to_stdout,
             list_models,
             load_model,
-            render_frame
+            render_frame,
+            get_camera_by_id
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

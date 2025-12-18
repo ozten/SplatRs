@@ -37,6 +37,63 @@ use rand::seq::SliceRandom;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
+use std::io::Write;
+
+/// CSV logger for training metrics
+struct CsvLogger {
+    file: std::fs::File,
+}
+
+impl CsvLogger {
+    fn new(path: &Path) -> std::io::Result<Self> {
+        let mut file = std::fs::File::create(path)?;
+        writeln!(
+            file,
+            "iteration,loss,psnr,num_gaussians,forward_ms,backward_ms,step_ms,total_ms,densify_split,densify_clone,densify_prune,grad_p50,grad_p90,bg_r,bg_g,bg_b"
+        )?;
+        Ok(CsvLogger { file })
+    }
+
+    fn log_iteration(
+        &mut self,
+        iter: usize,
+        loss: f32,
+        psnr: f32,
+        num_gaussians: usize,
+        forward_ms: f32,
+        backward_ms: f32,
+        step_ms: f32,
+        total_ms: f32,
+        densify_split: usize,
+        densify_clone: usize,
+        densify_prune: usize,
+        grad_p50: f32,
+        grad_p90: f32,
+        bg: &Vector3<f32>,
+    ) -> std::io::Result<()> {
+        writeln!(
+            self.file,
+            "{},{:.6},{:.2},{},{:.2},{:.2},{:.2},{:.2},{},{},{},{:.4},{:.4},{:.6},{:.6},{:.6}",
+            iter + 1,
+            loss,
+            psnr,
+            num_gaussians,
+            forward_ms,
+            backward_ms,
+            step_ms,
+            total_ms,
+            densify_split,
+            densify_clone,
+            densify_prune,
+            grad_p50,
+            grad_p90,
+            bg.x,
+            bg.y,
+            bg.z
+        )?;
+        self.file.flush()
+    }
+}
 
 pub struct TrainConfig {
     pub sparse_dir: PathBuf,
@@ -65,6 +122,8 @@ pub struct TrainConfig {
     pub rng_seed: Option<u64>,
     /// Use GPU for forward rendering.
     pub use_gpu: bool,
+    /// Optional CSV output path for metrics logging.
+    pub csv_output_path: Option<PathBuf>,
 }
 
 pub struct TrainOutputs {
@@ -77,6 +136,7 @@ pub struct TrainOutputs {
     pub final_img: RgbImage,
     pub background: Vector3<f32>,
     pub image_name: String,
+    pub seed_used: u64,
 }
 
 fn camera_with_pose(base: &Camera, rotation: Matrix3<f32>, translation: Vector3<f32>) -> Camera {
@@ -115,6 +175,16 @@ fn load_target_image(images_dir: &Path, name: &str) -> anyhow::Result<RgbImage> 
 }
 
 pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainOutputs> {
+    // Generate or use provided seed
+    let actual_seed = cfg.rng_seed.unwrap_or_else(|| {
+        use std::time::SystemTime;
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    });
+    eprintln!("Using seed: {}", actual_seed);
+
     let scene = load_colmap_scene(&cfg.sparse_dir)?;
     if scene.cameras.is_empty() || scene.images.is_empty() {
         return Err(anyhow::anyhow!("Scene has no cameras/images"));
@@ -254,6 +324,22 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
     #[cfg(not(feature = "gpu"))]
     let render = |gaussians: &[Gaussian], camera: &Camera, bg: &Vector3<f32>| {
         render_full_linear(gaussians, camera, bg)
+    };
+
+    // Initialize CSV logger if requested
+    let mut csv_logger = if let Some(ref csv_path) = cfg.csv_output_path {
+        match CsvLogger::new(csv_path) {
+            Ok(logger) => {
+                eprintln!("CSV logging enabled: {:?}", csv_path);
+                Some(logger)
+            }
+            Err(e) => {
+                eprintln!("Warning: Failed to create CSV logger: {}", e);
+                None
+            }
+        }
+    } else {
+        None
     };
 
     // Initial render for output.
@@ -410,6 +496,36 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
                 total,
                 bg.x, bg.y, bg.z
             );
+
+            // Log to CSV if enabled
+            if let Some(ref mut csv) = csv_logger {
+                // Calculate PSNR from MSE loss
+                let mse = loss / (camera.width * camera.height) as f32;
+                let psnr = if mse > 1e-10 {
+                    -10.0 * mse.log10()
+                } else {
+                    100.0
+                };
+
+                if let Err(e) = csv.log_iteration(
+                    iter,
+                    loss,
+                    psnr,
+                    gaussians.len(),
+                    t_forward.as_secs_f32() * 1000.0,
+                    t_backward.as_secs_f32() * 1000.0,
+                    t_step.as_secs_f32() * 1000.0,
+                    total.as_secs_f32() * 1000.0,
+                    0, // densify_split (M7 doesn't have densification)
+                    0, // densify_clone
+                    0, // densify_prune
+                    0.0, // grad_p50
+                    0.0, // grad_p90
+                    &bg,
+                ) {
+                    eprintln!("Warning: Failed to write CSV row: {}", e);
+                }
+            }
         }
     }
 
@@ -443,6 +559,7 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
         final_img: final_render_u8,
         background: bg,
         image_name: image_info.name.clone(),
+        seed_used: actual_seed,
     })
 }
 
@@ -555,6 +672,10 @@ pub struct MultiViewTrainConfig {
     pub split_sigma_threshold: f32,
     /// Use GPU for forward rendering.
     pub use_gpu: bool,
+    /// Optional CSV output path for metrics logging.
+    pub csv_output_path: Option<PathBuf>,
+    /// Output directory for incremental renders.
+    pub out_dir: PathBuf,
 }
 
 pub struct MultiViewTrainOutputs {
@@ -569,6 +690,10 @@ pub struct MultiViewTrainOutputs {
     pub test_view_sample: RgbImage, // One test view rendering for visual check
     pub test_view_target: RgbImage,
     pub gaussians: Vec<Gaussian>, // Trained Gaussians for model saving
+    pub training_width: u32,
+    pub training_height: u32,
+    pub downsample_factor: f32,
+    pub seed_used: u64, // Actual seed used (for reproducibility)
 }
 
 /// Compute PSNR between two linear RGB images.
@@ -879,11 +1004,17 @@ pub fn train_multiview_color_only(
 
     // Split images into train/test sets
     let mut image_indices: Vec<usize> = (0..available_images).collect();
-    let mut rng = if let Some(seed) = cfg.rng_seed {
-        StdRng::seed_from_u64(seed)
-    } else {
-        StdRng::from_entropy()
-    };
+
+    // Generate seed if not provided (for reproducibility)
+    let actual_seed = cfg.rng_seed.unwrap_or_else(|| {
+        use std::time::SystemTime;
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    });
+
+    let mut rng = StdRng::seed_from_u64(actual_seed);
     image_indices.shuffle(&mut rng);
 
     let num_train = ((available_images as f32) * cfg.train_fraction).max(1.0) as usize;
@@ -1095,6 +1226,13 @@ pub fn train_multiview_color_only(
 
     eprintln!("Initial test PSNR: {:.2} dB", initial_psnr);
 
+    // Initialize CSV logger if path provided
+    let mut csv_logger = if let Some(ref csv_path) = cfg.csv_output_path {
+        CsvLogger::new(csv_path).ok()
+    } else {
+        None
+    };
+
     // Learning rate scheduling: exponential decay
     // Decay all LRs by 10× over the full training (exponential)
     let lr_decay_rate = 0.1f32.powf(1.0 / cfg.iters as f32);
@@ -1108,6 +1246,14 @@ pub fn train_multiview_color_only(
     // Training loop: sample random views
     let mut train_loss = 0.0f32;
     let mut densify_events: usize = 0;
+
+    // Track last densification stats for CSV logging
+    let mut last_densify_split: usize = 0;
+    let mut last_densify_clone: usize = 0;
+    let mut last_densify_prune: usize = 0;
+    let mut last_grad_p50: f32 = 0.0;
+    let mut last_grad_p90: f32 = 0.0;
+
     for iter in 0..cfg.iters {
         // Apply LR schedule: exponential decay
         let lr_multiplier = lr_decay_rate.powi(iter as i32);
@@ -1356,12 +1502,38 @@ pub fn train_multiview_color_only(
             }
             let avg_test_psnr = test_psnr_sum / (test_indices_for_metrics.len() as f32);
 
+            // Log to CSV if logger is enabled
+            if let Some(ref mut logger) = csv_logger {
+                let total_time = if let Some(start) = iter_start {
+                    start.elapsed().as_secs_f32() * 1000.0
+                } else {
+                    0.0
+                };
+                let forward_ms = t_forward.as_secs_f32() * 1000.0;
+                let backward_ms = t_backward.as_secs_f32() * 1000.0;
+                let step_ms = t_step.as_secs_f32() * 1000.0;
+
+                let _ = logger.log_iteration(
+                    iter,
+                    train_loss,
+                    avg_test_psnr,
+                    gaussians.len(),
+                    forward_ms,
+                    backward_ms,
+                    step_ms,
+                    total_time,
+                    last_densify_split,
+                    last_densify_clone,
+                    last_densify_prune,
+                    last_grad_p50,
+                    last_grad_p90,
+                    &bg,
+                );
+            }
+
             // Save incremental test view every 100 iterations
             if (iter + 1) % 100 == 0 && first_test_rendered.is_some() {
-                let output_path = PathBuf::from(format!("test_output/m8_test_view_rendered_{:04}.png", iter + 1));
-                if let Some(parent) = output_path.parent() {
-                    std::fs::create_dir_all(parent).ok();
-                }
+                let output_path = cfg.out_dir.join(format!("m8_test_view_rendered_{:04}.png", iter + 1));
                 first_test_rendered.as_ref().unwrap().save(&output_path)
                     .unwrap_or_else(|e| eprintln!("Warning: Failed to save incremental test view: {}", e));
             }
@@ -1442,6 +1614,14 @@ pub fn train_multiview_color_only(
             rotation_opt.reset_moments_keep_t(rotations.len());
             grad_window_iters = 0;
             densify_events += 1;
+
+            // Track stats for CSV logging
+            last_densify_split = stats.split;
+            last_densify_clone = stats.cloned;
+            last_densify_prune = stats.pruned;
+            last_grad_p50 = stats.grad_p50;
+            last_grad_p90 = stats.grad_p90;
+
             let outlier_msg = if stats.pruned_outliers > 0 {
                 format!(" pruned_outliers={}", stats.pruned_outliers)
             } else {
@@ -1525,6 +1705,9 @@ pub fn train_multiview_color_only(
     eprintln!("Final test PSNR:   {:.2} dB", final_psnr);
     eprintln!("Improvement:       {:.2} dB", final_psnr - initial_psnr);
 
+    // Get training resolution from the first cached view (all have same resolution)
+    let first_camera = &view_cache.get(&train_indices[0]).unwrap().camera;
+
     Ok(MultiViewTrainOutputs {
         initial_psnr,
         final_psnr,
@@ -1537,6 +1720,10 @@ pub fn train_multiview_color_only(
         test_view_sample: test_view_sample.unwrap(),
         test_view_target: test_view_target.unwrap(),
         gaussians,
+        training_width: first_camera.width,
+        training_height: first_camera.height,
+        downsample_factor: cfg.downsample_factor,
+        seed_used: actual_seed,
     })
 }
 

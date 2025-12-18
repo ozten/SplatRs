@@ -87,6 +87,20 @@ async function onModelSelected() {
 
         await log('Model loaded successfully');
 
+        // Use training resolution if available (non-zero), otherwise keep default 640×480
+        if (metadata.training_width > 0 && metadata.training_height > 0) {
+            await log(`Using training resolution: ${metadata.training_width}×${metadata.training_height}`);
+            camera.setResolution(metadata.training_width, metadata.training_height);
+        } else {
+            await log('No training resolution in metadata, using default 640×480');
+        }
+
+        // Auto-populate dataset path from model metadata
+        if (metadata.dataset_path) {
+            document.getElementById('datasetRootInput').value = metadata.dataset_path;
+            await log(`Auto-populated dataset path: ${metadata.dataset_path}`);
+        }
+
         // Frame camera on model
         camera.frameModel(metadata.bounds_min, metadata.bounds_max, metadata.suggested_camera_distance);
 
@@ -108,9 +122,15 @@ async function onModelSelected() {
 
 let modelLoaded = false;
 let renderAttempts = 0;
+let lastFrameTime = performance.now();
 
 async function renderLoop() {
-    camera.update(); // Handle WASD input
+    // Calculate delta time for frame-rate independent movement
+    const now = performance.now();
+    const deltaTime = (now - lastFrameTime) / 1000;  // Convert to seconds
+    lastFrameTime = now;
+
+    camera.update(deltaTime); // Handle WASD input
 
     if (!modelLoaded) {
         requestAnimationFrame(renderLoop);
@@ -158,4 +178,55 @@ async function renderLoop() {
     requestAnimationFrame(renderLoop);
 }
 
-window.addEventListener('DOMContentLoaded', init);
+async function goToCamera() {
+    const cameraIdInput = document.getElementById('cameraIdInput');
+    const datasetRootInput = document.getElementById('datasetRootInput');
+    const cameraId = parseInt(cameraIdInput.value);
+    const datasetRoot = datasetRootInput.value.trim();
+
+    if (isNaN(cameraId) || cameraId < 0) {
+        document.getElementById('status').textContent = 'Invalid camera ID';
+        return;
+    }
+
+    if (!datasetRoot) {
+        document.getElementById('status').textContent = 'Please enter a dataset root path';
+        return;
+    }
+
+    await log(`goToCamera called: id=${cameraId}, dataset=${datasetRoot}`);
+
+    try {
+        document.getElementById('status').textContent = `Loading camera ${cameraId}...`;
+
+        const cameraInfo = await invoke('get_camera_by_id', {
+            cameraId: cameraId,
+            datasetRoot: datasetRoot
+        });
+
+        await log(`Camera ${cameraId} loaded: ${JSON.stringify(cameraInfo)}`);
+
+        // Update camera controller with new pose
+        camera.setCameraPose(
+            cameraInfo.position,
+            cameraInfo.rotation
+        );
+
+        document.getElementById('status').textContent = `Camera ${cameraId} loaded`;
+    } catch (err) {
+        await log(`Error loading camera: ${err}`);
+        document.getElementById('status').textContent = `Error: ${err}`;
+    }
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+    init();
+
+    // Add Enter key handler for camera ID input
+    const cameraIdInput = document.getElementById('cameraIdInput');
+    cameraIdInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+            goToCamera();
+        }
+    });
+});

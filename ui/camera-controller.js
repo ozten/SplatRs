@@ -2,21 +2,19 @@ class CameraController {
     constructor(canvas) {
         this.canvas = canvas;
 
-        // Orbit parameters (spherical coordinates)
-        this.azimuth = 0.0;      // Horizontal rotation (radians)
-        this.elevation = 0.3;    // Vertical rotation (radians), clamped to [-π/2, π/2]
-        this.distance = 5.0;     // Distance from target
-        this.target = [0, 0, 0]; // Look-at point
+        // FPS camera state (position + orientation)
+        this.position = [0, 0, 5];  // World position
+        this.yaw = 0.0;              // Horizontal rotation (radians)
+        this.pitch = 0.3;            // Vertical rotation (radians)
 
         // Camera parameters
         this.fovYDeg = 60.0;
         this.width = 640;
         this.height = 480;
 
-        // Movement speeds
-        this.orbitSpeed = 0.005;     // Radians per pixel
-        this.moveSpeed = 0.5;        // Units per frame (10x faster)
-        this.zoomSpeed = 0.1;        // Distance multiplier per wheel tick
+        // Movement settings
+        this.moveSpeed = 5.0;              // Units per second
+        this.mouseSensitivity = 0.003;     // Radians per pixel
 
         // Input state
         this.keys = new Set();
@@ -28,7 +26,7 @@ class CameraController {
     }
 
     setupEventListeners() {
-        // Mouse orbit
+        // Mouse drag to look around (yaw/pitch)
         this.canvas.addEventListener('mousedown', (e) => {
             this.isDragging = true;
             this.lastMouseX = e.clientX;
@@ -45,24 +43,19 @@ class CameraController {
             const dx = e.clientX - this.lastMouseX;
             const dy = e.clientY - this.lastMouseY;
 
-            // Flip azimuth direction so dragging right rotates camera right (world appears to move right)
-            this.azimuth += dx * this.orbitSpeed;
-            this.elevation = Math.max(-Math.PI / 2 + 0.01,
-                                     Math.min(Math.PI / 2 - 0.01,
-                                             this.elevation - dy * this.orbitSpeed));
+            // Update yaw (left/right) and pitch (up/down)
+            this.yaw += dx * this.mouseSensitivity;
+            this.pitch -= dy * this.mouseSensitivity;  // Inverted Y
+
+            // Clamp pitch to prevent gimbal lock (±89 degrees)
+            const maxPitch = Math.PI / 2 - 0.01;
+            this.pitch = Math.max(-maxPitch, Math.min(maxPitch, this.pitch));
 
             this.lastMouseX = e.clientX;
             this.lastMouseY = e.clientY;
         });
 
-        // Mouse wheel zoom
-        this.canvas.addEventListener('wheel', (e) => {
-            e.preventDefault();
-            this.distance *= (1 + Math.sign(e.deltaY) * this.zoomSpeed);
-            this.distance = Math.max(0.1, this.distance); // Prevent negative
-        });
-
-        // Keyboard WASD
+        // Keyboard input
         window.addEventListener('keydown', (e) => {
             this.keys.add(e.key.toLowerCase());
         });
@@ -70,55 +63,85 @@ class CameraController {
         window.addEventListener('keyup', (e) => {
             this.keys.delete(e.key.toLowerCase());
         });
+
+        // Wheel for movement speed adjustment
+        this.canvas.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const speedChange = 1 + Math.sign(e.deltaY) * 0.1;
+            this.moveSpeed *= speedChange;
+            this.moveSpeed = Math.max(0.1, Math.min(50.0, this.moveSpeed));
+            console.log(`Movement speed: ${this.moveSpeed.toFixed(2)} units/sec`);
+        });
     }
 
-    update() {
-        // Get right vector for strafing
+    update(deltaTime) {
+        // Calculate basis vectors from yaw/pitch
+        const forward = this.getForwardVector();
         const right = this.getRightVector();
 
-        // W/S: Zoom in/out (adjust distance) - always moves toward/away from what you're looking at
+        // Accumulate movement direction
+        let moveDir = [0, 0, 0];
+
+        // W/S: Forward/Backward
         if (this.keys.has('w')) {
-            this.distance = Math.max(0.1, this.distance - this.moveSpeed);
+            moveDir[0] += forward[0];
+            moveDir[1] += forward[1];
+            moveDir[2] += forward[2];
         }
         if (this.keys.has('s')) {
-            this.distance += this.moveSpeed;
+            moveDir[0] -= forward[0];
+            moveDir[1] -= forward[1];
+            moveDir[2] -= forward[2];
         }
 
-        // A/D: Strafe left/right (move target perpendicular to view)
+        // A/D: Strafe left/right
         if (this.keys.has('a')) {
-            this.target[0] -= right[0] * this.moveSpeed;
-            this.target[1] -= right[1] * this.moveSpeed;
-            this.target[2] -= right[2] * this.moveSpeed;
+            moveDir[0] -= right[0];
+            moveDir[1] -= right[1];
+            moveDir[2] -= right[2];
         }
         if (this.keys.has('d')) {
-            this.target[0] += right[0] * this.moveSpeed;
-            this.target[1] += right[1] * this.moveSpeed;
-            this.target[2] += right[2] * this.moveSpeed;
+            moveDir[0] += right[0];
+            moveDir[1] += right[1];
+            moveDir[2] += right[2];
         }
-    }
 
-    getCameraPosition() {
-        // Convert spherical to Cartesian
-        const x = this.target[0] + this.distance * Math.cos(this.elevation) * Math.sin(this.azimuth);
-        const y = this.target[1] + this.distance * Math.sin(this.elevation);
-        const z = this.target[2] + this.distance * Math.cos(this.elevation) * Math.cos(this.azimuth);
-        return [x, y, z];
+        // Q/E: Up/Down (world space)
+        if (this.keys.has('q')) {
+            moveDir[1] -= 1;
+        }
+        if (this.keys.has('e')) {
+            moveDir[1] += 1;
+        }
+
+        // Normalize diagonal movement
+        const len = Math.sqrt(moveDir[0]**2 + moveDir[1]**2 + moveDir[2]**2);
+        if (len > 0) {
+            moveDir[0] /= len;
+            moveDir[1] /= len;
+            moveDir[2] /= len;
+
+            // Apply speed and delta time (sprint modifier: 2x with Shift)
+            const speed = this.moveSpeed * (this.keys.has('shift') ? 2.0 : 1.0);
+            this.position[0] += moveDir[0] * speed * deltaTime;
+            this.position[1] += moveDir[1] * speed * deltaTime;
+            this.position[2] += moveDir[2] * speed * deltaTime;
+        }
     }
 
     getForwardVector() {
-        // Direction from camera to target (normalized)
-        const pos = this.getCameraPosition();
-        const dx = this.target[0] - pos[0];
-        const dy = this.target[1] - pos[1];
-        const dz = this.target[2] - pos[2];
-        const len = Math.sqrt(dx*dx + dy*dy + dz*dz);
-        return [dx/len, dy/len, dz/len];
+        // Forward direction from yaw/pitch (negated for correct movement direction)
+        return [
+            -Math.sin(this.yaw) * Math.cos(this.pitch),
+            -Math.sin(this.pitch),
+            -Math.cos(this.yaw) * Math.cos(this.pitch)
+        ];
     }
 
     getRightVector() {
         // Right = forward × world_up (cross product)
         const fwd = this.getForwardVector();
-        const up = [0, 1, 0]; // World up
+        const up = [0, 1, 0];
         return [
             fwd[1] * up[2] - fwd[2] * up[1],
             fwd[2] * up[0] - fwd[0] * up[2],
@@ -127,19 +150,33 @@ class CameraController {
     }
 
     getRotationMatrix() {
-        // Build camera basis vectors
-        const forward = this.getForwardVector();
-        const right = this.getRightVector();
+        // Build rotation from yaw and pitch
+        const cy = Math.cos(this.yaw);
+        const sy = Math.sin(this.yaw);
+        const cp = Math.cos(this.pitch);
+        const sp = Math.sin(this.pitch);
 
-        // Up = right × forward
-        const up = [
-            right[1] * forward[2] - right[2] * forward[1],
-            right[2] * forward[0] - right[0] * forward[2],
-            right[0] * forward[1] - right[1] * forward[0]
+        // Camera basis vectors
+        const forward = [
+            sy * cp,
+            sp,
+            cy * cp
         ];
 
-        // Camera-to-world rotation (column vectors: right, up, -forward)
-        // World-to-camera is transpose
+        const right = [
+            cy,
+            0,
+            -sy
+        ];
+
+        const up = [
+            -sy * sp,
+            cp,
+            -cy * sp
+        ];
+
+        // Rotation matrix (world-to-camera)
+        // Backend expects row vectors: [right, up, -forward]
         return [
             [right[0], up[0], -forward[0]],
             [right[1], up[1], -forward[1]],
@@ -149,35 +186,77 @@ class CameraController {
 
     toTauriParams() {
         return {
-            position: this.getCameraPosition(),
-            rotation: this.getRotationMatrix(),
+            position: this.position,  // Direct position (simpler!)
+            rotation: this.getRotationMatrix(),  // From yaw/pitch
             width: this.width,
             height: this.height,
-            fov_y_deg: this.fovYDeg  // Use snake_case to match Rust
+            fov_y_deg: this.fovYDeg
         };
     }
 
+    setResolution(width, height) {
+        // Update render resolution (used when model has training resolution)
+        this.width = width;
+        this.height = height;
+    }
+
+    setCameraPose(position, rotationMatrix) {
+        // Set camera to exact position and rotation from COLMAP
+        // rotationMatrix is row-major: [[r00, r01, r02], [r10, r11, r12], [r20, r21, r22]]
+
+        // Set position directly
+        this.position = [...position];
+
+        // Extract forward vector (third column, negated to match our convention)
+        const forward = [
+            -rotationMatrix[0][2],
+            -rotationMatrix[1][2],
+            -rotationMatrix[2][2]
+        ];
+
+        // Extract yaw from forward's XZ projection (negated to flip 180°)
+        this.yaw = Math.atan2(-forward[0], -forward[2]);
+
+        // Extract pitch from forward's Y component (negated to flip)
+        const fwdXZ = Math.sqrt(forward[0]**2 + forward[2]**2);
+        this.pitch = Math.atan2(-forward[1], fwdXZ);
+
+        console.log(`Camera pose set: pos=${this.position}, yaw=${this.yaw}, pitch=${this.pitch}`);
+    }
+
     frameModel(boundsMin, boundsMax, suggestedDistance) {
-        // Center target on model
-        this.target = [
+        // Calculate center of bounding box
+        const center = [
             (boundsMin[0] + boundsMax[0]) / 2,
             (boundsMin[1] + boundsMax[1]) / 2,
             (boundsMin[2] + boundsMax[2]) / 2
         ];
 
-        // Use suggested distance or calculate from bounding box
-        if (suggestedDistance) {
-            this.distance = suggestedDistance;
-        } else {
+        // Calculate distance needed to frame model
+        let distance = suggestedDistance;
+        if (!distance) {
             const dx = boundsMax[0] - boundsMin[0];
             const dy = boundsMax[1] - boundsMin[1];
             const dz = boundsMax[2] - boundsMin[2];
             const maxDim = Math.max(dx, dy, dz);
-            this.distance = maxDim / Math.tan(this.fovYDeg * Math.PI / 360) * 1.5;
+            distance = maxDim / Math.tan(this.fovYDeg * Math.PI / 360) * 1.5;
         }
 
-        // Reset orientation to look at model from a good angle
-        this.azimuth = Math.PI / 4;  // 45 degrees
-        this.elevation = Math.PI / 6; // 30 degrees
+        // Set to nice viewing angle (45° horizontal, 30° vertical)
+        this.yaw = Math.PI / 4;
+        this.pitch = Math.PI / 6;
+
+        // Position camera behind and above model
+        const forward = this.getForwardVector();
+        this.position = [
+            center[0] - forward[0] * distance,
+            center[1] - forward[1] * distance,
+            center[2] - forward[2] * distance
+        ];
+
+        // Set initial move speed based on model size
+        this.moveSpeed = distance * 0.1;
+
+        console.log(`Camera framed at distance ${distance}, position ${this.position}`);
     }
 }
