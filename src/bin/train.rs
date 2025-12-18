@@ -229,6 +229,70 @@ fn main() {
                 *split_sigma_threshold = 0.1;
                 *seed = Some(0);
             }
+            "onehour" => {
+                // One-hour preset: Good quality preview run
+                *multiview = true;
+                *iters = 10_000;  // 5x iterations for better convergence
+                *lr = 0.002;
+                *lr_position = 0.00016;
+                *lr_rotation = 0.001;
+                *lr_scale = 0.005;
+                *lr_opacity = 0.05;
+                *lr_sh = 0.0025;
+                *lr_background = 0.001;
+                *downsample = 0.40;  // Keep at 40% to avoid GPU memory issues
+                *max_gaussians = 25_000;  // More Gaussians for quality
+                *log_interval = 100;
+                *learn_background = true;
+                *learn_opacity = true;
+                *learn_position = true;
+                *learn_scale = true;
+                *learn_rotation = true;
+                *learn_sh = true;
+                *loss = sugar_rs::optim::loss::LossKind::L1Dssim;  // Better quality loss
+                *train_fraction = 0.75;  // 75% train, 25% test
+                *val_interval = 500;
+                *max_test_views_for_metrics = 5;
+                *max_images = 75;  // 4x images for better scene coverage
+                *densify_interval = 500;
+                *densify_max_gaussians = 50_000;
+                *densify_grad_threshold = 0.0002;
+                *prune_opacity_threshold = 0.005;
+                *split_sigma_threshold = 0.1;
+                *seed = Some(0);
+            }
+            "full" => {
+                // Full overnight preset: Publication-quality results
+                *multiview = true;
+                *iters = 30_000;  // Standard 3DGS iteration count
+                *lr = 0.002;
+                *lr_position = 0.00016;
+                *lr_rotation = 0.001;
+                *lr_scale = 0.005;
+                *lr_opacity = 0.05;
+                *lr_sh = 0.0025;
+                *lr_background = 0.001;
+                *downsample = 0.40;  // Keep at 40% to avoid GPU memory issues
+                *max_gaussians = 50_000;
+                *log_interval = 500;
+                *learn_background = true;
+                *learn_opacity = true;
+                *learn_position = true;
+                *learn_scale = true;
+                *learn_rotation = true;
+                *learn_sh = true;
+                *loss = sugar_rs::optim::loss::LossKind::L1Dssim;
+                *train_fraction = 0.8;  // 80% train, 20% test with all images
+                *val_interval = 1000;
+                *max_test_views_for_metrics = 10;
+                *max_images = 0;  // Use all 301 images
+                *densify_interval = 500;
+                *densify_max_gaussians = 150_000;
+                *densify_grad_threshold = 0.0002;
+                *prune_opacity_threshold = 0.005;
+                *split_sigma_threshold = 0.1;
+                *seed = Some(0);
+            }
             "m10" | "m10-quick" => {
                 *multiview = true;
                 *iters = 2_000;
@@ -263,7 +327,7 @@ fn main() {
             }
             other => {
                 return Err(format!(
-                    "Unknown preset `{other}` (expected one of: m7, m8-smoke, m8, m9, micro, m10, m10-quick)"
+                    "Unknown preset `{other}` (expected one of: m7, m8-smoke, m8, m9, micro, onehour, full, m10, m10-quick)"
                 ));
             }
         }
