@@ -1,0 +1,94 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: #1e1e1e;
+    color: #d4d4d4;
+}
+
+.container {
+    display: flex;
+    height: 100vh;
+}
+
+.controls {
+    width: 300px;
+    padding: 20px;
+    background: #252526;
+    border-right: 1px solid #3e3e42;
+    overflow-y: auto;
+}
+
+.controls h1 {
+    font-size: 20px;
+    margin-bottom: 20px;
+    color: #fff;
+}
+
+.control-group {
+    margin-bottom: 15px;
+}
+
+.control-group label {
+    display: block;
+    margin-bottom: 5px;
+    font-size: 14px;
+}
+
+.control-group select {
+    width: 100%;
+    padding: 8px;
+    background: #3c3c3c;
+    border: 1px solid #555;
+    color: #d4d4d4;
+    border-radius: 4px;
+}
+
+.status {
+    margin: 15px 0;
+    padding: 10px;
+    background: #2d2d30;
+    border-radius: 4px;
+    font-size: 12px;
+}
+
+.help {
+    margin-top: 30px;
+    padding-top: 20px;
+    border-top: 1px solid #3e3e42;
+}
+
+.help h3 {
+    font-size: 14px;
+    margin-bottom: 10px;
+}
+
+.help ul {
+    list-style: none;
+}
+
+.help li {
+    margin: 8px 0;
+    font-size: 13px;
+}
+
+.viewport {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #1e1e1e;
+}
+
+#renderCanvas {
+    border: 1px solid #3e3e42;
+    cursor: grab;
+}
+
+#renderCanvas:active {
+    cursor: grabbing;
+}

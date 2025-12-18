@@ -1,0 +1,17 @@
+# llvm-cov configuration for SplatRs
+
+[report]
+# Exclude binary targets, examples, and tests from coverage
+exclude = [
+    "src/bin/*",
+    "examples/*",
+    "tests/*",
+]
+
+[html]
+# HTML report output directory
+output-dir = "target/coverage/html"
+
+[json]
+# JSON report for CI integration (future)
+output-file = "target/coverage/coverage.json"

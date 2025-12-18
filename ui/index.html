@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Gaussian Splatting Viewer</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <div class="controls">
+            <h1>Gaussian Splatting Viewer</h1>
+            <div class="control-group">
+                <label for="modelSelect">Model:</label>
+                <select id="modelSelect" onchange="onModelSelected()">
+                    <option value="">-- Select Model --</option>
+                </select>
+            </div>
+            <div class="status" id="status">Ready</div>
+            <div class="help">
+                <h3>Controls:</h3>
+                <ul>
+                    <li><b>Mouse Drag:</b> Orbit camera</li>
+                    <li><b>Mouse Wheel:</b> Zoom in/out</li>
+                    <li><b>W/S:</b> Move forward/backward</li>
+                    <li><b>A/D:</b> Strafe left/right</li>
+                </ul>
+            </div>
+        </div>
+        <div class="viewport">
+            <canvas id="renderCanvas" width="640" height="480"></canvas>
+        </div>
+    </div>
+
+    <script src="camera-controller.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>

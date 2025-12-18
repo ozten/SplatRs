@@ -47,6 +47,10 @@ pub mod sugar;
 #[cfg(feature = "gpu")]
 pub mod gpu;
 
+// Tauri viewer (optional)
+#[cfg(feature = "viewer")]
+pub mod viewer;
+
 // Re-export commonly used types at crate root for convenience
 pub use core::{Camera, Gaussian, GaussianCloud};
 pub use io::{ColmapScene, LoadError};
