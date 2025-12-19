@@ -1,0 +1,141 @@
+   Compiling sugar-rs v0.1.0 (/Users/ozten/Projects/SplatRs)
+warning: unused import: `BindGroup`
+ --> src/gpu/renderer.rs:6:12
+  |
+6 | use wgpu::{BindGroup, BindGroupLayout, BufferUsages, ComputePipeline};
+  |            ^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default
+
+warning: unused import: `GradientGPU`
+   --> src/gpu/renderer.rs:638:50
+    |
+638 |         use crate::gpu::types::{ContributionGPU, GradientGPU, MAX_CONTRIBUTIONS_PER_PIXEL};
+    |                                                  ^^^^^^^^^^^
+
+warning: value assigned to `offset` is never read
+   --> src/io/model.rs:259:5
+    |
+259 |     offset += 4;
+    |     ^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+    = note: `#[warn(unused_assignments)]` on by default
+
+warning: unused variable: `mesh`
+  --> src/io/obj.rs:24:17
+   |
+24 | pub fn save_obj(mesh: &Mesh, path: &Path) -> Result<(), LoadError> {
+   |                 ^^^^ help: if this is intentional, prefix it with an underscore: `_mesh`
+   |
+   = note: `#[warn(unused_variables)]` on by default
+
+warning: unused variable: `path`
+  --> src/io/obj.rs:24:30
+   |
+24 | pub fn save_obj(mesh: &Mesh, path: &Path) -> Result<(), LoadError> {
+   |                              ^^^^ help: if this is intentional, prefix it with an underscore: `_path`
+
+warning: unused variable: `cloud`
+  --> src/io/ply.rs:55:17
+   |
+55 | pub fn save_ply(cloud: &GaussianCloud, path: &Path) -> Result<(), LoadError> {
+   |                 ^^^^^ help: if this is intentional, prefix it with an underscore: `_cloud`
+
+warning: unused variable: `path`
+  --> src/io/ply.rs:55:40
+   |
+55 | pub fn save_ply(cloud: &GaussianCloud, path: &Path) -> Result<(), LoadError> {
+   |                                        ^^^^ help: if this is intentional, prefix it with an underscore: `_path`
+
+warning: unused variable: `path`
+  --> src/io/ply.rs:66:17
+   |
+66 | pub fn load_ply(path: &Path) -> Result<GaussianCloud, LoadError> {
+   |                 ^^^^ help: if this is intentional, prefix it with an underscore: `_path`
+
+warning: unused variable: `t_total`
+   --> src/render/full_diff.rs:184:9
+    |
+184 |     let t_total = if enable_timing { Some(std::time::Instant::now()) } else { None };
+    |         ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_t_total`
+
+warning: unused variable: `t_start`
+   --> src/gpu/renderer.rs:655:13
+    |
+655 |         let t_start = if enable_timing {
+    |             ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_t_start`
+
+warning: unused variable: `t_backward`
+   --> src/gpu/renderer.rs:984:13
+    |
+984 |         let t_backward = if enable_timing {
+    |             ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_t_backward`
+
+warning: unused variable: `t_download`
+    --> src/gpu/renderer.rs:1128:13
+     |
+1128 |         let t_download = if enable_timing {
+     |             ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_t_download`
+
+warning: unused variable: `t_start`
+    --> src/gpu/renderer.rs:1277:13
+     |
+1277 |         let t_start = if enable_timing {
+     |             ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_t_start`
+
+warning: associated function `zero` is never used
+   --> src/gpu/types.rs:223:18
+    |
+221 | impl Gradient3DGPU {
+    | ------------------ associated function in this implementation
+222 |     /// Create a zero gradient (for initialization).
+223 |     pub const fn zero() -> Self {
+    |                  ^^^^
+    |
+    = note: `#[warn(dead_code)]` on by default
+
+warning: `sugar-rs` (lib) generated 14 warnings (run `cargo fix --lib -p sugar-rs` to apply 2 suggestions)
+    Finished `release` profile [optimized] target(s) in 1m 19s
+     Running `target/release/sugar-train --seed 123 --preset micro --dataset-root datasets/dollhouse_sm --gpu`
+GPU: Apple M2 Max (Metal)
+GPU max storage buffer binding size: 4095 MB
+Multi-view training: 3 train views, 1 test views
+Preloaded 4 images (max_images=20)
+Initialized 445 Gaussians
+Initializing GPU renderer...
+GPU: Apple M2 Max (Metal)
+GPU max storage buffer binding size: 4095 MB
+Initial test PSNR: 13.03 dB
+iter 1/2000 start  view=IMG_0909.jpg  gaussians=445  res=714x535
+iter 1/2000 done   train_loss=0.157099  forward=10.94ms backward=47.40ms step=37.58µs total=59.30ms
+iter 101/2000 start  view=IMG_0912.jpg  gaussians=445  res=714x535
+iter 101/2000 done   train_loss=0.152064  forward=9.86ms backward=41.29ms step=32.96µs total=51.67ms
+iter 201/2000 start  view=IMG_0912.jpg  gaussians=445  res=714x535
+iter 201/2000 done   train_loss=0.148977  forward=11.22ms backward=47.62ms step=43.46µs total=59.57ms
+iter 301/2000 start  view=IMG_0912.jpg  gaussians=445  res=714x535
+iter 301/2000 done   train_loss=0.146727  forward=11.11ms backward=44.56ms step=31.42µs total=56.28ms
+iter 401/2000 start  view=IMG_0911.jpg  gaussians=445  res=714x535
+iter 401/2000 done   train_loss=0.140311  forward=11.56ms backward=44.21ms step=31.29µs total=56.31ms
+iter 500/2000  train_loss=0.144713  test_psnr=13.27 dB  bg=(0.251,0.182,0.140)  center=(-1.80,1.16,14.11)  bounds=[-9.54,-4.74,8.73]->[7.65,5.51,17.90]
+densify @iter 500/2000: gaussians 445 -> 490 (kept=445 pruned=0 split=30 cloned=15 cap_hit=false grad_p50=0.0000 grad_p90=0.0002)
+iter 501/2000 start  view=IMG_0909.jpg  gaussians=490  res=714x535
+iter 501/2000 done   train_loss=0.147530  forward=9.94ms backward=41.90ms step=32.38µs total=52.35ms
+iter 601/2000 start  view=IMG_0909.jpg  gaussians=490  res=714x535
+iter 601/2000 done   train_loss=0.146115  forward=10.23ms backward=43.17ms step=32.71µs total=53.98ms
+iter 701/2000 start  view=IMG_0912.jpg  gaussians=490  res=714x535
+iter 701/2000 done   train_loss=0.143423  forward=10.05ms backward=41.96ms step=32.33µs total=52.59ms
+iter 801/2000 start  view=IMG_0912.jpg  gaussians=490  res=714x535
+iter 801/2000 done   train_loss=0.144003  forward=10.41ms backward=43.61ms step=31.54µs total=54.57ms
+iter 901/2000 start  view=IMG_0911.jpg  gaussians=490  res=714x535
+iter 901/2000 done   train_loss=0.138180  forward=9.94ms backward=46.34ms step=31.13µs total=56.89ms
+iter 1000/2000  train_loss=0.145289  test_psnr=13.32 dB  bg=(0.242,0.179,0.139)  center=(-1.83,1.21,13.86)  bounds=[-9.54,-4.77,8.73]->[7.65,5.58,17.91]
+densify @iter 1000/2000: gaussians 490 -> 585 (kept=490 pruned=0 split=89 cloned=6 cap_hit=false grad_p50=0.0000 grad_p90=0.0025)
+iter 1001/2000 start  view=IMG_0911.jpg  gaussians=585  res=714x535
+iter 1001/2000 done   train_loss=0.138568  forward=9.37ms backward=45.84ms step=36.58µs total=55.69ms
+iter 1101/2000 start  view=IMG_0909.jpg  gaussians=585  res=714x535
+iter 1101/2000 done   train_loss=0.145577  forward=11.90ms backward=45.39ms step=40.92µs total=57.92ms
+iter 1201/2000 start  view=IMG_0909.jpg  gaussians=585  res=714x535
+iter 1201/2000 done   train_loss=0.145335  forward=10.35ms backward=41.43ms step=38.25µs total=52.44ms
+iter 1301/2000 start  view=IMG_0911.jpg  gaussians=585  res=714x535
+iter 1301/2000 done   train_loss=0.138160  forward=10.62ms backward=43.81ms step=36.08µs total=54.98ms

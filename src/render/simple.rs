@@ -3,6 +3,7 @@
 //! This is a minimal renderer that draws each Gaussian as a fixed-size circle.
 //! No covariance projection yet - just validates depth sorting and alpha blending.
 
+use crate::core::color::linear_f32_to_srgb_u8;
 use crate::core::{evaluate_sh, sigmoid, Camera, Gaussian};
 use image::{Rgb, RgbImage};
 use nalgebra::Vector3;
@@ -65,11 +66,11 @@ impl SimpleRenderer {
                 let view_dir = camera.view_direction(&g.position);
                 let color_vec = evaluate_sh(&g.sh_coeffs, &view_dir);
 
-                // Convert to 0-255 range
+                // Convert linear RGB to sRGB for display
                 let color = [
-                    (color_vec.x * 255.0).clamp(0.0, 255.0) as u8,
-                    (color_vec.y * 255.0).clamp(0.0, 255.0) as u8,
-                    (color_vec.z * 255.0).clamp(0.0, 255.0) as u8,
+                    linear_f32_to_srgb_u8(color_vec.x),
+                    linear_f32_to_srgb_u8(color_vec.y),
+                    linear_f32_to_srgb_u8(color_vec.z),
                 ];
 
                 // Get opacity
@@ -132,10 +133,10 @@ impl SimpleRenderer {
                     }
                 }
 
-                // Convert to RGB
-                let r = (color.x * 255.0).clamp(0.0, 255.0) as u8;
-                let g = (color.y * 255.0).clamp(0.0, 255.0) as u8;
-                let b = (color.z * 255.0).clamp(0.0, 255.0) as u8;
+                // Convert linear RGB to sRGB for display
+                let r = linear_f32_to_srgb_u8(color.x);
+                let g = linear_f32_to_srgb_u8(color.y);
+                let b = linear_f32_to_srgb_u8(color.z);
 
                 img.put_pixel(px, py, Rgb([r, g, b]));
             }

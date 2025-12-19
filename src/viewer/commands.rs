@@ -1,3 +1,4 @@
+use crate::core::color::linear_f32_to_srgb_u8;
 use crate::core::{Camera, quaternion_to_matrix};
 use crate::io::{self, load_colmap_scene};
 use crate::viewer::state::AppState;
@@ -260,10 +261,10 @@ pub async fn render_frame(
         let x = (i % camera.width as usize) as u32;
         let y = (i / camera.width as usize) as u32;
 
-        // Gamma correction: linear -> sRGB
-        let r = (pixel.x.clamp(0.0, 1.0).powf(1.0 / 2.2) * 255.0) as u8;
-        let g = (pixel.y.clamp(0.0, 1.0).powf(1.0 / 2.2) * 255.0) as u8;
-        let b = (pixel.z.clamp(0.0, 1.0).powf(1.0 / 2.2) * 255.0) as u8;
+        // Convert linear RGB to sRGB for display (using standard sRGB curve, not gamma 2.2)
+        let r = linear_f32_to_srgb_u8(pixel.x);
+        let g = linear_f32_to_srgb_u8(pixel.y);
+        let b = linear_f32_to_srgb_u8(pixel.z);
 
         img_buf.put_pixel(x, y, image::Rgb([r, g, b]));
     }
@@ -343,8 +344,9 @@ pub async fn get_camera_by_id(
     // Convert quaternion to rotation matrix
     let rotation_matrix = quaternion_to_matrix(&image_info.rotation);
 
-    // Camera position: try positive sign (COLMAP may use opposite convention)
-    let position = rotation_matrix.transpose() * image_info.translation;
+    // Camera center in world coordinates: C = -R^T * t
+    // (image_info.rotation and translation are COLMAP's world-to-camera transform)
+    let position = -(rotation_matrix.transpose() * image_info.translation);
 
     // Convert rotation matrix to row-major format for frontend
     let rotation = [

@@ -3,9 +3,12 @@
 //! Usage:
 //!   sugar-train --scene path/to/colmap/sparse/0 --output model.ply
 
+mod train_utils;
+
 use sugar_rs::io::{compute_bounds, save_model, Compression, ModelMetadata};
 use sugar_rs::core::GaussianCloud;
 use std::path::PathBuf;
+use train_utils::auto_downsample;
 
 /// Create timestamped run directory
 fn create_run_directory(preset_name: &str) -> std::io::Result<PathBuf> {
@@ -102,6 +105,7 @@ fn main() {
     let mut lr_sh: f32 = 0.0025;
     let mut lr_background: f32 = 0.05;
     let mut downsample: f32 = 0.25;
+    let mut downsample_explicit: bool = false; // Track if user explicitly set --downsample
     let mut max_gaussians: usize = 20_000;
     let mut image_index: usize = 0;
     let mut log_interval: usize = 10;
@@ -460,7 +464,10 @@ fn main() {
             "--images" => images = args.next().map(std::path::PathBuf::from),
             "--iters" => iters = args.next().unwrap().parse().unwrap(),
             "--lr" => lr = args.next().unwrap().parse().unwrap(),
-            "--downsample" => downsample = args.next().unwrap().parse().unwrap(),
+            "--downsample" => {
+                downsample = args.next().unwrap().parse().unwrap();
+                downsample_explicit = true;
+            }
             "--max-gaussians" => max_gaussians = args.next().unwrap().parse().unwrap(),
             "--image-index" => image_index = args.next().unwrap().parse().unwrap(),
             "--log-interval" => log_interval = args.next().unwrap().parse().unwrap(),
@@ -547,6 +554,43 @@ fn main() {
     let all_args: Vec<String> = std::env::args().collect();
     save_run_metadata(&final_out_dir, &all_args, None)
         .unwrap_or_else(|e| eprintln!("Warning: Failed to save metadata: {}", e));
+
+    // Auto-calculate downsample factor if not explicitly set
+    if !downsample_explicit && use_gpu {
+        use sugar_rs::io::load_colmap_scene;
+        match load_colmap_scene(&scene) {
+            Ok(colmap_scene) => {
+                if !colmap_scene.images.is_empty() {
+                    let first_image_name = &colmap_scene.images[0].name;
+                    let first_image_path = images_dir.join(first_image_name);
+
+                    let max_buffer_size = auto_downsample::get_gpu_max_buffer_size();
+                    match auto_downsample::determine_auto_downsample(&first_image_path, max_buffer_size) {
+                        Ok((auto_downsample_factor, width, height)) => {
+                            // Only warn if we're actually downsampling
+                            if auto_downsample_factor < 1.0 {
+                                auto_downsample::print_auto_downsample_warning(
+                                    width,
+                                    height,
+                                    max_buffer_size / (1024 * 1024),
+                                    auto_downsample_factor,
+                                );
+                            }
+                            downsample = auto_downsample_factor;
+                        }
+                        Err(e) => {
+                            eprintln!("Warning: {}", e);
+                            eprintln!("Using default downsample factor: {}", downsample);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Warning: Failed to load COLMAP scene for auto-downsample: {}", e);
+                eprintln!("Using default downsample factor: {}", downsample);
+            }
+        }
+    }
 
     // Derive dataset root from scene path before scene is moved (scene is sparse/0, so go up two levels)
     let dataset_path = scene.parent()

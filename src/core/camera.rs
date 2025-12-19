@@ -136,9 +136,10 @@ impl Camera {
 
     /// Get the viewing direction for a point in world space.
     ///
+    /// Returns the direction FROM the point TO the camera (incoming light direction).
     /// Used for spherical harmonics evaluation (view-dependent color).
     pub fn view_direction(&self, point_world: &Vector3<f32>) -> Vector3<f32> {
-        let dir = point_world - self.camera_center();
+        let dir = self.camera_center() - point_world;
         dir.normalize()
     }
 }

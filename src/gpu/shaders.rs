@@ -70,10 +70,85 @@ fn quat_to_matrix(q_raw: vec4<f32>) -> mat3x3<f32> {
     );
 }
 
-// Evaluate SH (simplified: just DC term for now)
-fn eval_sh_dc(sh_coeffs: array<vec4<f32>, 16>) -> vec3<f32> {
-    let C0 = 0.28209479177387814; // sqrt(1/(4*pi))
-    return vec3<f32>(sh_coeffs[0].x, sh_coeffs[0].y, sh_coeffs[0].z) * C0;
+// Evaluate full spherical harmonics (degree 0-3, 16 coefficients)
+fn eval_sh(sh_coeffs: array<vec4<f32>, 16>, dir: vec3<f32>) -> vec3<f32> {
+    // Normalize direction (should already be normalized, but be safe)
+    let d = normalize(dir);
+    let x = d.x;
+    let y = d.y;
+    let z = d.z;
+
+    // SH basis constants (matching CPU implementation in src/core/sh.rs)
+    let C0 = 0.28209479177387814;
+    let C1 = 0.48860251190291992;
+    let C2_0 = 1.0925484305920792;
+    let C2_1 = 0.31539156525252005;
+    let C2_2 = 0.54627421529603959;
+    let C3_0 = 0.5900435899266435;
+    let C3_1 = 2.890611442640554;
+    let C3_2 = 0.4570457994644658;
+    let C3_3 = 0.3731763325901154;
+    let C3_4 = 1.445305721320277;
+    let C3_5 = 0.5900435899266435;
+
+    // Precompute monomials
+    let x2 = x * x;
+    let y2 = y * y;
+    let z2 = z * z;
+    let xy = x * y;
+    let yz = y * z;
+    let xz = x * z;
+
+    // Compute SH basis functions (16 total)
+    var basis: array<f32, 16>;
+
+    // Degree 0
+    basis[0] = C0;
+
+    // Degree 1
+    basis[1] = C1 * y;
+    basis[2] = C1 * z;
+    basis[3] = C1 * x;
+
+    // Degree 2
+    basis[4] = C2_0 * xy;
+    basis[5] = C2_0 * yz;
+    basis[6] = C2_1 * (3.0 * z2 - 1.0);
+    basis[7] = C2_0 * xz;
+    basis[8] = C2_2 * (x2 - y2);
+
+    // Degree 3
+    basis[9] = C3_0 * y * (3.0 * x2 - y2);
+    basis[10] = C3_1 * xy * z;
+    basis[11] = C3_2 * y * (5.0 * z2 - 1.0);
+    basis[12] = C3_3 * z * (5.0 * z2 - 3.0);
+    basis[13] = C3_2 * x * (5.0 * z2 - 1.0);
+    basis[14] = C3_4 * z * (x2 - y2);
+    basis[15] = C3_5 * x * (x2 - 3.0 * y2);
+
+    // Accumulate color (dot product of basis with coefficients)
+    // Note: Manual unroll required because WGSL requires constant array indices
+    var color = vec3<f32>(0.0, 0.0, 0.0);
+
+    color += basis[0] * vec3<f32>(sh_coeffs[0].x, sh_coeffs[0].y, sh_coeffs[0].z);
+    color += basis[1] * vec3<f32>(sh_coeffs[1].x, sh_coeffs[1].y, sh_coeffs[1].z);
+    color += basis[2] * vec3<f32>(sh_coeffs[2].x, sh_coeffs[2].y, sh_coeffs[2].z);
+    color += basis[3] * vec3<f32>(sh_coeffs[3].x, sh_coeffs[3].y, sh_coeffs[3].z);
+    color += basis[4] * vec3<f32>(sh_coeffs[4].x, sh_coeffs[4].y, sh_coeffs[4].z);
+    color += basis[5] * vec3<f32>(sh_coeffs[5].x, sh_coeffs[5].y, sh_coeffs[5].z);
+    color += basis[6] * vec3<f32>(sh_coeffs[6].x, sh_coeffs[6].y, sh_coeffs[6].z);
+    color += basis[7] * vec3<f32>(sh_coeffs[7].x, sh_coeffs[7].y, sh_coeffs[7].z);
+    color += basis[8] * vec3<f32>(sh_coeffs[8].x, sh_coeffs[8].y, sh_coeffs[8].z);
+    color += basis[9] * vec3<f32>(sh_coeffs[9].x, sh_coeffs[9].y, sh_coeffs[9].z);
+    color += basis[10] * vec3<f32>(sh_coeffs[10].x, sh_coeffs[10].y, sh_coeffs[10].z);
+    color += basis[11] * vec3<f32>(sh_coeffs[11].x, sh_coeffs[11].y, sh_coeffs[11].z);
+    color += basis[12] * vec3<f32>(sh_coeffs[12].x, sh_coeffs[12].y, sh_coeffs[12].z);
+    color += basis[13] * vec3<f32>(sh_coeffs[13].x, sh_coeffs[13].y, sh_coeffs[13].z);
+    color += basis[14] * vec3<f32>(sh_coeffs[14].x, sh_coeffs[14].y, sh_coeffs[14].z);
+    color += basis[15] * vec3<f32>(sh_coeffs[15].x, sh_coeffs[15].y, sh_coeffs[15].z);
+
+    // Return unclamped color (clamping happens later in render pass)
+    return color;
 }
 
 // Main projection kernel
@@ -159,8 +234,13 @@ fn project_gaussians(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // Add small epsilon for stability
     let eps = 1e-6;
 
-    // 6. Evaluate color (just DC term for now)
-    let color = eval_sh_dc(g.sh_coeffs);
+    // 6. Evaluate view-dependent color with full SH
+    // Compute view direction: FROM Gaussian TO camera (in world space)
+    // Camera center in world space: C = -R^T * t
+    let rot_mat_transpose = transpose(rot_mat);
+    let camera_center_world = -(rot_mat_transpose * camera.translation.xyz);
+    let view_dir = normalize(camera_center_world - pos_world);
+    let color = eval_sh(g.sh_coeffs, view_dir);
 
     // 7. Convert opacity from logit to [0,1]
     let opacity = sigmoid(g.opacity_pad.x);

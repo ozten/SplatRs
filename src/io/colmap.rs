@@ -162,31 +162,67 @@ fn read_cameras_bin(path: &Path) -> Result<HashMap<u32, Camera>, LoadError> {
                     Vector3::zeros(),
                 )
             }
-            2 | 3 | 4 | 5 => {
-                // RADIAL models: fx, cx, cy, k1, [k2]
-                // For now, just read the focal length and principal point
-                // TODO: Handle distortion parameters properly
-                let fx = reader.read_f64::<LittleEndian>()? as f32;
+            2 | 3 => {
+                // SIMPLE_RADIAL / RADIAL: f, cx, cy, k...
+                let f = reader.read_f64::<LittleEndian>()? as f32;
                 let cx = reader.read_f64::<LittleEndian>()? as f32;
                 let cy = reader.read_f64::<LittleEndian>()? as f32;
 
                 // Skip distortion parameters
-                let num_params = match model_id {
-                    2 => 4,  // SIMPLE_RADIAL: f, cx, cy, k
-                    3 => 5,  // RADIAL: f, cx, cy, k1, k2
-                    4 => 8,  // OPENCV: fx, fy, cx, cy, k1, k2, p1, p2
-                    5 => 12, // OPENCV_FISHEYE: fx, fy, cx, cy, k1, k2, k3, k4
-                    _ => return Err(LoadError::UnsupportedCameraModel(model_id)),
-                };
+                let num_distortion = if model_id == 2 { 1 } else { 2 };
+                for _ in 0..num_distortion {
+                    reader.read_f64::<LittleEndian>()?;
+                }
 
-                // Skip remaining parameters (we've already read 3 for radial)
-                for _ in 3..num_params {
+                Camera::new(
+                    f,
+                    f, // fy = fx for radial models
+                    cx,
+                    cy,
+                    width as u32,
+                    height as u32,
+                    Matrix3::identity(),
+                    Vector3::zeros(),
+                )
+            }
+            4 => {
+                // OPENCV: fx, fy, cx, cy, k1, k2, p1, p2
+                let fx = reader.read_f64::<LittleEndian>()? as f32;
+                let fy = reader.read_f64::<LittleEndian>()? as f32;
+                let cx = reader.read_f64::<LittleEndian>()? as f32;
+                let cy = reader.read_f64::<LittleEndian>()? as f32;
+
+                // Skip distortion: k1, k2, p1, p2
+                for _ in 0..4 {
                     reader.read_f64::<LittleEndian>()?;
                 }
 
                 Camera::new(
                     fx,
-                    fx, // Assume fy = fx for simple radial
+                    fy,
+                    cx,
+                    cy,
+                    width as u32,
+                    height as u32,
+                    Matrix3::identity(),
+                    Vector3::zeros(),
+                )
+            }
+            5 => {
+                // OPENCV_FISHEYE: fx, fy, cx, cy, k1, k2, k3, k4
+                let fx = reader.read_f64::<LittleEndian>()? as f32;
+                let fy = reader.read_f64::<LittleEndian>()? as f32;
+                let cx = reader.read_f64::<LittleEndian>()? as f32;
+                let cy = reader.read_f64::<LittleEndian>()? as f32;
+
+                // Skip distortion: k1, k2, k3, k4 (4 params, not 12!)
+                for _ in 0..4 {
+                    reader.read_f64::<LittleEndian>()?;
+                }
+
+                Camera::new(
+                    fx,
+                    fy,
                     cx,
                     cy,
                     width as u32,

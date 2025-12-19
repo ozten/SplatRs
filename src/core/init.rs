@@ -5,6 +5,7 @@
 //! - Random initialization
 //! - Custom point clouds
 
+use crate::core::color::srgb_u8_to_linear_f32;
 use crate::core::{Camera, Gaussian, GaussianCloud};
 use crate::io::Point3D;
 use nalgebra::{UnitQuaternion, Vector3};
@@ -24,13 +25,15 @@ fn gaussian_from_colmap_point(point: &Point3D) -> Gaussian {
     let opacity = 2.2;
 
     // Convert RGB color (0-255) to SH DC coefficient (0-1)
+    // COLMAP colors are in sRGB space, so we must convert to linear before
+    // storing in SH coefficients (which represent linear radiance).
     // For spherical harmonics, the DC coefficient is color / Y_0^0
     // where Y_0^0 = 0.28209479
     let mut sh_coeffs = [[0.0f32; 3]; 16];
     sh_coeffs[0] = [
-        (point.color[0] as f32 / 255.0) / 0.28209479,
-        (point.color[1] as f32 / 255.0) / 0.28209479,
-        (point.color[2] as f32 / 255.0) / 0.28209479,
+        srgb_u8_to_linear_f32(point.color[0]) / 0.28209479,
+        srgb_u8_to_linear_f32(point.color[1]) / 0.28209479,
+        srgb_u8_to_linear_f32(point.color[2]) / 0.28209479,
     ];
 
     Gaussian::new(position, scale, rotation, opacity, sh_coeffs)

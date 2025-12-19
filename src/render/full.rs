@@ -7,6 +7,7 @@
 //!
 //! For now this is a simple (CPU) implementation that prioritizes clarity over speed.
 
+use crate::core::color::linear_f32_to_srgb_u8;
 use crate::core::{Camera, Gaussian, Gaussian2D};
 use image::{Rgb, RgbImage};
 use nalgebra::{Matrix2, Vector3};
@@ -163,9 +164,10 @@ impl FullRenderer {
                     }
                 }
 
-                let r = (color.x * 255.0).clamp(0.0, 255.0) as u8;
-                let g = (color.y * 255.0).clamp(0.0, 255.0) as u8;
-                let b = (color.z * 255.0).clamp(0.0, 255.0) as u8;
+                // Convert linear RGB to sRGB for display
+                let r = linear_f32_to_srgb_u8(color.x);
+                let g = linear_f32_to_srgb_u8(color.y);
+                let b = linear_f32_to_srgb_u8(color.z);
                 img.put_pixel(px as u32, py as u32, Rgb([r, g, b]));
             }
         }

@@ -557,6 +557,69 @@ pub fn linear_vec_to_rgb8_img(linear: &[Vector3<f32>], width: u32, height: u32) 
     img
 }
 
+/// Downsample an image using box filter (averaging blocks of pixels).
+///
+/// This is used for power-of-2 downsampling (divisor = 2, 4, 8, etc.) and provides
+/// perfect anti-aliasing with no artifacts.
+///
+/// IMPORTANT: Averages in linear color space for correct color blending.
+///
+/// # Arguments
+/// * `img` - Source image
+/// * `divisor` - Power-of-2 divisor (2, 4, 8, 16, etc.)
+///
+/// # Returns
+/// Downsampled image with dimensions `(img.width() / divisor, img.height() / divisor)`
+pub fn downsample_rgb_box(img: &RgbImage, divisor: u32) -> RgbImage {
+    let out_width = (img.width() + divisor - 1) / divisor;
+    let out_height = (img.height() + divisor - 1) / divisor;
+    let mut out = RgbImage::new(out_width, out_height);
+
+    for out_y in 0..out_height {
+        for out_x in 0..out_width {
+            let src_x_start = out_x * divisor;
+            let src_y_start = out_y * divisor;
+            let src_x_end = (src_x_start + divisor).min(img.width());
+            let src_y_end = (src_y_start + divisor).min(img.height());
+
+            // Average all pixels in the block IN LINEAR SPACE
+            let mut sum_r = 0.0f32;
+            let mut sum_g = 0.0f32;
+            let mut sum_b = 0.0f32;
+            let mut count = 0u32;
+
+            for src_y in src_y_start..src_y_end {
+                for src_x in src_x_start..src_x_end {
+                    let pixel = img.get_pixel(src_x, src_y);
+                    // Convert sRGB to linear before averaging
+                    sum_r += srgb_u8_to_linear_f32(pixel[0]);
+                    sum_g += srgb_u8_to_linear_f32(pixel[1]);
+                    sum_b += srgb_u8_to_linear_f32(pixel[2]);
+                    count += 1;
+                }
+            }
+
+            let count_f = count as f32;
+            let avg_r_linear = sum_r / count_f;
+            let avg_g_linear = sum_g / count_f;
+            let avg_b_linear = sum_b / count_f;
+
+            // Convert back to sRGB
+            out.put_pixel(
+                out_x,
+                out_y,
+                image::Rgb([
+                    linear_f32_to_srgb_u8(avg_r_linear),
+                    linear_f32_to_srgb_u8(avg_g_linear),
+                    linear_f32_to_srgb_u8(avg_b_linear),
+                ]),
+            );
+        }
+    }
+
+    out
+}
+
 /// Downsample an image to match a camera resolution (nearest neighbor, for simplicity).
 pub fn downsample_rgb_nearest(img: &RgbImage, width: u32, height: u32) -> RgbImage {
     let mut out = RgbImage::new(width, height);
@@ -572,6 +635,68 @@ pub fn downsample_rgb_nearest(img: &RgbImage, width: u32, height: u32) -> RgbIma
             out.put_pixel(x, y, p);
         }
     }
+    out
+}
+
+/// Downsample an image using bilinear interpolation in linear color space.
+///
+/// This produces higher quality results than nearest-neighbor for fractional
+/// scaling factors, avoiding aliasing artifacts.
+pub fn downsample_rgb_bilinear(img: &RgbImage, target_width: u32, target_height: u32) -> RgbImage {
+    use crate::core::color::{linear_f32_to_srgb_u8, srgb_u8_to_linear_f32};
+
+    let mut out = RgbImage::new(target_width, target_height);
+
+    let scale_x = img.width() as f32 / target_width as f32;
+    let scale_y = img.height() as f32 / target_height as f32;
+
+    for out_y in 0..target_height {
+        for out_x in 0..target_width {
+            // Map output pixel center to input space
+            let src_x = (out_x as f32 + 0.5) * scale_x - 0.5;
+            let src_y = (out_y as f32 + 0.5) * scale_y - 0.5;
+
+            // Clamp to valid range
+            let src_x = src_x.max(0.0).min(img.width() as f32 - 1.0);
+            let src_y = src_y.max(0.0).min(img.height() as f32 - 1.0);
+
+            // Get integer and fractional parts
+            let x0 = src_x.floor() as u32;
+            let y0 = src_y.floor() as u32;
+            let x1 = (x0 + 1).min(img.width() - 1);
+            let y1 = (y0 + 1).min(img.height() - 1);
+
+            let fx = src_x - x0 as f32;
+            let fy = src_y - y0 as f32;
+
+            // Sample 4 neighbors
+            let p00 = img.get_pixel(x0, y0);
+            let p10 = img.get_pixel(x1, y0);
+            let p01 = img.get_pixel(x0, y1);
+            let p11 = img.get_pixel(x1, y1);
+
+            // Bilinear interpolation per channel IN LINEAR SPACE
+            let mut result = [0u8; 3];
+            for c in 0..3 {
+                // Convert sRGB to linear
+                let linear_00 = srgb_u8_to_linear_f32(p00[c]);
+                let linear_10 = srgb_u8_to_linear_f32(p10[c]);
+                let linear_01 = srgb_u8_to_linear_f32(p01[c]);
+                let linear_11 = srgb_u8_to_linear_f32(p11[c]);
+
+                // Bilinear interpolation
+                let top = linear_00 * (1.0 - fx) + linear_10 * fx;
+                let bottom = linear_01 * (1.0 - fx) + linear_11 * fx;
+                let interpolated = top * (1.0 - fy) + bottom * fy;
+
+                // Convert back to sRGB
+                result[c] = linear_f32_to_srgb_u8(interpolated);
+            }
+
+            out.put_pixel(out_x, out_y, image::Rgb(result));
+        }
+    }
+
     out
 }
 

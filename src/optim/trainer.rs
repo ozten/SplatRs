@@ -25,8 +25,8 @@ use crate::optim::loss::{
 use crate::core::sigmoid;
 use crate::render::full_diff::{
     coverage_mask_bool, debug_contrib_count, debug_coverage_mask, debug_final_transmittance,
-    debug_overlay_means, downsample_rgb_nearest, linear_vec_to_rgb8_img, render_full_color_grads,
-    render_full_linear, rgb8_to_linear_vec,
+    debug_overlay_means, downsample_rgb_bilinear, downsample_rgb_box, linear_vec_to_rgb8_img,
+    render_full_color_grads, render_full_linear, rgb8_to_linear_vec,
 };
 use image::RgbImage;
 use nalgebra::{Matrix3, Vector3};
@@ -51,6 +51,9 @@ impl CsvLogger {
             file,
             "iteration,loss,psnr,num_gaussians,forward_ms,backward_ms,step_ms,total_ms,densify_split,densify_clone,densify_prune,grad_p50,grad_p90,bg_r,bg_g,bg_b"
         )?;
+        // Make the header visible immediately even if the process runs for a long time
+        // before the first row is written (e.g., when `val_interval` is large).
+        file.flush()?;
         Ok(CsvLogger { file })
     }
 
@@ -170,8 +173,36 @@ fn downsample_camera(camera: &Camera, factor: f32) -> Camera {
 
 fn load_target_image(images_dir: &Path, name: &str) -> anyhow::Result<RgbImage> {
     let path = images_dir.join(name);
-    let img = image::open(&path)?.to_rgb8();
+    // Load with color profile conversion to sRGB
+    let img = crate::io::load_image_to_srgb(&path)
+        .map_err(|e| anyhow::anyhow!("Failed to load image with color conversion: {}", e))?;
     Ok(img)
+}
+
+/// Downsample an image intelligently based on the downsample factor.
+///
+/// For power-of-2 factors (1/2, 1/4, 1/8, etc.), uses box filter for clean anti-aliasing.
+/// For fractional factors, falls back to nearest-neighbor.
+/// For factor=1.0, returns a clone (no downsampling needed).
+fn downsample_image_smart(img: &RgbImage, target_width: u32, target_height: u32, factor: f32) -> RgbImage {
+    const EPSILON: f32 = 0.001;
+
+    // No downsampling needed - return clone
+    if (factor - 1.0).abs() < EPSILON && img.width() == target_width && img.height() == target_height {
+        return img.clone();
+    }
+
+    // Check if this is a power-of-2 downsample
+    for divisor in [2u32, 4, 8, 16, 32, 64] {
+        let expected_factor = 1.0 / (divisor as f32);
+        if (factor - expected_factor).abs() < EPSILON {
+            // Power-of-2: use box filter
+            return downsample_rgb_box(img, divisor);
+        }
+    }
+
+    // Fractional: use bilinear interpolation (better quality than nearest-neighbor)
+    downsample_rgb_bilinear(img, target_width, target_height)
 }
 
 pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainOutputs> {
@@ -247,7 +278,7 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
 
     // Target image.
     let target_full = load_target_image(&cfg.images_dir, &image_info.name)?;
-    let target_ds = downsample_rgb_nearest(&target_full, camera.width, camera.height);
+    let target_ds = downsample_image_smart(&target_full, camera.width, camera.height, cfg.downsample_factor);
     let target_linear = rgb8_to_linear_vec(&target_ds);
 
     // Debug outputs at training resolution, using the same gaussian subset.
@@ -361,6 +392,8 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
         camera.height,
     );
 
+    #[cfg(feature = "gpu")]
+    let mut gpu_backward_disabled_reason: Option<String> = None;
     for iter in 0..cfg.iters {
         let should_log =
             cfg.log_interval > 0 && (iter == 0 || iter % cfg.log_interval == 0 || iter + 1 == cfg.iters);
@@ -416,7 +449,13 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
             #[cfg(feature = "gpu")]
             if let Some(ref renderer) = gpu_renderer {
                 // Use GPU backward pass with sparse atomic gradients (efficient for <10k Gaussians)
-                match renderer.render_with_gradients(&gaussians, &camera, &bg, &d_image) {
+                if let Some(reason) = &gpu_backward_disabled_reason {
+                    if iter == 0 {
+                        eprintln!("GPU backward disabled, using CPU backward: {reason}");
+                    }
+                    render_full_color_grads(&gaussians, &camera, &d_image, &bg)
+                } else {
+                    match renderer.render_with_gradients(&gaussians, &camera, &bg, &d_image) {
                     Ok((_pixels, grads_2d)) => {
                     // TEMPORARY: CPU projection backward is default due to GPU shader bug
                     // Use SUGAR_GPU_GRADIENTS=1 to enable GPU projection backward (experimental)
@@ -437,8 +476,10 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
                     }
                     Err(e) => {
                         eprintln!("GPU backward failed, falling back to CPU: {e}");
+                        gpu_backward_disabled_reason = Some(e);
                         render_full_color_grads(&gaussians, &camera, &d_image, &bg)
                     }
+                }
                 }
             } else {
                 // CPU backward pass
@@ -1098,7 +1139,7 @@ pub fn train_multiview_color_only(
             let camera = downsample_camera(&camera_full, cfg.downsample_factor);
 
             let target = load_target_image(&cfg.images_dir, &image_info.name)?;
-            let target_ds = downsample_rgb_nearest(&target, camera.width, camera.height);
+            let target_ds = downsample_image_smart(&target, camera.width, camera.height, cfg.downsample_factor);
             let target_linear = rgb8_to_linear_vec(&target_ds);
 
             view_cache.insert(
@@ -1181,7 +1222,7 @@ pub fn train_multiview_color_only(
         v.target_linear.clone()
     } else {
         let first_target = load_target_image(&cfg.images_dir, &first_image_info.name)?;
-        let first_target_ds = downsample_rgb_nearest(&first_target, camera.width, camera.height);
+        let first_target_ds = downsample_image_smart(&first_target, camera.width, camera.height, cfg.downsample_factor);
         rgb8_to_linear_vec(&first_target_ds)
     };
 
@@ -1262,7 +1303,7 @@ pub fn train_multiview_color_only(
 
                 let test_target = load_target_image(&cfg.images_dir, &test_image_info.name)?;
                 let test_target_ds =
-                    downsample_rgb_nearest(&test_target, test_camera.width, test_camera.height);
+                    downsample_image_smart(&test_target, test_camera.width, test_camera.height, cfg.downsample_factor);
                 let test_target_linear = rgb8_to_linear_vec(&test_target_ds);
                 (test_camera, test_target_linear)
             };
@@ -1296,6 +1337,8 @@ pub fn train_multiview_color_only(
     // Training loop: sample random views
     let mut train_loss = 0.0f32;
     let mut densify_events: usize = 0;
+    #[cfg(feature = "gpu")]
+    let mut gpu_backward_disabled_reason: Option<String> = None;
 
     // Track last densification stats for CSV logging
     let mut last_densify_split: usize = 0;
@@ -1336,7 +1379,7 @@ pub fn train_multiview_color_only(
 
             let train_target = load_target_image(&cfg.images_dir, &train_image_info.name)?;
             let train_target_ds =
-                downsample_rgb_nearest(&train_target, train_camera.width, train_camera.height);
+                downsample_image_smart(&train_target, train_camera.width, train_camera.height, cfg.downsample_factor);
             let train_target_linear = rgb8_to_linear_vec(&train_target_ds);
             (train_camera, train_target_linear)
         };
@@ -1408,6 +1451,7 @@ pub fn train_multiview_color_only(
             ),
         };
         train_loss = loss; // Track most recent loss
+        let train_psnr = compute_psnr(&rendered_linear, &train_target_linear);
         let t_forward = t0.elapsed();
 
         // Backward
@@ -1416,7 +1460,13 @@ pub fn train_multiview_color_only(
             #[cfg(feature = "gpu")]
             if let Some(ref renderer) = gpu_renderer {
                 // Use GPU backward pass with sparse atomic gradients (efficient for <10k Gaussians)
-                match renderer.render_with_gradients(&gaussians, &train_camera, &bg, &d_image) {
+                if let Some(reason) = &gpu_backward_disabled_reason {
+                    if iter == 0 {
+                        eprintln!("GPU backward disabled, using CPU backward: {reason}");
+                    }
+                    render_full_color_grads(&gaussians, &train_camera, &d_image, &bg)
+                } else {
+                    match renderer.render_with_gradients(&gaussians, &train_camera, &bg, &d_image) {
                     Ok((_pixels, grads_2d)) => {
                     // TEMPORARY: CPU projection backward is default due to GPU shader bug
                     // Use SUGAR_GPU_GRADIENTS=1 to enable GPU projection backward (experimental)
@@ -1437,8 +1487,10 @@ pub fn train_multiview_color_only(
                     }
                     Err(e) => {
                         eprintln!("GPU backward failed, falling back to CPU: {e}");
+                        gpu_backward_disabled_reason = Some(e);
                         render_full_color_grads(&gaussians, &train_camera, &d_image, &bg)
                     }
+                }
                 }
             } else {
                 // CPU backward pass
@@ -1508,6 +1560,34 @@ pub fn train_multiview_color_only(
         }
         let t_step = t2.elapsed();
 
+        let is_validation_iter = (iter + 1) % cfg.val_interval == 0 || iter + 1 == cfg.iters;
+
+        // Log a lightweight row at `log_interval` even if validation is infrequent.
+        if should_log && !is_validation_iter {
+            if let Some(ref mut logger) = csv_logger {
+                let total_time = iter_start.map(|s| s.elapsed().as_secs_f32() * 1000.0).unwrap_or(0.0);
+                let forward_ms = t_forward.as_secs_f32() * 1000.0;
+                let backward_ms = t_backward.as_secs_f32() * 1000.0;
+                let step_ms = t_step.as_secs_f32() * 1000.0;
+                let _ = logger.log_iteration(
+                    iter,
+                    train_loss,
+                    train_psnr,
+                    gaussians.len(),
+                    forward_ms,
+                    backward_ms,
+                    step_ms,
+                    total_time,
+                    last_densify_split,
+                    last_densify_clone,
+                    last_densify_prune,
+                    last_grad_p50,
+                    last_grad_p90,
+                    &bg,
+                );
+            }
+        }
+
         if cfg.densify_interval > 0 {
             if grad_accum_pos_norm.len() != d_positions.len() {
                 grad_accum_pos_norm.resize(d_positions.len(), 0.0);
@@ -1519,7 +1599,7 @@ pub fn train_multiview_color_only(
         }
 
         // Validation
-        if (iter + 1) % cfg.val_interval == 0 || iter + 1 == cfg.iters {
+        if is_validation_iter {
             let mut test_psnr_sum = 0.0f32;
             let mut first_test_rendered: Option<RgbImage> = None;
 
@@ -1544,7 +1624,7 @@ pub fn train_multiview_color_only(
 
                     let test_target = load_target_image(&cfg.images_dir, &test_image_info.name)?;
                     let test_target_ds =
-                        downsample_rgb_nearest(&test_target, test_camera.width, test_camera.height);
+                        downsample_image_smart(&test_target, test_camera.width, test_camera.height, cfg.downsample_factor);
                     let test_target_linear = rgb8_to_linear_vec(&test_target_ds);
                     (test_camera, test_target_linear)
                 };
@@ -1752,7 +1832,7 @@ pub fn train_multiview_color_only(
 
             let test_target = load_target_image(&cfg.images_dir, &test_image_info.name)?;
             let test_target_ds =
-                downsample_rgb_nearest(&test_target, test_camera.width, test_camera.height);
+                downsample_image_smart(&test_target, test_camera.width, test_camera.height, cfg.downsample_factor);
             let test_target_linear = rgb8_to_linear_vec(&test_target_ds);
             (test_camera, test_target_ds, test_target_linear)
         };

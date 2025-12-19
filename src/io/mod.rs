@@ -8,12 +8,14 @@
 //! - Checkpoints (training state)
 
 mod colmap;
+mod color_management;
 mod model;
 mod obj;
 mod ply;
 
 // Re-export public types and functions
 pub use colmap::{load_colmap_scene, ColmapScene, ImageInfo, LoadError, Point3D};
+pub use color_management::load_image_to_srgb;
 pub use model::{
     compute_bounds, load_model, save_model, Compression, ModelError, ModelMetadata,
 };

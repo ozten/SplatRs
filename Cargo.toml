@@ -38,6 +38,7 @@ nalgebra = { version = "0.33", features = ["serde-serialize"] }
 
 # Image I/O
 image = "0.25"
+lcms2 = "6.1"
 
 # Parallel iteration
 rayon = "1.10"
