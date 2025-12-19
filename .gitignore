@@ -27,6 +27,9 @@ checkpoints/
 # Local datasets / scratch
 datasets/
 
+# Local run outputs
+/runs/
+
 # Code coverage artifacts
 target/coverage/
 *.profraw
