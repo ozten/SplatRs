@@ -45,8 +45,9 @@ fn test_inspect_intermediates() {
 
     // Render with gradients
     let gpu_renderer = GpuRenderer::new().expect("Failed to initialize GPU");
-    let (_pixels, _grads) =
-        gpu_renderer.render_with_gradients(&gaussians, &camera, &background, &d_pixels);
+    let (_pixels, _grads) = gpu_renderer
+        .render_with_gradients(&gaussians, &camera, &background, &d_pixels)
+        .expect("GPU render_with_gradients failed");
 
     // Note: We can't easily inspect GPU buffers from here without modifying the renderer
     // But we can check the final gradients

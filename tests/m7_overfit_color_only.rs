@@ -50,6 +50,7 @@ fn test_m7_overfit_color_only_calipers() {
         log_interval: 10,
         rng_seed: Some(0),
         use_gpu: true,
+        csv_output_path: None,
     };
 
     let _out = train_single_image_color_only(&cfg).expect("Training failed");

@@ -3,13 +3,14 @@
 //! This test verifies that GPU rendering produces identical results to CPU rendering.
 //! Success criteria: Per-pixel difference < 1e-4 (M11 milestone requirement).
 
+#![cfg(feature = "gpu")]
+
 use nalgebra::{Matrix3, UnitQuaternion, Vector3};
 use sugar_rs::core::{Camera, Gaussian, GaussianCloud};
 use sugar_rs::render::render_full_linear;
 
 #[test]
-#[ignore] // Only run with --features gpu
-#[cfg(feature = "gpu")]
+#[ignore] // Only run manually (GPU hardware + drivers)
 fn test_gpu_vs_cpu_rendering() {
     use sugar_rs::gpu::GpuRenderer;
 
@@ -66,7 +67,9 @@ fn test_gpu_vs_cpu_rendering() {
 
     // Render with GPU
     let gpu_renderer = GpuRenderer::new().expect("Failed to initialize GPU");
-    let gpu_result = gpu_renderer.render(&gaussians, &camera, &background);
+    let gpu_result = gpu_renderer
+        .render(&gaussians, &camera, &background)
+        .expect("GPU render failed");
 
     // Compare results
     assert_eq!(cpu_result.len(), gpu_result.len());
@@ -116,8 +119,7 @@ fn test_gpu_vs_cpu_rendering() {
 }
 
 #[test]
-#[ignore] // Only run with --features gpu
-#[cfg(feature = "gpu")]
+#[ignore] // Only run manually (GPU hardware + drivers)
 fn test_gpu_renderer_initialization() {
     use sugar_rs::gpu::GpuRenderer;
 
@@ -126,12 +128,4 @@ fn test_gpu_renderer_initialization() {
     println!("✅ GPU renderer initialized successfully");
 }
 
-#[test]
-#[cfg(not(feature = "gpu"))]
-fn test_gpu_feature_not_enabled() {
-    use sugar_rs::gpu::GpuRenderer;
-
-    let renderer = GpuRenderer::new();
-    assert!(renderer.is_err(), "Expected error when GPU not enabled");
-    assert!(renderer.unwrap_err().contains("not enabled"));
-}
+// When the `gpu` feature is not enabled, this file is not compiled.

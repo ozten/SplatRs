@@ -1,6 +1,6 @@
 //! GPU context management - wgpu device and queue initialization.
 
-use wgpu::{Device, Queue, Instance, Adapter, RequestAdapterOptions, DeviceDescriptor, Features, Limits};
+use wgpu::{Device, Features, Instance, Limits, Queue, RequestAdapterOptions};
 
 pub struct GpuContext {
     pub device: Device,
@@ -15,7 +15,16 @@ impl GpuContext {
     pub async fn new() -> Result<Self, String> {
         // Create wgpu instance (API entry point)
         let instance = Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
+            backends: {
+                #[cfg(target_os = "macos")]
+                {
+                    wgpu::Backends::METAL
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    wgpu::Backends::PRIMARY
+                }
+            },
             ..Default::default()
         });
 
@@ -41,7 +50,7 @@ impl GpuContext {
         // Request device and queue
         let (device, queue) = adapter
             .request_device(
-                &DeviceDescriptor {
+                &wgpu::DeviceDescriptor {
                     label: Some("SuGaR GPU Device"),
                     required_features: Features::empty(),
                     required_limits: Limits::default(),
@@ -50,6 +59,10 @@ impl GpuContext {
             )
             .await
             .map_err(|e| format!("Failed to create device: {}", e))?;
+
+        device.on_uncaptured_error(Box::new(|e| {
+            eprintln!("[wgpu] uncaptured error: {e}");
+        }));
 
         Ok(Self { device, queue })
     }

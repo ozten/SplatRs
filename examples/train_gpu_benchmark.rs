@@ -108,7 +108,9 @@ fn main() {
         let gpu_renderer = GpuRenderer::new().expect("Failed to create GPU renderer");
 
         println!("  Warmup render...");
-        let gpu_warmup = gpu_renderer.render(&gaussians, &camera, &background);
+        let gpu_warmup = gpu_renderer
+            .render(&gaussians, &camera, &background)
+            .expect("GPU warmup render failed");
         println!("  Warmup complete");
 
         // Verify correctness
@@ -157,7 +159,9 @@ fn main() {
 
         for i in 0..gpu_iterations {
             let start = Instant::now();
-            let _result = gpu_renderer.render(&gaussians, &camera, &background);
+            let _result = gpu_renderer
+                .render(&gaussians, &camera, &background)
+                .expect("GPU render failed");
             let elapsed = start.elapsed();
             gpu_times.push(elapsed.as_secs_f64());
             println!("  Iteration {}: {:.3}s", i + 1, elapsed.as_secs_f64());

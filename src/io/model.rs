@@ -3,7 +3,7 @@
 //! File format: `.gs` (Gaussian Splatting Model)
 //!
 //! Layout:
-//! ```
+//! ```text
 //! Header (256 bytes):
 //!   - Magic: "GSPLAT\0\0" (8 bytes)
 //!   - Version: u32 (4 bytes)

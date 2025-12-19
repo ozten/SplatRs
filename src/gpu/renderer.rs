@@ -341,19 +341,46 @@ impl GpuRenderer {
         gaussians: &[Gaussian],
         camera: &Camera,
         background: &Vector3<f32>,
-    ) -> Vec<Vector3<f32>> {
+    ) -> Result<Vec<Vector3<f32>>, String> {
         let enable_timing = std::env::var("SUGAR_GPU_TIMING").is_ok();
         let t_start = if enable_timing { Some(std::time::Instant::now()) } else { None };
-
-        // Convert to GPU format
-        let gaussians_gpu: Vec<GaussianGPU> =
-            gaussians.iter().map(GaussianGPU::from_gaussian).collect();
-        let camera_gpu = CameraGPU::from_camera(camera);
 
         let num_gaussians = gaussians.len();
         let width = camera.width;
         let height = camera.height;
         let num_pixels = (width * height) as usize;
+
+        if num_gaussians == 0 {
+            return Ok(vec![*background; num_pixels]);
+        }
+
+        let max_storage_binding = self.ctx.device.limits().max_storage_buffer_binding_size as u64;
+        let gaussians_bytes = (num_gaussians * std::mem::size_of::<GaussianGPU>()) as u64;
+        let projected_bytes = (num_gaussians * std::mem::size_of::<Gaussian2DGPU>()) as u64;
+        let output_bytes = (num_pixels * std::mem::size_of::<[f32; 4]>()) as u64;
+
+        for (label, bytes) in [
+            ("Gaussians Buffer", gaussians_bytes),
+            ("Projected Buffer", projected_bytes),
+            ("Output Buffer", output_bytes),
+        ] {
+            if bytes > max_storage_binding {
+                return Err(format!(
+                    "{label} size {} MB exceeds max_storage_buffer_binding_size {} MB (gaussians={}, pixels={} @ {}x{})",
+                    bytes / (1024 * 1024),
+                    max_storage_binding / (1024 * 1024),
+                    num_gaussians,
+                    num_pixels,
+                    width,
+                    height
+                ));
+            }
+        }
+
+        // Convert to GPU format
+        let gaussians_gpu: Vec<GaussianGPU> =
+            gaussians.iter().map(GaussianGPU::from_gaussian).collect();
+        let camera_gpu = CameraGPU::from_camera(camera);
 
         // Create buffers
         let camera_buffer = buffers::create_buffer_init(
@@ -373,7 +400,7 @@ impl GpuRenderer {
         let projected_buffer = buffers::create_buffer(
             &self.ctx.device,
             "Projected Buffer",
-            (num_gaussians * std::mem::size_of::<Gaussian2DGPU>()) as u64,
+            projected_bytes,
             BufferUsages::STORAGE | BufferUsages::COPY_SRC,
         );
 
@@ -430,7 +457,7 @@ impl GpuRenderer {
             &projected_buffer,
             num_gaussians,
         )
-        .expect("Failed to read projected Gaussians");
+        .map_err(|e| format!("Failed to read projected Gaussians: {e}"))?;
 
         if enable_timing {
             eprintln!("[GPU] Download projected: {:?}", t_sort.unwrap().elapsed());
@@ -438,15 +465,23 @@ impl GpuRenderer {
 
         let t_cpu_sort = if enable_timing { Some(std::time::Instant::now()) } else { None };
 
-        // Filter out invalid Gaussians (NaN or inf depth) before sorting
-        let original_count = projected.len();
-        projected.retain(|g| g.mean[2].is_finite());
-        let filtered_count = original_count - projected.len();
-        if filtered_count > 0 {
-            eprintln!("[GPU WARNING] Filtered {} Gaussians with invalid depth values", filtered_count);
+        // Sanitize invalid depths before sorting.
+        // Do NOT drop entries: the GPU shaders index into this buffer using 0..num_gaussians.
+        let mut invalid_depths = 0usize;
+        for g in projected.iter_mut() {
+            if !g.mean[2].is_finite() {
+                g.mean[2] = -1.0; // culled sentinel used by rasterize.wgsl
+                invalid_depths += 1;
+            }
+        }
+        if invalid_depths > 0 {
+            eprintln!(
+                "[GPU WARNING] Marked {} Gaussians as culled due to non-finite depth values",
+                invalid_depths
+            );
         }
 
-        projected.sort_by(|a, b| a.mean[2].partial_cmp(&b.mean[2]).unwrap());
+        projected.sort_by(|a, b| a.mean[2].total_cmp(&b.mean[2]));
 
         if enable_timing {
             eprintln!("[GPU] CPU sort: {:?}", t_cpu_sort.unwrap().elapsed());
@@ -480,7 +515,7 @@ impl GpuRenderer {
         let params = RenderParams {
             width,
             height,
-            num_gaussians: num_gaussians as u32,
+            num_gaussians: projected.len() as u32,
             save_intermediates: 0, // Don't save intermediates in regular render
             background: [background.x, background.y, background.z, 0.0],
         };
@@ -499,13 +534,14 @@ impl GpuRenderer {
             BufferUsages::STORAGE | BufferUsages::COPY_SRC,
         );
 
-        // Create dummy intermediates buffer (not used when save_intermediates=0)
-        use crate::gpu::types::{ContributionGPU, MAX_CONTRIBUTIONS_PER_PIXEL};
-        let intermediates_buffer = buffers::create_buffer(
+        // Create a minimal intermediates buffer (not used when save_intermediates=0).
+        // Allocating a full per-pixel intermediates buffer here can exceed Metal's buffer binding
+        // limits even for "forward-only" renders.
+        use crate::gpu::types::ContributionGPU;
+        let intermediates_buffer = buffers::create_buffer_zeroed::<ContributionGPU>(
             &self.ctx.device,
             "Intermediates Buffer (dummy)",
-            (num_pixels * MAX_CONTRIBUTIONS_PER_PIXEL as usize
-                * std::mem::size_of::<ContributionGPU>()) as u64,
+            1,
             BufferUsages::STORAGE,
         );
 
@@ -563,7 +599,7 @@ impl GpuRenderer {
             &output_buffer,
             num_pixels,
         )
-        .expect("Failed to read output");
+        .map_err(|e| format!("Failed to read output buffer: {e}"))?;
 
         // Convert to Vector3
         let result = output
@@ -575,7 +611,7 @@ impl GpuRenderer {
             eprintln!("[GPU] Total render time: {:?}", t_start.unwrap().elapsed());
         }
 
-        result
+        Ok(result)
     }
 
     /// Render Gaussians with gradient computation.
@@ -598,29 +634,21 @@ impl GpuRenderer {
         camera: &Camera,
         background: &Vector3<f32>,
         d_pixels: &[Vector3<f32>],
-    ) -> (Vec<Vector3<f32>>, crate::gpu::gradients::GaussianGradients2D) {
+    ) -> Result<(Vec<Vector3<f32>>, crate::gpu::gradients::GaussianGradients2D), String> {
         use crate::gpu::types::{ContributionGPU, GradientGPU, MAX_CONTRIBUTIONS_PER_PIXEL};
 
         // Constants for gradient buffer sizing
         const GRADIENT_I32_PER_GAUSSIAN: usize = 16; // 16 i32s = 64 bytes per Gaussian
-        const MAX_GPU_BUFFER_SIZE: u64 = 256 * 1024 * 1024; // 256 MB
 
-        // Check if per-Gaussian gradient buffer would exceed GPU limit
-        // With sparse atomic gradients, buffer size is just num_gaussians × 64 bytes
-        let num_pixels = (camera.width * camera.height) as usize;
+        let width = camera.width;
+        let height = camera.height;
+        let num_pixels = (width * height) as usize;
         let num_gaussians = gaussians.len();
-        let gradient_buffer_size = (num_gaussians * GRADIENT_I32_PER_GAUSSIAN * std::mem::size_of::<i32>()) as u64;
-
-        if gradient_buffer_size > MAX_GPU_BUFFER_SIZE {
-            eprintln!("[GPU WARNING] Gradient buffer would be {} GB (> {} MB limit)",
-                gradient_buffer_size / (1024 * 1024 * 1024),
-                MAX_GPU_BUFFER_SIZE / (1024 * 1024));
-            eprintln!("[GPU WARNING] Scene too large for GPU gradients: {} gaussians × {}×{} pixels",
-                num_gaussians, camera.width, camera.height);
-            eprintln!("[GPU WARNING] Falling back to CPU for backward pass");
-
-            // Return empty gradients to signal fallback
-            return (vec![], crate::gpu::gradients::GaussianGradients2D::empty());
+        if num_gaussians == 0 {
+            return Ok((
+                vec![*background; num_pixels],
+                crate::gpu::gradients::GaussianGradients2D::zeros(0),
+            ));
         }
 
         let enable_timing = std::env::var("SUGAR_GPU_TIMING").is_ok();
@@ -630,22 +658,55 @@ impl GpuRenderer {
             None
         };
 
+        if d_pixels.len() != num_pixels {
+            return Err(format!(
+                "d_pixels length must match number of pixels: got {}, expected {} ({}x{})",
+                d_pixels.len(),
+                num_pixels,
+                width,
+                height
+            ));
+        }
+
+        let max_storage_binding = self.ctx.device.limits().max_storage_buffer_binding_size as u64;
+        let gaussians_bytes = (num_gaussians * std::mem::size_of::<GaussianGPU>()) as u64;
+        let projected_bytes = (num_gaussians * std::mem::size_of::<Gaussian2DGPU>()) as u64;
+        let output_bytes = (num_pixels * std::mem::size_of::<[f32; 4]>()) as u64;
+        let intermediates_bytes = (num_pixels
+            * (MAX_CONTRIBUTIONS_PER_PIXEL as usize)
+            * std::mem::size_of::<ContributionGPU>()) as u64;
+        let d_pixels_bytes = (num_pixels * std::mem::size_of::<[f32; 4]>()) as u64;
+        let gradient_atomic_bytes =
+            (num_gaussians * GRADIENT_I32_PER_GAUSSIAN * std::mem::size_of::<i32>()) as u64;
+        let d_background_pixels_bytes = (num_pixels * std::mem::size_of::<[f32; 4]>()) as u64;
+
+        for (label, bytes) in [
+            ("Gaussians Buffer", gaussians_bytes),
+            ("Projected Buffer", projected_bytes),
+            ("Sorted Gaussians Buffer", projected_bytes),
+            ("Output Buffer", output_bytes),
+            ("Intermediates Buffer", intermediates_bytes),
+            ("d_pixels Buffer", d_pixels_bytes),
+            ("Per-Gaussian Gradients Buffer", gradient_atomic_bytes),
+            ("Per-Pixel Background Gradients Buffer", d_background_pixels_bytes),
+        ] {
+            if bytes > max_storage_binding {
+                return Err(format!(
+                    "{label} size {} MB exceeds max_storage_buffer_binding_size {} MB (gaussians={}, pixels={} @ {}x{})",
+                    bytes / (1024 * 1024),
+                    max_storage_binding / (1024 * 1024),
+                    num_gaussians,
+                    num_pixels,
+                    width,
+                    height
+                ));
+            }
+        }
+
         // Convert to GPU format
         let gaussians_gpu: Vec<GaussianGPU> =
             gaussians.iter().map(GaussianGPU::from_gaussian).collect();
         let camera_gpu = CameraGPU::from_camera(camera);
-
-        let num_gaussians = gaussians.len();
-        let width = camera.width;
-        let height = camera.height;
-        let num_pixels = (width * height) as usize;
-
-        // Validate d_pixels
-        assert_eq!(
-            d_pixels.len(),
-            num_pixels,
-            "d_pixels length must match number of pixels"
-        );
 
         // Create buffers
         let camera_buffer = buffers::create_buffer_init(
@@ -665,7 +726,7 @@ impl GpuRenderer {
         let projected_buffer = buffers::create_buffer(
             &self.ctx.device,
             "Projected Buffer",
-            (num_gaussians * std::mem::size_of::<Gaussian2DGPU>()) as u64,
+            projected_bytes,
             BufferUsages::STORAGE | BufferUsages::COPY_SRC,
         );
 
@@ -715,7 +776,7 @@ impl GpuRenderer {
             &projected_buffer,
             num_gaussians,
         )
-        .expect("Failed to read projected Gaussians");
+        .map_err(|e| format!("Failed to read projected Gaussians: {e}"))?;
 
         // Debug: Check how many Gaussians survived projection
         if std::env::var("SUGAR_GPU_DEBUG").is_ok() {
@@ -732,7 +793,23 @@ impl GpuRenderer {
             }
         }
 
-        projected.sort_by(|a, b| a.mean[2].partial_cmp(&b.mean[2]).unwrap());
+        // Sanitize invalid depths before sorting.
+        // Do NOT drop entries: the forward pass indexes 0..num_gaussians.
+        let mut invalid_depths = 0usize;
+        for g in projected.iter_mut() {
+            if !g.mean[2].is_finite() {
+                g.mean[2] = -1.0; // culled sentinel used by rasterize.wgsl
+                invalid_depths += 1;
+            }
+        }
+        if invalid_depths > 0 {
+            eprintln!(
+                "[GPU WARNING] Marked {} Gaussians as culled due to non-finite depth values",
+                invalid_depths
+            );
+        }
+
+        projected.sort_by(|a, b| a.mean[2].total_cmp(&b.mean[2]));
 
         if std::env::var("SUGAR_GPU_DEBUG").is_ok() {
             eprintln!("[GPU DEBUG] Projection results (AFTER sorting by depth):");
@@ -844,7 +921,8 @@ impl GpuRenderer {
                 &self.ctx.queue,
                 &intermediates_buffer,
                 num_pixels * MAX_CONTRIBUTIONS_PER_PIXEL as usize,
-            ).expect("Failed to read intermediates buffer");
+            )
+            .map_err(|e| format!("Failed to read intermediates buffer: {e}"))?;
 
             let mut pixels_with_contribs = 0;
             let mut total_contribs = 0;
@@ -1060,7 +1138,7 @@ impl GpuRenderer {
             &pixel_grads_buffer,
             total_i32s,
         )
-        .expect("Failed to read per-Gaussian gradients");
+        .map_err(|e| format!("Failed to read per-Gaussian gradients: {e}"))?;
 
         // Convert from fixed-point i32 to f32 gradients
         // Shader uses FIXED_POINT_SCALE = 10000000.0
@@ -1096,7 +1174,7 @@ impl GpuRenderer {
             &d_background_pixels_buffer,
             num_pixels,
         )
-        .expect("Failed to read per-pixel background gradients");
+        .map_err(|e| format!("Failed to read per-pixel background gradients: {e}"))?;
 
         // Sum all per-pixel contributions to get total background gradient
         let mut d_background_sum = Vector3::zeros();
@@ -1112,14 +1190,14 @@ impl GpuRenderer {
             &output_buffer,
             num_pixels,
         )
-        .expect("Failed to read output");
+        .map_err(|e| format!("Failed to read output buffer: {e}"))?;
 
         let pixels = output
             .iter()
             .map(|rgba| Vector3::new(rgba[0], rgba[1], rgba[2]))
             .collect();
 
-        (pixels, final_grads)
+        Ok((pixels, final_grads))
     }
 
     /// Calculate optimal tile size based on memory constraints.
@@ -1279,8 +1357,20 @@ impl GpuRenderer {
         .expect("Failed to read projected Gaussians");
 
         let mut projected = projected;
-        projected.retain(|g| g.mean[2].is_finite());
-        projected.sort_by(|a, b| a.mean[2].partial_cmp(&b.mean[2]).unwrap());
+        let mut invalid_depths = 0usize;
+        for g in projected.iter_mut() {
+            if !g.mean[2].is_finite() {
+                g.mean[2] = -1.0;
+                invalid_depths += 1;
+            }
+        }
+        if invalid_depths > 0 {
+            eprintln!(
+                "[GPU WARNING] Marked {} Gaussians as culled due to non-finite depth values",
+                invalid_depths
+            );
+        }
+        projected.sort_by(|a, b| a.mean[2].total_cmp(&b.mean[2]));
 
         let sorted_buffer = buffers::create_buffer_init(
             &self.ctx.device,

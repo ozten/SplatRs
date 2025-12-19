@@ -212,7 +212,13 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
     #[cfg(feature = "gpu")]
     let gpu_renderer = if cfg.use_gpu {
         eprintln!("Initializing GPU renderer...");
-        Some(GpuRenderer::new().expect("Failed to initialize GPU"))
+        match GpuRenderer::new() {
+            Ok(r) => Some(r),
+            Err(e) => {
+                eprintln!("GPU renderer unavailable, falling back to CPU: {e}");
+                None
+            }
+        }
     } else {
         None
     };
@@ -315,7 +321,13 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
     #[cfg(feature = "gpu")]
     let render = |gaussians: &[Gaussian], camera: &Camera, bg: &Vector3<f32>| {
         if let Some(ref renderer) = gpu_renderer {
-            renderer.render(gaussians, camera, bg)
+            match renderer.render(gaussians, camera, bg) {
+                Ok(img) => img,
+                Err(e) => {
+                    eprintln!("GPU render failed, falling back to CPU: {e}");
+                    render_full_linear(gaussians, camera, bg)
+                }
+            }
         } else {
             render_full_linear(gaussians, camera, bg)
         }
@@ -396,6 +408,7 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
                 camera.height,
             ),
         };
+        let psnr = compute_psnr(&rendered_linear, &target_linear);
 
         // Backward: get dL/d(color_i) and dL/d(opacity_logit_i) per Gaussian.
         let t1 = Instant::now();
@@ -403,13 +416,8 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
             #[cfg(feature = "gpu")]
             if let Some(ref renderer) = gpu_renderer {
                 // Use GPU backward pass with sparse atomic gradients (efficient for <10k Gaussians)
-                let (_pixels, grads_2d) = renderer.render_with_gradients(&gaussians, &camera, &bg, &d_image);
-
-                // Check if GPU fallback occurred (empty gradients)
-                if grads_2d.d_colors.is_empty() {
-                    // Fall back to CPU
-                    render_full_color_grads(&gaussians, &camera, &d_image, &bg)
-                } else {
+                match renderer.render_with_gradients(&gaussians, &camera, &bg, &d_image) {
+                    Ok((_pixels, grads_2d)) => {
                     // TEMPORARY: CPU projection backward is default due to GPU shader bug
                     // Use SUGAR_GPU_GRADIENTS=1 to enable GPU projection backward (experimental)
                     let use_gpu_projection = std::env::var("SUGAR_GPU_GRADIENTS").is_ok();
@@ -426,6 +434,11 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
 
                     let dummy_img = image::RgbImage::new(camera.width, camera.height);
                     (dummy_img, grads_2d.d_colors, grads_2d.d_opacity_logits, d_pos, d_scales, d_rots, d_background)
+                    }
+                    Err(e) => {
+                        eprintln!("GPU backward failed, falling back to CPU: {e}");
+                        render_full_color_grads(&gaussians, &camera, &d_image, &bg)
+                    }
                 }
             } else {
                 // CPU backward pass
@@ -511,14 +524,6 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
 
             // Log to CSV if enabled
             if let Some(ref mut csv) = csv_logger {
-                // Calculate PSNR from MSE loss
-                let mse = loss / (camera.width * camera.height) as f32;
-                let psnr = if mse > 1e-10 {
-                    -10.0 * mse.log10()
-                } else {
-                    100.0
-                };
-
                 if let Err(e) = csv.log_iteration(
                     iter,
                     loss,
@@ -1152,7 +1157,13 @@ pub fn train_multiview_color_only(
     #[cfg(feature = "gpu")]
     let gpu_renderer = if cfg.use_gpu {
         eprintln!("Initializing GPU renderer...");
-        Some(GpuRenderer::new().expect("Failed to initialize GPU"))
+        match GpuRenderer::new() {
+            Ok(r) => Some(r),
+            Err(e) => {
+                eprintln!("GPU renderer unavailable, falling back to CPU: {e}");
+                None
+            }
+        }
     } else {
         None
     };
@@ -1213,7 +1224,13 @@ pub fn train_multiview_color_only(
     #[cfg(feature = "gpu")]
     let render = |gaussians: &[Gaussian], camera: &Camera, bg: &Vector3<f32>| {
         if let Some(ref renderer) = gpu_renderer {
-            renderer.render(gaussians, camera, bg)
+            match renderer.render(gaussians, camera, bg) {
+                Ok(img) => img,
+                Err(e) => {
+                    eprintln!("GPU render failed, falling back to CPU: {e}");
+                    render_full_linear(gaussians, camera, bg)
+                }
+            }
         } else {
             render_full_linear(gaussians, camera, bg)
         }
@@ -1355,7 +1372,7 @@ pub fn train_multiview_color_only(
         // Skip coverage computation when using GPU (it's a full render pass!)
         // With GPU rendering being fast, we can afford to weight all pixels equally
         #[cfg(feature = "gpu")]
-        let weights: Vec<f32> = if cfg.use_gpu {
+        let weights: Vec<f32> = if gpu_renderer.is_some() {
             vec![1.0; (train_camera.width * train_camera.height) as usize]
         } else {
             let coverage_bool = coverage_mask_bool(&gaussians, &train_camera);
@@ -1399,13 +1416,8 @@ pub fn train_multiview_color_only(
             #[cfg(feature = "gpu")]
             if let Some(ref renderer) = gpu_renderer {
                 // Use GPU backward pass with sparse atomic gradients (efficient for <10k Gaussians)
-                let (_pixels, grads_2d) = renderer.render_with_gradients(&gaussians, &train_camera, &bg, &d_image);
-
-                // Check if GPU fallback occurred (empty gradients)
-                if grads_2d.d_colors.is_empty() {
-                    // Fall back to CPU
-                    render_full_color_grads(&gaussians, &train_camera, &d_image, &bg)
-                } else {
+                match renderer.render_with_gradients(&gaussians, &train_camera, &bg, &d_image) {
+                    Ok((_pixels, grads_2d)) => {
                     // TEMPORARY: CPU projection backward is default due to GPU shader bug
                     // Use SUGAR_GPU_GRADIENTS=1 to enable GPU projection backward (experimental)
                     let use_gpu_projection = std::env::var("SUGAR_GPU_GRADIENTS").is_ok();
@@ -1422,6 +1434,11 @@ pub fn train_multiview_color_only(
 
                     let dummy_img = image::RgbImage::new(train_camera.width, train_camera.height);
                     (dummy_img, grads_2d.d_colors, grads_2d.d_opacity_logits, d_pos, d_scales, d_rots, d_background)
+                    }
+                    Err(e) => {
+                        eprintln!("GPU backward failed, falling back to CPU: {e}");
+                        render_full_color_grads(&gaussians, &train_camera, &d_image, &bg)
+                    }
                 }
             } else {
                 // CPU backward pass
@@ -1637,11 +1654,15 @@ pub fn train_multiview_color_only(
             let before = gaussians.len();
 
             // Enforce GPU hard cap to prevent buffer overflow
-            let effective_max_gaussians = if cfg.use_gpu {
+            #[cfg(feature = "gpu")]
+            let effective_max_gaussians = if gpu_renderer.is_some() {
                 cfg.densify_max_gaussians.min(GPU_HARD_CAP_GAUSSIANS)
             } else {
                 cfg.densify_max_gaussians
             };
+
+            #[cfg(not(feature = "gpu"))]
+            let effective_max_gaussians = cfg.densify_max_gaussians;
 
             let stats = densify_and_prune(
                 &mut gaussians,

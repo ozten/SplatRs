@@ -54,7 +54,9 @@ fn test_m9_densify_smoke_tandt() {
         densify_grad_threshold: -1.0, // force densify for smoke testing
         prune_opacity_threshold: 0.0, // disable pruning for smoke testing
         split_sigma_threshold: 1e9,   // force CLONE (avoid scale changes)
-        use_gpu: true,
+        use_gpu: cfg!(feature = "gpu"),
+        csv_output_path: None,
+        out_dir: PathBuf::from("test_output"),
     };
 
     let result = train_multiview_color_only(&cfg).expect("Training failed");

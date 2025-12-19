@@ -246,7 +246,9 @@ pub async fn render_frame(
     // Render on GPU
     let mut renderer = state.renderer.lock().unwrap();
     let background = Vector3::new(0.0, 0.0, 0.0); // Black background
-    let pixels = renderer.render(&cloud.gaussians, &camera, &background);
+    let pixels = renderer
+        .render(&cloud.gaussians, &camera, &background)
+        .map_err(|e| format!("GPU render failed: {e}"))?;
 
     if frame < 3 {
         println!("[VIEWER] Frame {} rendered {} pixels", frame, pixels.len());

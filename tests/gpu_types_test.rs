@@ -47,11 +47,11 @@ fn test_gaussian_gpu_conversion_preserves_data() {
     assert_eq!(gpu_gaussian.scale[2], 0.3);
     assert_eq!(gpu_gaussian.scale[3], 0.0); // padding
 
-    // Verify rotation (quaternion ijkw)
-    assert_eq!(gpu_gaussian.rotation[0], rotation.i);
-    assert_eq!(gpu_gaussian.rotation[1], rotation.j);
-    assert_eq!(gpu_gaussian.rotation[2], rotation.k);
-    assert_eq!(gpu_gaussian.rotation[3], rotation.w);
+    // Verify rotation (quaternion uploaded as w,i,j,k for WGSL shader)
+    assert_eq!(gpu_gaussian.rotation[0], rotation.w);
+    assert_eq!(gpu_gaussian.rotation[1], rotation.i);
+    assert_eq!(gpu_gaussian.rotation[2], rotation.j);
+    assert_eq!(gpu_gaussian.rotation[3], rotation.k);
 
     // Verify opacity (scalar + 3 padding)
     assert_eq!(gpu_gaussian.opacity_pad[0], 0.8);

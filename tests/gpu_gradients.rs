@@ -125,8 +125,9 @@ fn test_gpu_vs_cpu_gradients() {
     let gpu_renderer = GpuRenderer::new().expect("Failed to initialize GPU");
 
     let t_gpu_start = std::time::Instant::now();
-    let (_gpu_pixels, gpu_grads) =
-        gpu_renderer.render_with_gradients(&gaussians, &camera, &background, &d_pixels);
+    let (_gpu_pixels, gpu_grads) = gpu_renderer
+        .render_with_gradients(&gaussians, &camera, &background, &d_pixels)
+        .expect("GPU render_with_gradients failed");
     let gpu_time = t_gpu_start.elapsed();
     println!("  GPU time: {:?}", gpu_time);
 
