@@ -16,7 +16,7 @@ pub const PROJECT_SHADER: &str = r#"
 struct Gaussian3D {
     position: vec4<f32>,      // World space (x,y,z,pad)
     scale: vec4<f32>,         // Log-space (x,y,z,pad)
-    rotation: vec4<f32>,      // Quaternion (i,j,k,w)
+    rotation: vec4<f32>,      // Quaternion uploaded as (w,i,j,k)
     opacity_pad: vec4<f32>,   // Logit-space opacity
     sh_coeffs: array<vec4<f32>, 16>, // RGB SH coefficients
 }
@@ -51,11 +51,17 @@ fn sigmoid(x: f32) -> f32 {
 }
 
 // Convert quaternion to rotation matrix
-fn quat_to_matrix(q: vec4<f32>) -> mat3x3<f32> {
-    let i = q.x;
-    let j = q.y;
-    let k = q.z;
-    let w = q.w;
+// NOTE: Quaternion uploaded as (w, i, j, k) at positions (q.x, q.y, q.z, q.w)
+fn quat_to_matrix(q_raw: vec4<f32>) -> mat3x3<f32> {
+    // Normalize the quaternion
+    let n = length(q_raw);
+    let q = q_raw / n;
+
+    // Extract components: uploaded as (w, i, j, k)
+    let w = q.x;
+    let i = q.y;
+    let j = q.z;
+    let k = q.w;
 
     return mat3x3<f32>(
         vec3<f32>(1.0 - 2.0*(j*j + k*k), 2.0*(i*j - k*w), 2.0*(i*k + j*w)),
@@ -83,14 +89,13 @@ fn project_gaussians(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let g = gaussians_in[idx];
 
     // 1. Transform position to camera space
-    // Note: camera.rotation is stored row-major, but mat3x3<f32>() expects columns
-    // so we need to transpose to get the correct matrix
-    let rot_mat_T = mat3x3<f32>(
+    // Note: camera.rotation is uploaded as column-major (see types.rs)
+    // WGSL mat3x3 constructor takes columns, so no transpose needed
+    let rot_mat = mat3x3<f32>(
         camera.rotation[0].xyz,
         camera.rotation[1].xyz,
         camera.rotation[2].xyz
     );
-    let rot_mat = transpose(rot_mat_T);
     let pos_world = g.position.xyz;
     let pos_cam = rot_mat * pos_world + camera.translation.xyz;
 
@@ -193,6 +198,16 @@ pub fn create_backward_shader(device: &Device) -> ShaderModule {
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Backward Shader"),
         source: wgpu::ShaderSource::Wgsl(BACKWARD_SHADER.into()),
+    })
+}
+
+/// WGSL shader for projection backward pass (2D→3D gradient computation).
+pub const PROJECT_BACKWARD_SHADER: &str = include_str!("project_backward.wgsl");
+
+pub fn create_project_backward_shader(device: &Device) -> ShaderModule {
+    device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Project Backward Shader"),
+        source: wgpu::ShaderSource::Wgsl(PROJECT_BACKWARD_SHADER.into()),
     })
 }
 

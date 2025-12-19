@@ -25,7 +25,7 @@ mod gradients;
 #[cfg(feature = "gpu")]
 pub use context::GpuContext;
 #[cfg(feature = "gpu")]
-pub use gradients::{GaussianGradients2D, chain_2d_to_3d_gradients};
+pub use gradients::{GaussianGradients2D, chain_2d_to_3d_gradients, chain_2d_to_3d_gradients_cpu};
 #[cfg(feature = "gpu")]
 pub use renderer::GpuRenderer;
 #[cfg(feature = "gpu")]

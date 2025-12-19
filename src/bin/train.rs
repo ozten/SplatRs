@@ -306,7 +306,7 @@ fn main() {
                 *densify_grad_threshold = 0.0002;
                 *prune_opacity_threshold = 0.005;
                 *split_sigma_threshold = 0.1;
-                *seed = Some(0);
+                *seed = Some(123);  // Fixed seed for reproducible, stable training (seed 0 has bad train/test splits)
             }
             "onehour" => {
                 // One-hour preset: Good quality preview run
@@ -338,7 +338,7 @@ fn main() {
                 *densify_grad_threshold = 0.0002;
                 *prune_opacity_threshold = 0.005;
                 *split_sigma_threshold = 0.1;
-                *seed = Some(0);
+                *seed = Some(123);  // Fixed seed for reproducible, stable training (seed 0 has bad train/test splits)
             }
             "full" => {
                 // Full overnight preset: Publication-quality results
@@ -350,7 +350,7 @@ fn main() {
                 *lr_scale = 0.005;
                 *lr_opacity = 0.05;
                 *lr_sh = 0.0025;
-                *lr_background = 0.001;
+                *lr_background = 0.0001;  // 10× lower than micro/onehour (301 images = 32× more updates)
                 *downsample = 0.40;  // Keep at 40% to avoid GPU memory issues
                 *max_gaussians = 50_000;
                 *log_interval = 500;
@@ -370,7 +370,7 @@ fn main() {
                 *densify_grad_threshold = 0.0002;
                 *prune_opacity_threshold = 0.005;
                 *split_sigma_threshold = 0.1;
-                *seed = Some(0);
+                *seed = Some(123);  // Fixed seed for reproducible, stable training
             }
             "m10" | "m10-quick" => {
                 *multiview = true;

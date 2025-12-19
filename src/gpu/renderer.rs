@@ -10,9 +10,11 @@ pub struct GpuRenderer {
     project_pipeline: ComputePipeline,
     rasterize_pipeline: ComputePipeline,
     backward_pipeline: ComputePipeline,
+    project_backward_pipeline: ComputePipeline,
     project_bind_group_layout: BindGroupLayout,
     rasterize_bind_group_layout: BindGroupLayout,
     backward_bind_group_layout: BindGroupLayout,
+    project_backward_bind_group_layout: BindGroupLayout,
 }
 
 impl GpuRenderer {
@@ -24,6 +26,7 @@ impl GpuRenderer {
         let project_shader = shaders::create_project_shader(&ctx.device);
         let rasterize_shader = shaders::create_rasterize_shader(&ctx.device);
         let backward_shader = shaders::create_backward_shader(&ctx.device);
+        let project_backward_shader = shaders::create_project_backward_shader(&ctx.device);
 
         // Create bind group layouts
         let project_bind_group_layout =
@@ -179,6 +182,69 @@ impl GpuRenderer {
                             },
                             count: None,
                         },
+                        // Per-pixel background gradient output (vec4<f32> per pixel)
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 5,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: false },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                    ],
+                });
+
+        let project_backward_bind_group_layout =
+            ctx.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("Project Backward Bind Group Layout"),
+                    entries: &[
+                        // Camera uniform
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 0,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        // 3D Gaussians input
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 1,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        // 2D Gradients input
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 2,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
+                        // 3D Gradients output
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 3,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Storage { read_only: false },
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
                     ],
                 });
 
@@ -235,14 +301,33 @@ impl GpuRenderer {
                     entry_point: "backward_pass",
                 });
 
+        let project_backward_pipeline_layout =
+            ctx.device
+                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("Project Backward Pipeline Layout"),
+                    bind_group_layouts: &[&project_backward_bind_group_layout],
+                    push_constant_ranges: &[],
+                });
+
+        let project_backward_pipeline =
+            ctx.device
+                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("Project Backward Pipeline"),
+                    layout: Some(&project_backward_pipeline_layout),
+                    module: &project_backward_shader,
+                    entry_point: "project_backward",
+                });
+
         Ok(Self {
             ctx,
             project_pipeline,
             rasterize_pipeline,
             backward_pipeline,
+            project_backward_pipeline,
             project_bind_group_layout,
             rasterize_bind_group_layout,
             backward_bind_group_layout,
+            project_backward_bind_group_layout,
         })
     }
 
@@ -407,10 +492,10 @@ impl GpuRenderer {
             BufferUsages::UNIFORM,
         );
 
-        let output_buffer = buffers::create_buffer(
+        let output_buffer = buffers::create_buffer_zeroed::<[f32; 4]>(
             &self.ctx.device,
             "Output Buffer",
-            (num_pixels * 4 * std::mem::size_of::<f32>()) as u64,
+            num_pixels,
             BufferUsages::STORAGE | BufferUsages::COPY_SRC,
         );
 
@@ -690,19 +775,18 @@ impl GpuRenderer {
             BufferUsages::UNIFORM,
         );
 
-        let output_buffer = buffers::create_buffer(
+        let output_buffer = buffers::create_buffer_zeroed::<[f32; 4]>(
             &self.ctx.device,
             "Output Buffer",
-            (num_pixels * 4 * std::mem::size_of::<f32>()) as u64,
+            num_pixels,
             BufferUsages::STORAGE | BufferUsages::COPY_SRC,
         );
 
         // Create intermediates buffer (ACTUALLY USED this time)
-        let intermediates_buffer = buffers::create_buffer(
+        let intermediates_buffer = buffers::create_buffer_zeroed::<ContributionGPU>(
             &self.ctx.device,
             "Intermediates Buffer",
-            (num_pixels * MAX_CONTRIBUTIONS_PER_PIXEL as usize
-                * std::mem::size_of::<ContributionGPU>()) as u64,
+            num_pixels * MAX_CONTRIBUTIONS_PER_PIXEL as usize,
             BufferUsages::STORAGE | BufferUsages::COPY_SRC, // Allow reading back
         );
 
@@ -752,13 +836,6 @@ impl GpuRenderer {
         }
 
         self.ctx.queue.submit(Some(encoder.finish()));
-
-        if enable_timing {
-            eprintln!(
-                "[GPU] Forward pass (with intermediates): {:?}",
-                t_start.unwrap().elapsed()
-            );
-        }
 
         // Debug: Inspect intermediates buffer if requested
         if std::env::var("SUGAR_GPU_DEBUG").is_ok() {
@@ -857,6 +934,15 @@ impl GpuRenderer {
             BufferUsages::STORAGE | BufferUsages::COPY_SRC,
         );
 
+        // Create per-pixel background gradient buffer (vec4<f32> per pixel)
+        // Each pixel stores its contribution to d_background, which we'll sum on CPU
+        let d_background_pixels_buffer = buffers::create_buffer_zeroed::<[f32; 4]>(
+            &self.ctx.device,
+            "Per-Pixel Background Gradients",
+            num_pixels,
+            BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+        );
+
         // Create backward params
         #[repr(C)]
         #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -924,6 +1010,10 @@ impl GpuRenderer {
                             binding: 4,
                             resource: pixel_grads_buffer.as_entire_binding(),
                         },
+                        wgpu::BindGroupEntry {
+                            binding: 5,
+                            resource: d_background_pixels_buffer.as_entire_binding(),
+                        },
                     ],
                 });
 
@@ -956,10 +1046,6 @@ impl GpuRenderer {
 
         self.ctx.queue.submit(Some(encoder.finish()));
 
-        if enable_timing {
-            eprintln!("[GPU] Backward pass: {:?}", t_backward.unwrap().elapsed());
-        }
-
         // Download per-pixel gradients
         let t_download = if enable_timing {
             Some(std::time::Instant::now())
@@ -975,13 +1061,6 @@ impl GpuRenderer {
             total_i32s,
         )
         .expect("Failed to read per-Gaussian gradients");
-
-        if enable_timing {
-            eprintln!(
-                "[GPU] Download gradients: {:?}",
-                t_download.unwrap().elapsed()
-            );
-        }
 
         // Convert from fixed-point i32 to f32 gradients
         // Shader uses FIXED_POINT_SCALE = 10000000.0
@@ -1010,6 +1089,22 @@ impl GpuRenderer {
             );
         }
 
+        // Download per-pixel background gradients and sum on CPU
+        let d_background_pixels: Vec<[f32; 4]> = buffers::read_buffer_blocking(
+            &self.ctx.device,
+            &self.ctx.queue,
+            &d_background_pixels_buffer,
+            num_pixels,
+        )
+        .expect("Failed to read per-pixel background gradients");
+
+        // Sum all per-pixel contributions to get total background gradient
+        let mut d_background_sum = Vector3::zeros();
+        for px in &d_background_pixels {
+            d_background_sum += Vector3::new(px[0], px[1], px[2]);
+        }
+        final_grads.d_background = d_background_sum;
+
         // Read output pixels
         let output: Vec<[f32; 4]> = buffers::read_buffer_blocking(
             &self.ctx.device,
@@ -1023,13 +1118,6 @@ impl GpuRenderer {
             .iter()
             .map(|rgba| Vector3::new(rgba[0], rgba[1], rgba[2]))
             .collect();
-
-        if enable_timing {
-            eprintln!(
-                "[GPU] Total render_with_gradients time: {:?}",
-                t_start.unwrap().elapsed()
-            );
-        }
 
         (pixels, final_grads)
     }
@@ -1202,17 +1290,17 @@ impl GpuRenderer {
         );
 
         // Rasterize forward pass with intermediates
-        let output_buffer = buffers::create_buffer(
+        let output_buffer = buffers::create_buffer_zeroed::<[f32; 4]>(
             &self.ctx.device,
             "Output Buffer",
-            (num_pixels * 4 * std::mem::size_of::<f32>()) as u64,
+            num_pixels,
             BufferUsages::STORAGE | BufferUsages::COPY_SRC,
         );
 
-        let intermediates_buffer = buffers::create_buffer(
+        let intermediates_buffer = buffers::create_buffer_zeroed::<ContributionGPU>(
             &self.ctx.device,
             "Intermediates Buffer",
-            (num_pixels * MAX_CONTRIBUTIONS_PER_PIXEL as usize * std::mem::size_of::<ContributionGPU>()) as u64,
+            num_pixels * MAX_CONTRIBUTIONS_PER_PIXEL as usize,
             BufferUsages::STORAGE,
         );
 
@@ -1282,10 +1370,6 @@ impl GpuRenderer {
 
         self.ctx.queue.submit(Some(encoder.finish()));
 
-        if enable_timing {
-            eprintln!("[GPU] Forward pass (project + rasterize): {:?}", t_start.as_ref().unwrap().elapsed());
-        }
-
         // Download rendered pixels from forward pass
         let output: Vec<[f32; 4]> = buffers::read_buffer_blocking(
             &self.ctx.device,
@@ -1314,6 +1398,15 @@ impl GpuRenderer {
             "d_pixels",
             &d_pixels_gpu,
             BufferUsages::STORAGE,
+        );
+
+        // Create per-pixel background gradient buffer (shared across all tiles)
+        // Each pixel stores its contribution to d_background, which we'll sum on CPU
+        let d_background_pixels_buffer = buffers::create_buffer_zeroed::<[f32; 4]>(
+            &self.ctx.device,
+            "Per-Pixel Background Gradients",
+            num_pixels,
+            BufferUsages::STORAGE | BufferUsages::COPY_SRC,
         );
 
         // Process each tile
@@ -1408,6 +1501,10 @@ impl GpuRenderer {
                             binding: 4,
                             resource: tile_grads_buffer.as_entire_binding(),
                         },
+                        wgpu::BindGroupEntry {
+                            binding: 5,
+                            resource: d_background_pixels_buffer.as_entire_binding(),
+                        },
                     ],
                 });
 
@@ -1449,13 +1546,227 @@ impl GpuRenderer {
                 "[GPU] All tiles processed: {:?}",
                 t_tiles_start.unwrap().elapsed()
             );
+        }
+
+        // Download per-pixel background gradients and sum on CPU
+        let d_background_pixels: Vec<[f32; 4]> = buffers::read_buffer_blocking(
+            &self.ctx.device,
+            &self.ctx.queue,
+            &d_background_pixels_buffer,
+            num_pixels,
+        )
+        .expect("Failed to read per-pixel background gradients");
+
+        // Sum all per-pixel contributions to get total background gradient
+        let mut d_background_sum = Vector3::zeros();
+        for px in &d_background_pixels {
+            d_background_sum += Vector3::new(px[0], px[1], px[2]);
+        }
+        final_grads.d_background = d_background_sum;
+
+        (pixels, final_grads)
+    }
+
+    /// Convert 2D gradients to 3D gradients using GPU projection backward pass.
+    ///
+    /// This takes the 2D gradients from rasterization backward (d_mean_px, d_cov_2d)
+    /// and chains them through the projection operations to get gradients w.r.t. 3D
+    /// Gaussian parameters (position, scale, rotation).
+    ///
+    /// # Arguments
+    /// * `gaussians` - Original 3D Gaussians (needed for forward data)
+    /// * `camera` - Camera parameters
+    /// * `gradients_2d` - 2D gradients from rasterization backward pass
+    ///
+    /// # Returns
+    /// Gradients w.r.t. 3D Gaussian parameters (d_position, d_log_scale, d_rotation, d_sh)
+    pub fn project_gradients_backward(
+        &self,
+        gaussians: &[Gaussian],
+        camera: &Camera,
+        gradients_2d: &crate::gpu::gradients::GaussianGradients2D,
+    ) -> (Vec<Vector3<f32>>, Vec<Vector3<f32>>, Vec<Vector3<f32>>, Vec<[[f32; 3]; 16]>) {
+        let enable_timing = std::env::var("SUGAR_GPU_TIMING").is_ok();
+        let t_start = if enable_timing {
+            Some(std::time::Instant::now())
+        } else {
+            None
+        };
+
+        let num_gaussians = gaussians.len();
+
+        // Check if gradients_2d is empty (signals CPU fallback)
+        if gradients_2d.d_colors.is_empty() {
+            eprintln!("[GPU WARNING] Empty 2D gradients, skipping projection backward");
+            return (
+                vec![Vector3::zeros(); num_gaussians],
+                vec![Vector3::zeros(); num_gaussians],
+                vec![Vector3::zeros(); num_gaussians],
+                vec![[[0.0; 3]; 16]; num_gaussians],
+            );
+        }
+
+        // 1. Upload 3D Gaussians
+        let gaussians_gpu: Vec<GaussianGPU> = gaussians
+            .iter()
+            .map(GaussianGPU::from_gaussian)
+            .collect();
+        let gaussians_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "3D Gaussians",
+            &gaussians_gpu,
+            BufferUsages::STORAGE,
+        );
+
+        // 2. Upload camera params
+        let camera_gpu = CameraGPU::from_camera(camera);
+        let camera_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "Camera",
+            &[camera_gpu],
+            BufferUsages::UNIFORM,
+        );
+
+        // 3. Upload 2D gradients
+        let mut gradients_2d_gpu = vec![GradientGPU::zero(); num_gaussians];
+        for i in 0..num_gaussians {
+            gradients_2d_gpu[i].d_color = [
+                gradients_2d.d_colors[i].x,
+                gradients_2d.d_colors[i].y,
+                gradients_2d.d_colors[i].z,
+                0.0,
+            ];
+            gradients_2d_gpu[i].d_opacity_logit_pad = [
+                gradients_2d.d_opacity_logits[i],
+                0.0,
+                0.0,
+                0.0,
+            ];
+            gradients_2d_gpu[i].d_mean_px = [
+                gradients_2d.d_mean_px[i].x,
+                gradients_2d.d_mean_px[i].y,
+                0.0,
+                0.0,
+            ];
+            gradients_2d_gpu[i].d_cov_2d = [
+                gradients_2d.d_cov_2d[i].x,
+                gradients_2d.d_cov_2d[i].y,
+                gradients_2d.d_cov_2d[i].z,
+                0.0,
+            ];
+        }
+
+        let gradients_2d_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "2D Gradients",
+            &gradients_2d_gpu,
+            BufferUsages::STORAGE,
+        );
+
+        // 4. Create output buffer for 3D gradients
+        let gradients_3d_buffer = buffers::create_buffer(
+            &self.ctx.device,
+            "3D Gradients",
+            (num_gaussians * std::mem::size_of::<Gradient3DGPU>()) as u64,
+            BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+        );
+
+        // 5. Create bind group
+        let bind_group = self
+            .ctx
+            .device
+            .create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Project Backward Bind Group"),
+                layout: &self.project_backward_bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: camera_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: gaussians_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: gradients_2d_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: gradients_3d_buffer.as_entire_binding(),
+                    },
+                ],
+            });
+
+        // 6. Dispatch compute shader
+        let mut encoder = self
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Project Backward Encoder"),
+            });
+
+        {
+            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Project Backward Pass"),
+                timestamp_writes: None,
+            });
+            compute_pass.set_pipeline(&self.project_backward_pipeline);
+            compute_pass.set_bind_group(0, &bind_group, &[]);
+            compute_pass.dispatch_workgroups((num_gaussians as u32 + 255) / 256, 1, 1);
+        }
+
+        self.ctx.queue.submit(Some(encoder.finish()));
+
+        if enable_timing {
             eprintln!(
-                "[GPU] Total render_with_gradients_tiled time: {:?}",
+                "[GPU] Projection backward dispatch: {:?}",
                 t_start.unwrap().elapsed()
             );
         }
 
-        (pixels, final_grads)
+        // 7. Download results
+        let gradients_3d_gpu: Vec<Gradient3DGPU> = buffers::read_buffer_blocking(
+            &self.ctx.device,
+            &self.ctx.queue,
+            &gradients_3d_buffer,
+            num_gaussians,
+        )
+        .expect("Failed to read 3D gradients");
+
+        if enable_timing {
+            eprintln!(
+                "[GPU] Total projection backward: {:?}",
+                t_start.unwrap().elapsed()
+            );
+        }
+
+        // 8. Convert to Rust format
+        let mut d_positions = vec![Vector3::zeros(); num_gaussians];
+        let mut d_log_scales = vec![Vector3::zeros(); num_gaussians];
+        let mut d_rotations = vec![Vector3::zeros(); num_gaussians];
+        let mut d_sh = vec![[[0.0f32; 3]; 16]; num_gaussians];
+
+        for i in 0..num_gaussians {
+            let grad = &gradients_3d_gpu[i];
+
+            d_positions[i] = Vector3::new(grad.d_position[0], grad.d_position[1], grad.d_position[2]);
+
+            d_log_scales[i] = Vector3::new(grad.d_log_scale[0], grad.d_log_scale[1], grad.d_log_scale[2]);
+
+            // NOTE: These are SO(3) vector gradients from the shader
+            // They need to be converted to quaternion gradients for the optimizer
+            d_rotations[i] = Vector3::new(grad.d_rotation[0], grad.d_rotation[1], grad.d_rotation[2]);
+
+            // SH gradients
+            for j in 0..16 {
+                d_sh[i][j][0] = grad.d_sh[j][0];
+                d_sh[i][j][1] = grad.d_sh[j][1];
+                d_sh[i][j][2] = grad.d_sh[j][2];
+            }
+        }
+
+        (d_positions, d_log_scales, d_rotations, d_sh)
     }
 }
 

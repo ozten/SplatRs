@@ -410,8 +410,20 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
                     // Fall back to CPU
                     render_full_color_grads(&gaussians, &camera, &d_image, &bg)
                 } else {
-                    // GPU gradients succeeded
-                    let (d_pos, d_scales, d_rots, d_background) = crate::gpu::chain_2d_to_3d_gradients(&grads_2d, &gaussians, &camera);
+                    // TEMPORARY: CPU projection backward is default due to GPU shader bug
+                    // Use SUGAR_GPU_GRADIENTS=1 to enable GPU projection backward (experimental)
+                    let use_gpu_projection = std::env::var("SUGAR_GPU_GRADIENTS").is_ok();
+
+                    let (d_pos, d_scales, d_rots, d_background) = if use_gpu_projection {
+                        // GPU projection backward (experimental - has bugs with full parameter training)
+                        let (d_positions, d_log_scales, d_rotations, _d_sh) =
+                            renderer.project_gradients_backward(&gaussians, &camera, &grads_2d);
+                        (d_positions, d_log_scales, d_rotations, grads_2d.d_background)
+                    } else {
+                        // CPU projection backward (default, stable)
+                        crate::gpu::chain_2d_to_3d_gradients_cpu(&grads_2d, &gaussians, &camera)
+                    };
+
                     let dummy_img = image::RgbImage::new(camera.width, camera.height);
                     (dummy_img, grads_2d.d_colors, grads_2d.d_opacity_logits, d_pos, d_scales, d_rots, d_background)
                 }
@@ -1002,6 +1014,27 @@ pub fn train_multiview_color_only(
         ));
     }
 
+    // GPU hard cap: Metal on Apple Silicon has 128 MB max buffer size
+    // GaussianGPU is ~320 bytes, so theoretical max is ~419K Gaussians
+    // We enforce a conservative limit of 400K to stay safely under the buffer limit
+    const GPU_HARD_CAP_GAUSSIANS: usize = 400_000;
+
+    #[cfg(feature = "gpu")]
+    if cfg.use_gpu && cfg.densify_max_gaussians > GPU_HARD_CAP_GAUSSIANS {
+        eprintln!(
+            "⚠️  WARNING: densify_max_gaussians ({}) exceeds GPU hard limit ({})",
+            cfg.densify_max_gaussians, GPU_HARD_CAP_GAUSSIANS
+        );
+        eprintln!(
+            "⚠️  Metal GPU buffer limit is 128 MB. Setting will be clamped to {} Gaussians.",
+            GPU_HARD_CAP_GAUSSIANS
+        );
+        eprintln!(
+            "⚠️  To avoid this warning, set --densify-max-gaussians {} or lower.",
+            GPU_HARD_CAP_GAUSSIANS
+        );
+    }
+
     // Split images into train/test sets
     let mut image_indices: Vec<usize> = (0..available_images).collect();
 
@@ -1373,8 +1406,20 @@ pub fn train_multiview_color_only(
                     // Fall back to CPU
                     render_full_color_grads(&gaussians, &train_camera, &d_image, &bg)
                 } else {
-                    // GPU gradients succeeded
-                    let (d_pos, d_scales, d_rots, d_background) = crate::gpu::chain_2d_to_3d_gradients(&grads_2d, &gaussians, &train_camera);
+                    // TEMPORARY: CPU projection backward is default due to GPU shader bug
+                    // Use SUGAR_GPU_GRADIENTS=1 to enable GPU projection backward (experimental)
+                    let use_gpu_projection = std::env::var("SUGAR_GPU_GRADIENTS").is_ok();
+
+                    let (d_pos, d_scales, d_rots, d_background) = if use_gpu_projection {
+                        // GPU projection backward (experimental - has bugs with full parameter training)
+                        let (d_positions, d_log_scales, d_rotations, _d_sh) =
+                            renderer.project_gradients_backward(&gaussians, &train_camera, &grads_2d);
+                        (d_positions, d_log_scales, d_rotations, grads_2d.d_background)
+                    } else {
+                        // CPU projection backward (default, stable)
+                        crate::gpu::chain_2d_to_3d_gradients_cpu(&grads_2d, &gaussians, &train_camera)
+                    };
+
                     let dummy_img = image::RgbImage::new(train_camera.width, train_camera.height);
                     (dummy_img, grads_2d.d_colors, grads_2d.d_opacity_logits, d_pos, d_scales, d_rots, d_background)
                 }
@@ -1590,6 +1635,14 @@ pub fn train_multiview_color_only(
             && (iter + 1) < cfg.iters
         {
             let before = gaussians.len();
+
+            // Enforce GPU hard cap to prevent buffer overflow
+            let effective_max_gaussians = if cfg.use_gpu {
+                cfg.densify_max_gaussians.min(GPU_HARD_CAP_GAUSSIANS)
+            } else {
+                cfg.densify_max_gaussians
+            };
+
             let stats = densify_and_prune(
                 &mut gaussians,
                 &mut sh_params,
@@ -1600,7 +1653,7 @@ pub fn train_multiview_color_only(
                 &mut grad_accum_pos_norm,
                 &mut rng,
                 grad_window_iters,
-                cfg.densify_max_gaussians,
+                effective_max_gaussians,
                 cfg.densify_grad_threshold,
                 cfg.prune_opacity_threshold,
                 cfg.split_sigma_threshold,

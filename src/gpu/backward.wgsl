@@ -49,6 +49,7 @@ struct BackwardParams {
 @group(0) @binding(2) var<storage, read> gaussians: array<Gaussian2D>;
 @group(0) @binding(3) var<storage, read> d_pixels: array<vec4<f32>>;  // Upstream gradients
 @group(0) @binding(4) var<storage, read_write> gradient_atomic: array<atomic<i32>>;  // Per-Gaussian gradients as atomic i32 (16 i32s per Gaussian)
+@group(0) @binding(5) var<storage, read_write> d_background_pixels: array<vec4<f32>>;  // Per-pixel background gradient contribution (f32, summed on CPU)
 
 // Maximum contributions per pixel (must match Rust constant)
 const MAX_CONTRIBUTIONS_PER_PIXEL: u32 = 16u;
@@ -99,6 +100,9 @@ fn atomic_add_f32(index: u32, value: f32) {
     let scaled = i32(value * FIXED_POINT_SCALE);
     atomicAdd(&gradient_atomic[index], scaled);
 }
+
+// Note: Background gradient is now stored per-pixel (not atomic) to avoid i32 overflow
+// when summing across thousands of pixels. The CPU will sum the per-pixel contributions.
 
 // Gradient buffer layout (16 i32s per Gaussian):
 // [0-3]: d_color (vec4<f32> as fixed-point i32)
@@ -339,7 +343,18 @@ fn backward_pass(
     // dL/d(bg) = d_out * T_final
     //
     // T_final = T_0 * prod(1 - a_i) for all contributions
-    // This is g_t_next after the loop completes
-    //
-    // For now, we skip background gradient (can add later if needed)
+    // We need to compute this by going forward through contributions
+    var t_final = 1.0;  // T_0 = 1.0
+    for (var i = 0u; i < num_contribs; i++) {
+        let contrib = intermediates[base_contrib_idx + i];
+        let alpha = contrib.alpha;
+        t_final *= (1.0 - alpha);
+    }
+
+    // dL/d(bg) = d_out * T_final
+    let d_background = d_out * t_final;
+
+    // Store per-pixel background gradient (CPU will sum all pixels)
+    // Use pixel_idx (global pixel index) for storage
+    d_background_pixels[pixel_idx] = vec4<f32>(d_background, 0.0);
 }

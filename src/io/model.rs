@@ -591,6 +591,7 @@ mod tests {
             training_width: 256,
             training_height: 256,
             training_downsample_factor: 0.25,
+            dataset_path: String::new(),
         };
 
         // Save and load

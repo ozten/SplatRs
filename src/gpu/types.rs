@@ -46,11 +46,12 @@ impl GaussianGPU {
         Self {
             position: [g.position.x, g.position.y, g.position.z, 0.0],
             scale: [g.scale.x, g.scale.y, g.scale.z, 0.0],
+            // CRITICAL: Shader expects (w, x, y, z) at (q.x, q.y, q.z, q.w)
             rotation: [
-                g.rotation.i,
-                g.rotation.j,
-                g.rotation.k,
-                g.rotation.w,
+                g.rotation.w,  // w at q.x
+                g.rotation.i,  // x (i) at q.y
+                g.rotation.j,  // y (j) at q.z
+                g.rotation.k,  // z (k) at q.w
             ],
             opacity_pad: [g.opacity, 0.0, 0.0, 0.0],
             sh_coeffs,
@@ -104,10 +105,12 @@ impl CameraGPU {
         Self {
             focal: [camera.fx, camera.fy, camera.cx, camera.cy],
             dims: [camera.width, camera.height, 0, 0],
+            // CRITICAL: WGSL mat3x3 is column-major, so we upload columns (transpose of row-major)
+            // Each array below represents one column of the matrix
             rotation: [
-                [r[(0, 0)], r[(0, 1)], r[(0, 2)], 0.0],
-                [r[(1, 0)], r[(1, 1)], r[(1, 2)], 0.0],
-                [r[(2, 0)], r[(2, 1)], r[(2, 2)], 0.0],
+                [r[(0, 0)], r[(1, 0)], r[(2, 0)], 0.0],  // Column 0
+                [r[(0, 1)], r[(1, 1)], r[(2, 1)], 0.0],  // Column 1
+                [r[(0, 2)], r[(1, 2)], r[(2, 2)], 0.0],  // Column 2
             ],
             translation: [camera.translation.x, camera.translation.y, camera.translation.z, 0.0],
         }
@@ -191,6 +194,38 @@ impl GradientGPU {
             d_opacity_logit_pad: [0.0; 4],
             d_mean_px: [0.0; 4],
             d_cov_2d: [0.0; 4],
+        }
+    }
+}
+
+/// GPU representation of 3D gradients for a single Gaussian.
+///
+/// This is the output of the projection backward shader.
+/// Gradients w.r.t. 3D Gaussian parameters.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct Gradient3DGPU {
+    /// Gradient w.r.t. 3D position (x, y, z, padding)
+    pub d_position: [f32; 4],
+
+    /// Gradient w.r.t. log-scale (x, y, z, padding)
+    pub d_log_scale: [f32; 4],
+
+    /// Gradient w.r.t. rotation (SO(3) vector or quaternion, w,x,y,z)
+    pub d_rotation: [f32; 4],
+
+    /// Gradient w.r.t. SH coefficients (16 RGB triplets = 64 floats)
+    pub d_sh: [[f32; 4]; 16],
+}
+
+impl Gradient3DGPU {
+    /// Create a zero gradient (for initialization).
+    pub const fn zero() -> Self {
+        Self {
+            d_position: [0.0; 4],
+            d_log_scale: [0.0; 4],
+            d_rotation: [0.0; 4],
+            d_sh: [[0.0; 4]; 16],
         }
     }
 }

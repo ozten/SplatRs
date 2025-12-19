@@ -162,14 +162,14 @@ pub fn reduce_workgroup_gradients(
     final_grads
 }
 
-/// Chain 2D gradients from GPU to 3D Gaussian parameters.
+/// Chain 2D gradients from GPU to 3D Gaussian parameters (CPU implementation).
 ///
 /// This takes the 2D gradients (d_mean_px, d_cov_2d) and chains them through
 /// the projection operations to get gradients w.r.t. 3D parameters (position,
 /// scale, rotation).
 ///
 /// Returns: (d_positions, d_log_scales, d_rot_vecs, d_background)
-pub fn chain_2d_to_3d_gradients(
+pub fn chain_2d_to_3d_gradients_cpu(
     grads_2d: &GaussianGradients2D,
     gaussians: &[Gaussian],
     camera: &Camera,
@@ -235,6 +235,22 @@ pub fn chain_2d_to_3d_gradients(
     }
 
     (d_positions, d_log_scales, d_rot_vecs, grads_2d.d_background)
+}
+
+/// Chain 2D gradients to 3D Gaussian parameters.
+///
+/// DEPRECATED: This function is no longer used by the trainer.
+/// The trainer now calls GpuRenderer::project_gradients_backward() directly for GPU,
+/// or chain_2d_to_3d_gradients_cpu() for legacy CPU mode (SUGAR_CPU_GRADIENTS=1).
+///
+/// Returns: (d_positions, d_log_scales, d_rot_vecs, d_background)
+pub fn chain_2d_to_3d_gradients(
+    grads_2d: &GaussianGradients2D,
+    gaussians: &[Gaussian],
+    camera: &Camera,
+) -> (Vec<Vector3<f32>>, Vec<Vector3<f32>>, Vec<Vector3<f32>>, Vector3<f32>) {
+    // Always use CPU implementation for legacy compatibility
+    chain_2d_to_3d_gradients_cpu(grads_2d, gaussians, camera)
 }
 
 #[cfg(test)]

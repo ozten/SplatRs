@@ -35,6 +35,44 @@ pub fn create_buffer(
     })
 }
 
+/// Create a zero-initialized output buffer.
+///
+/// This ensures deterministic behavior by initializing all memory to zero
+/// before the GPU shader runs. Critical for output buffers where not all
+/// elements may be written by the shader.
+///
+/// # Why This Matters
+///
+/// GPU buffers created with `mapped_at_creation: false` contain uninitialized
+/// memory (random garbage). This causes non-deterministic rendering when pixels
+/// aren't written by shaders, leading to training catastrophes where gradients
+/// are computed from garbage values.
+///
+/// # Usage
+///
+/// ```ignore
+/// // Before (WRONG - uninitialized):
+/// let buffer = create_buffer(device, "Output", size, usage);
+///
+/// // After (CORRECT - zero-initialized):
+/// let buffer = create_buffer_zeroed::<[f32; 4]>(device, "Output", count, usage);
+/// ```
+pub fn create_buffer_zeroed<T: bytemuck::Pod + Clone>(
+    device: &Device,
+    label: &str,
+    count: usize,
+    usage: BufferUsages,
+) -> Buffer {
+    use wgpu::util::DeviceExt;
+
+    let data = vec![T::zeroed(); count];
+    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some(label),
+        contents: bytemuck::cast_slice(&data),
+        usage,
+    })
+}
+
 /// Read data back from GPU buffer to CPU.
 pub async fn read_buffer<T: bytemuck::Pod>(
     device: &Device,
