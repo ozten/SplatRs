@@ -100,19 +100,42 @@ impl Camera {
 
     /// Get the view matrix (world to camera transform as 4×4 matrix).
     ///
-    /// Used for certain operations where homogeneous coordinates are convenient.
+    /// Constructs a 4×4 homogeneous transformation matrix:
+    /// ```text
+    /// [ R | t ]
+    /// [ 0 | 1 ]
+    /// ```
+    /// where R is the 3×3 rotation matrix and t is the translation vector.
     pub fn view_matrix(&self) -> Matrix4<f32> {
-        // TODO: Implement for M4
-        // Construct 4×4 matrix: [R | t]
-        //                       [0 | 1]
-        unimplemented!("See M4 - view matrix construction")
+        Matrix4::new(
+            self.rotation[(0, 0)], self.rotation[(0, 1)], self.rotation[(0, 2)], self.translation.x,
+            self.rotation[(1, 0)], self.rotation[(1, 1)], self.rotation[(1, 2)], self.translation.y,
+            self.rotation[(2, 0)], self.rotation[(2, 1)], self.rotation[(2, 2)], self.translation.z,
+            0.0, 0.0, 0.0, 1.0,
+        )
     }
 
     /// Get the projection matrix (camera to pixel transform as 4×4 matrix).
+    ///
+    /// Returns an OpenGL-style projection matrix for a pinhole camera.
+    /// This maps camera space coordinates to normalized device coordinates (NDC),
+    /// then to pixel coordinates.
+    ///
+    /// Note: This assumes a simple pinhole projection without near/far clipping planes.
+    /// For rendering pipelines that need proper depth buffering, you may need to
+    /// construct a more complete perspective projection matrix.
     pub fn projection_matrix(&self) -> Matrix4<f32> {
-        // TODO: Implement for M4
-        // Standard pinhole projection matrix
-        unimplemented!("See M4 - projection matrix construction")
+        // Intrinsic matrix K in homogeneous coordinates:
+        // [ fx  0  cx  0 ]
+        // [ 0  fy  cy  0 ]
+        // [ 0   0   1  0 ]
+        // [ 0   0   0  1 ]
+        Matrix4::new(
+            self.fx, 0.0,     self.cx, 0.0,
+            0.0,     self.fy, self.cy, 0.0,
+            0.0,     0.0,     1.0,     0.0,
+            0.0,     0.0,     0.0,     1.0,
+        )
     }
 
     /// Compute the Jacobian of perspective projection at a given point.

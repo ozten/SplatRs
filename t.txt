@@ -139,3 +139,28 @@ iter 1201/2000 start  view=IMG_0909.jpg  gaussians=585  res=714x535
 iter 1201/2000 done   train_loss=0.145335  forward=10.35ms backward=41.43ms step=38.25µs total=52.44ms
 iter 1301/2000 start  view=IMG_0911.jpg  gaussians=585  res=714x535
 iter 1301/2000 done   train_loss=0.138160  forward=10.62ms backward=43.81ms step=36.08µs total=54.98ms
+iter 1401/2000 start  view=IMG_0912.jpg  gaussians=585  res=714x535
+iter 1401/2000 done   train_loss=0.143239  forward=11.81ms backward=46.36ms step=36.13µs total=58.79ms
+iter 1500/2000  train_loss=0.138203  test_psnr=13.31 dB  bg=(0.242,0.176,0.134)  center=(-2.00,1.26,13.56)  bounds=[-9.58,-4.79,8.72]->[7.65,5.61,17.90]
+densify @iter 1500/2000: gaussians 585 -> 766 (kept=585 pruned=0 split=177 cloned=4 cap_hit=false grad_p50=0.0000 grad_p90=1.4120)
+iter 1501/2000 start  view=IMG_0909.jpg  gaussians=766  res=714x535
+iter 1501/2000 done   train_loss=0.145059  forward=13.04ms backward=52.03ms step=48.75µs total=65.77ms
+iter 1601/2000 start  view=IMG_0909.jpg  gaussians=766  res=714x535
+iter 1601/2000 done   train_loss=0.144890  forward=11.12ms backward=47.39ms step=58.25µs total=59.25ms
+iter 1701/2000 start  view=IMG_0909.jpg  gaussians=766  res=714x535
+iter 1701/2000 done   train_loss=0.144549  forward=12.49ms backward=45.15ms step=43.25µs total=58.26ms
+iter 1801/2000 start  view=IMG_0912.jpg  gaussians=766  res=714x535
+iter 1801/2000 done   train_loss=0.143026  forward=13.95ms backward=54.19ms step=54.13µs total=68.85ms
+iter 1901/2000 start  view=IMG_0909.jpg  gaussians=766  res=714x535
+iter 1901/2000 done   train_loss=0.144612  forward=12.36ms backward=43.89ms step=43.50µs total=56.90ms
+iter 2000/2000 start  view=IMG_0909.jpg  gaussians=766  res=714x535
+iter 2000/2000  train_loss=0.144346  test_psnr=13.31 dB  bg=(0.235,0.171,0.135)  center=(-2.27,1.33,13.21)  bounds=[-9.59,-4.80,8.71]->[7.65,5.63,17.90]
+
+✅ Multi-view training complete!
+Initial test PSNR: 13.03 dB
+Final test PSNR:   13.30 dB
+Improvement:       0.27 dB
+M8 metrics: initial_psnr=13.03dB final_psnr=13.30dB train_loss=0.144346 gaussians=445->766 densify_events=3
+Saved `runs/20251219_2346_micro/m8_test_view_rendered.png`
+Saved `runs/20251219_2346_micro/m8_test_view_target.png`
+Saved model to `runs/20251219_2346_micro/model.gs`

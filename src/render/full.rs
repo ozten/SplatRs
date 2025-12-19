@@ -76,6 +76,17 @@ impl FullRenderer {
             .filter_map(|(i, g)| project_gaussian(g, camera, i))
             .collect();
 
+        // Filter out NaN depths to prevent sorting panic
+        let original_count = projected.len();
+        projected.retain(|g| g.mean.z.is_finite());
+        let filtered_count = original_count - projected.len();
+        if filtered_count > 0 {
+            eprintln!(
+                "[RENDER WARNING] Filtered {} Gaussians with invalid depth values",
+                filtered_count
+            );
+        }
+
         // Front-to-back (small z first) for early termination.
         projected.sort_by(|a, b| a.mean.z.partial_cmp(&b.mean.z).unwrap());
 

@@ -117,6 +117,7 @@ fn read_cameras_bin(path: &Path) -> Result<HashMap<u32, Camera>, LoadError> {
 
     let num_cameras = reader.read_u64::<LittleEndian>()?;
     let mut cameras = HashMap::with_capacity(num_cameras as usize);
+    let mut has_distortion_models = false; // Track if any cameras have distortion
 
     for _ in 0..num_cameras {
         let camera_id = reader.read_u32::<LittleEndian>()?;
@@ -164,6 +165,7 @@ fn read_cameras_bin(path: &Path) -> Result<HashMap<u32, Camera>, LoadError> {
             }
             2 | 3 => {
                 // SIMPLE_RADIAL / RADIAL: f, cx, cy, k...
+                has_distortion_models = true;
                 let f = reader.read_f64::<LittleEndian>()? as f32;
                 let cx = reader.read_f64::<LittleEndian>()? as f32;
                 let cy = reader.read_f64::<LittleEndian>()? as f32;
@@ -187,6 +189,7 @@ fn read_cameras_bin(path: &Path) -> Result<HashMap<u32, Camera>, LoadError> {
             }
             4 => {
                 // OPENCV: fx, fy, cx, cy, k1, k2, p1, p2
+                has_distortion_models = true;
                 let fx = reader.read_f64::<LittleEndian>()? as f32;
                 let fy = reader.read_f64::<LittleEndian>()? as f32;
                 let cx = reader.read_f64::<LittleEndian>()? as f32;
@@ -210,6 +213,7 @@ fn read_cameras_bin(path: &Path) -> Result<HashMap<u32, Camera>, LoadError> {
             }
             5 => {
                 // OPENCV_FISHEYE: fx, fy, cx, cy, k1, k2, k3, k4
+                has_distortion_models = true;
                 let fx = reader.read_f64::<LittleEndian>()? as f32;
                 let fy = reader.read_f64::<LittleEndian>()? as f32;
                 let cx = reader.read_f64::<LittleEndian>()? as f32;
@@ -235,6 +239,22 @@ fn read_cameras_bin(path: &Path) -> Result<HashMap<u32, Camera>, LoadError> {
         };
 
         cameras.insert(camera_id, camera);
+    }
+
+    // Warn if distortion parameters were ignored
+    if has_distortion_models {
+        eprintln!();
+        eprintln!("⚠️  WARNING: COLMAP distortion parameters ignored");
+        eprintln!("   Detected non-pinhole camera models (RADIAL, OPENCV, or FISHEYE).");
+        eprintln!("   This implementation assumes images are already undistorted.");
+        eprintln!();
+        eprintln!("   If using raw distorted images, projections will be systematically wrong.");
+        eprintln!("   To fix: Use COLMAP's image_undistorter to preprocess your dataset:");
+        eprintln!("     colmap image_undistorter \\");
+        eprintln!("       --image_path /path/to/images \\");
+        eprintln!("       --input_path /path/to/sparse/0 \\");
+        eprintln!("       --output_path /path/to/undistorted");
+        eprintln!();
     }
 
     Ok(cameras)

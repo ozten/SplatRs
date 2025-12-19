@@ -87,6 +87,17 @@ impl SimpleRenderer {
             })
             .collect();
 
+        // Filter out NaN depths to prevent sorting panic
+        let original_count = projected.len();
+        projected.retain(|g| g.depth.is_finite());
+        let filtered_count = original_count - projected.len();
+        if filtered_count > 0 {
+            eprintln!(
+                "[SIMPLE RENDER WARNING] Filtered {} Gaussians with invalid depth values",
+                filtered_count
+            );
+        }
+
         // Sort by depth (front to back for early termination)
         projected.sort_by(|a, b| a.depth.partial_cmp(&b.depth).unwrap());
 
