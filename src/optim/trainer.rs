@@ -1139,7 +1139,31 @@ pub fn train_multiview_color_only(
             let camera = downsample_camera(&camera_full, cfg.downsample_factor);
 
             let target = load_target_image(&cfg.images_dir, &image_info.name)?;
-            let target_ds = downsample_image_smart(&target, camera.width, camera.height, cfg.downsample_factor);
+
+            // Important: Downsample the image independently, then adjust camera to match actual image size
+            // This handles cases where COLMAP camera dimensions don't match actual image file dimensions
+            let target_ds = if (cfg.downsample_factor - 1.0).abs() < 0.001 {
+                target.clone()
+            } else {
+                // Determine target dimensions from actual image, not camera
+                let target_width = ((target.width() as f32) * cfg.downsample_factor).round().max(1.0) as u32;
+                let target_height = ((target.height() as f32) * cfg.downsample_factor).round().max(1.0) as u32;
+                downsample_image_smart(&target, target_width, target_height, cfg.downsample_factor)
+            };
+
+            // Adjust camera to match actual downsampled image dimensions
+            let mut camera = camera;
+            if camera.width != target_ds.width() || camera.height != target_ds.height() {
+                let scale_x = target_ds.width() as f32 / camera.width as f32;
+                let scale_y = target_ds.height() as f32 / camera.height as f32;
+                camera.width = target_ds.width();
+                camera.height = target_ds.height();
+                camera.fx *= scale_x;
+                camera.fy *= scale_y;
+                camera.cx *= scale_x;
+                camera.cy *= scale_y;
+            }
+
             let target_linear = rgb8_to_linear_vec(&target_ds);
 
             view_cache.insert(
@@ -1302,8 +1326,28 @@ pub fn train_multiview_color_only(
                 let test_camera = downsample_camera(&test_camera_full, cfg.downsample_factor);
 
                 let test_target = load_target_image(&cfg.images_dir, &test_image_info.name)?;
-                let test_target_ds =
-                    downsample_image_smart(&test_target, test_camera.width, test_camera.height, cfg.downsample_factor);
+
+                // Downsample image and adjust camera to match actual image dimensions
+                let test_target_ds = if (cfg.downsample_factor - 1.0).abs() < 0.001 {
+                    test_target.clone()
+                } else {
+                    let target_width = ((test_target.width() as f32) * cfg.downsample_factor).round().max(1.0) as u32;
+                    let target_height = ((test_target.height() as f32) * cfg.downsample_factor).round().max(1.0) as u32;
+                    downsample_image_smart(&test_target, target_width, target_height, cfg.downsample_factor)
+                };
+
+                let mut test_camera = test_camera;
+                if test_camera.width != test_target_ds.width() || test_camera.height != test_target_ds.height() {
+                    let scale_x = test_target_ds.width() as f32 / test_camera.width as f32;
+                    let scale_y = test_target_ds.height() as f32 / test_camera.height as f32;
+                    test_camera.width = test_target_ds.width();
+                    test_camera.height = test_target_ds.height();
+                    test_camera.fx *= scale_x;
+                    test_camera.fy *= scale_y;
+                    test_camera.cx *= scale_x;
+                    test_camera.cy *= scale_y;
+                }
+
                 let test_target_linear = rgb8_to_linear_vec(&test_target_ds);
                 (test_camera, test_target_linear)
             };
@@ -1378,8 +1422,31 @@ pub fn train_multiview_color_only(
             let train_camera = downsample_camera(&train_camera_full, cfg.downsample_factor);
 
             let train_target = load_target_image(&cfg.images_dir, &train_image_info.name)?;
-            let train_target_ds =
-                downsample_image_smart(&train_target, train_camera.width, train_camera.height, cfg.downsample_factor);
+
+            // Important: Downsample the image independently, then adjust camera to match actual image size
+            // This handles cases where COLMAP camera dimensions don't match actual image file dimensions
+            let train_target_ds = if (cfg.downsample_factor - 1.0).abs() < 0.001 {
+                train_target.clone()
+            } else {
+                // Determine target dimensions from actual image, not camera
+                let target_width = ((train_target.width() as f32) * cfg.downsample_factor).round().max(1.0) as u32;
+                let target_height = ((train_target.height() as f32) * cfg.downsample_factor).round().max(1.0) as u32;
+                downsample_image_smart(&train_target, target_width, target_height, cfg.downsample_factor)
+            };
+
+            // Adjust camera to match actual downsampled image dimensions
+            let mut train_camera = train_camera;
+            if train_camera.width != train_target_ds.width() || train_camera.height != train_target_ds.height() {
+                let scale_x = train_target_ds.width() as f32 / train_camera.width as f32;
+                let scale_y = train_target_ds.height() as f32 / train_camera.height as f32;
+                train_camera.width = train_target_ds.width();
+                train_camera.height = train_target_ds.height();
+                train_camera.fx *= scale_x;
+                train_camera.fy *= scale_y;
+                train_camera.cx *= scale_x;
+                train_camera.cy *= scale_y;
+            }
+
             let train_target_linear = rgb8_to_linear_vec(&train_target_ds);
             (train_camera, train_target_linear)
         };
@@ -1623,8 +1690,28 @@ pub fn train_multiview_color_only(
                     let test_camera = downsample_camera(&test_camera_full, cfg.downsample_factor);
 
                     let test_target = load_target_image(&cfg.images_dir, &test_image_info.name)?;
-                    let test_target_ds =
-                        downsample_image_smart(&test_target, test_camera.width, test_camera.height, cfg.downsample_factor);
+
+                    // Downsample image and adjust camera to match actual image dimensions
+                    let test_target_ds = if (cfg.downsample_factor - 1.0).abs() < 0.001 {
+                        test_target.clone()
+                    } else {
+                        let target_width = ((test_target.width() as f32) * cfg.downsample_factor).round().max(1.0) as u32;
+                        let target_height = ((test_target.height() as f32) * cfg.downsample_factor).round().max(1.0) as u32;
+                        downsample_image_smart(&test_target, target_width, target_height, cfg.downsample_factor)
+                    };
+
+                    let mut test_camera = test_camera;
+                    if test_camera.width != test_target_ds.width() || test_camera.height != test_target_ds.height() {
+                        let scale_x = test_target_ds.width() as f32 / test_camera.width as f32;
+                        let scale_y = test_target_ds.height() as f32 / test_camera.height as f32;
+                        test_camera.width = test_target_ds.width();
+                        test_camera.height = test_target_ds.height();
+                        test_camera.fx *= scale_x;
+                        test_camera.fy *= scale_y;
+                        test_camera.cx *= scale_x;
+                        test_camera.cy *= scale_y;
+                    }
+
                     let test_target_linear = rgb8_to_linear_vec(&test_target_ds);
                     (test_camera, test_target_linear)
                 };
@@ -1831,8 +1918,28 @@ pub fn train_multiview_color_only(
             let test_camera = downsample_camera(&test_camera_full, cfg.downsample_factor);
 
             let test_target = load_target_image(&cfg.images_dir, &test_image_info.name)?;
-            let test_target_ds =
-                downsample_image_smart(&test_target, test_camera.width, test_camera.height, cfg.downsample_factor);
+
+            // Downsample image and adjust camera to match actual image dimensions
+            let test_target_ds = if (cfg.downsample_factor - 1.0).abs() < 0.001 {
+                test_target.clone()
+            } else {
+                let target_width = ((test_target.width() as f32) * cfg.downsample_factor).round().max(1.0) as u32;
+                let target_height = ((test_target.height() as f32) * cfg.downsample_factor).round().max(1.0) as u32;
+                downsample_image_smart(&test_target, target_width, target_height, cfg.downsample_factor)
+            };
+
+            let mut test_camera = test_camera;
+            if test_camera.width != test_target_ds.width() || test_camera.height != test_target_ds.height() {
+                let scale_x = test_target_ds.width() as f32 / test_camera.width as f32;
+                let scale_y = test_target_ds.height() as f32 / test_camera.height as f32;
+                test_camera.width = test_target_ds.width();
+                test_camera.height = test_target_ds.height();
+                test_camera.fx *= scale_x;
+                test_camera.fy *= scale_y;
+                test_camera.cx *= scale_x;
+                test_camera.cy *= scale_y;
+            }
+
             let test_target_linear = rgb8_to_linear_vec(&test_target_ds);
             (test_camera, test_target_ds, test_target_linear)
         };
