@@ -19,7 +19,11 @@ fn project_gaussian(
 ) -> Option<Gaussian2D> {
     // 1) Transform mean to camera space.
     let mean_cam = camera.world_to_camera(&gaussian.position);
-    if mean_cam.z <= 0.0 {
+
+    // Cull if behind camera OR too close to near plane
+    // Near-plane threshold prevents huge splats from divide-by-near-zero in Jacobian
+    const NEAR_PLANE: f32 = 0.01;
+    if mean_cam.z <= NEAR_PLANE {
         return None;
     }
 
@@ -43,6 +47,21 @@ fn project_gaussian(
     let cov_xx = sigma_2d[(0, 0)] + eps;
     let cov_xy = sigma_2d[(0, 1)];
     let cov_yy = sigma_2d[(1, 1)] + eps;
+
+    // 7) Cull if 2D covariance is degenerate or too large
+    // Compute approximate radius: r ≈ sqrt(max(cov_xx, cov_yy))
+    // This is a conservative approximation (actual max eigenvalue could be larger)
+    let max_cov = cov_xx.max(cov_yy);
+    if !max_cov.is_finite() || max_cov <= 0.0 {
+        return None; // Degenerate covariance
+    }
+
+    // Cull if radius would exceed screen dimensions (prevents screen-filling splats)
+    let radius_sq = 3.0 * 3.0 * max_cov; // 3-sigma radius squared
+    let max_screen_dim = camera.width.max(camera.height) as f32;
+    if radius_sq > (max_screen_dim * max_screen_dim) {
+        return None; // Too large - would fill screen
+    }
 
     Some(Gaussian2D {
         mean: Vector3::new(mean_px.x, mean_px.y, mean_cam.z),

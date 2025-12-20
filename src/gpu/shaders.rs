@@ -174,8 +174,10 @@ fn project_gaussians(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let pos_world = g.position.xyz;
     let pos_cam = rot_mat * pos_world + camera.translation.xyz;
 
-    // Cull if behind camera
-    if (pos_cam.z <= 0.0) {
+    // Cull if behind camera OR too close to near plane
+    // Near-plane threshold prevents huge splats from divide-by-near-zero in Jacobian
+    const NEAR_PLANE: f32 = 0.01;
+    if (pos_cam.z <= NEAR_PLANE) {
         // Write sentinel values for all fields to ensure buffer is fully initialized
         gaussians_out[idx].mean = vec4<f32>(0.0, 0.0, -1.0, 0.0); // Mark as culled with z=-1
         gaussians_out[idx].cov = vec4<f32>(0.0, 0.0, 0.0, 0.0);
@@ -233,6 +235,31 @@ fn project_gaussians(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     // Add small epsilon for stability
     let eps = 1e-6;
+
+    // Cull if 2D covariance is degenerate or too large
+    let max_cov = max(cov_xx, cov_yy);
+    if (!isFinite(max_cov) || max_cov <= 0.0) {
+        // Degenerate covariance - mark as culled
+        gaussians_out[idx].mean = vec4<f32>(0.0, 0.0, -1.0, 0.0);
+        gaussians_out[idx].cov = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+        gaussians_out[idx].color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+        gaussians_out[idx].opacity_pad = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+        gaussians_out[idx].gaussian_idx_pad = vec4<u32>(idx, 0u, 0u, 0u);
+        return;
+    }
+
+    // Cull if radius would exceed screen dimensions (prevents screen-filling splats)
+    let radius_sq = 9.0 * max_cov; // 3-sigma radius squared
+    let max_screen_dim = max(f32(camera.width), f32(camera.height));
+    if (radius_sq > max_screen_dim * max_screen_dim) {
+        // Too large - mark as culled
+        gaussians_out[idx].mean = vec4<f32>(0.0, 0.0, -1.0, 0.0);
+        gaussians_out[idx].cov = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+        gaussians_out[idx].color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+        gaussians_out[idx].opacity_pad = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+        gaussians_out[idx].gaussian_idx_pad = vec4<u32>(idx, 0u, 0u, 0u);
+        return;
+    }
 
     // 6. Evaluate view-dependent color with full SH
     // Compute view direction: FROM Gaussian TO camera (in world space)
