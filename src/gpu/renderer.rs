@@ -15,6 +15,7 @@ pub struct GpuRenderer {
     rasterize_bind_group_layout: BindGroupLayout,
     backward_bind_group_layout: BindGroupLayout,
     project_backward_bind_group_layout: BindGroupLayout,
+    sorter: crate::gpu::sort::BitonicSorter,
 }
 
 impl GpuRenderer {
@@ -265,24 +266,41 @@ impl GpuRenderer {
                     push_constant_ranges: &[],
                 });
 
-        // Create compute pipelines
-        let project_pipeline =
+        // Create compute pipelines with explicit validation error capture.
+        let mut create_pipeline = |label: &str,
+                                   layout: &wgpu::PipelineLayout,
+                                   module: &wgpu::ShaderModule,
+                                   entry: &str|
+         -> Result<wgpu::ComputePipeline, String> {
             ctx.device
+                .push_error_scope(wgpu::ErrorFilter::Validation);
+            let pipeline = ctx
+                .device
                 .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some("Project Pipeline"),
-                    layout: Some(&project_pipeline_layout),
-                    module: &project_shader,
-                    entry_point: "project_gaussians",
+                    label: Some(label),
+                    layout: Some(layout),
+                    module,
+                    entry_point: entry,
                 });
+            if let Some(err) = pollster::block_on(ctx.device.pop_error_scope()) {
+                return Err(format!("GPU pipeline `{}` failed: {}", label, err));
+            }
+            Ok(pipeline)
+        };
 
-        let rasterize_pipeline =
-            ctx.device
-                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some("Rasterize Pipeline"),
-                    layout: Some(&rasterize_pipeline_layout),
-                    module: &rasterize_shader,
-                    entry_point: "rasterize",
-                });
+        let project_pipeline = create_pipeline(
+            "Project Pipeline",
+            &project_pipeline_layout,
+            &project_shader,
+            "project_gaussians",
+        )?;
+
+        let rasterize_pipeline = create_pipeline(
+            "Rasterize Pipeline",
+            &rasterize_pipeline_layout,
+            &rasterize_shader,
+            "rasterize",
+        )?;
 
         let backward_pipeline_layout =
             ctx.device
@@ -292,14 +310,12 @@ impl GpuRenderer {
                     push_constant_ranges: &[],
                 });
 
-        let backward_pipeline =
-            ctx.device
-                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some("Backward Pipeline"),
-                    layout: Some(&backward_pipeline_layout),
-                    module: &backward_shader,
-                    entry_point: "backward_pass",
-                });
+        let backward_pipeline = create_pipeline(
+            "Backward Pipeline",
+            &backward_pipeline_layout,
+            &backward_shader,
+            "backward_pass",
+        )?;
 
         let project_backward_pipeline_layout =
             ctx.device
@@ -309,14 +325,15 @@ impl GpuRenderer {
                     push_constant_ranges: &[],
                 });
 
-        let project_backward_pipeline =
-            ctx.device
-                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                    label: Some("Project Backward Pipeline"),
-                    layout: Some(&project_backward_pipeline_layout),
-                    module: &project_backward_shader,
-                    entry_point: "project_backward",
-                });
+        let project_backward_pipeline = create_pipeline(
+            "Project Backward Pipeline",
+            &project_backward_pipeline_layout,
+            &project_backward_shader,
+            "project_backward",
+        )?;
+
+        // Create bitonic sorter for GPU-side sorting
+        let sorter = crate::gpu::sort::BitonicSorter::new(&ctx.device);
 
         Ok(Self {
             ctx,
@@ -328,6 +345,7 @@ impl GpuRenderer {
             rasterize_bind_group_layout,
             backward_bind_group_layout,
             project_backward_bind_group_layout,
+            sorter,
         })
     }
 
@@ -444,62 +462,38 @@ impl GpuRenderer {
 
         self.ctx.queue.submit(Some(encoder.finish()));
 
-        // Sort projected Gaussians by depth (CPU for now)
+        // Sort projected Gaussians by depth (GPU bitonic sort)
         if enable_timing {
             eprintln!("[GPU] Projection complete: {:?}", t_start.unwrap().elapsed());
         }
 
         let t_sort = if enable_timing { Some(std::time::Instant::now()) } else { None };
 
-        let mut projected: Vec<Gaussian2DGPU> = buffers::read_buffer_blocking(
+        // GPU-side sort: no download/upload needed!
+        // Note: Invalid depths (NaN, etc.) are already marked as z=-1.0 by projection shader,
+        // which sorts them to the front (will be skipped during rasterization)
+        let mut encoder = self
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Sort Encoder"),
+            });
+
+        self.sorter.sort(
             &self.ctx.device,
-            &self.ctx.queue,
+            &mut encoder,
             &projected_buffer,
-            num_gaussians,
-        )
-        .map_err(|e| format!("Failed to read projected Gaussians: {e}"))?;
-
-        if enable_timing {
-            eprintln!("[GPU] Download projected: {:?}", t_sort.unwrap().elapsed());
-        }
-
-        let t_cpu_sort = if enable_timing { Some(std::time::Instant::now()) } else { None };
-
-        // Sanitize invalid depths before sorting.
-        // Do NOT drop entries: the GPU shaders index into this buffer using 0..num_gaussians.
-        let mut invalid_depths = 0usize;
-        for g in projected.iter_mut() {
-            if !g.mean[2].is_finite() {
-                g.mean[2] = -1.0; // culled sentinel used by rasterize.wgsl
-                invalid_depths += 1;
-            }
-        }
-        if invalid_depths > 0 {
-            eprintln!(
-                "[GPU WARNING] Marked {} Gaussians as culled due to non-finite depth values",
-                invalid_depths
-            );
-        }
-
-        projected.sort_by(|a, b| a.mean[2].total_cmp(&b.mean[2]));
-
-        if enable_timing {
-            eprintln!("[GPU] CPU sort: {:?}", t_cpu_sort.unwrap().elapsed());
-        }
-
-        let t_upload = if enable_timing { Some(std::time::Instant::now()) } else { None };
-
-        // Upload sorted Gaussians
-        let sorted_buffer = buffers::create_buffer_init(
-            &self.ctx.device,
-            "Sorted Gaussians",
-            &projected,
-            BufferUsages::STORAGE,
+            num_gaussians as u32,
         );
 
+        self.ctx.queue.submit(Some(encoder.finish()));
+
         if enable_timing {
-            eprintln!("[GPU] Upload sorted: {:?}", t_upload.unwrap().elapsed());
+            eprintln!("[GPU] GPU sort: {:?}", t_sort.unwrap().elapsed());
         }
+
+        // Sorted buffer is the same as projected buffer (in-place sort)
+        let sorted_buffer = projected_buffer;
 
         // Create render params
         #[repr(C)]
@@ -515,7 +509,7 @@ impl GpuRenderer {
         let params = RenderParams {
             width,
             height,
-            num_gaussians: projected.len() as u32,
+            num_gaussians: num_gaussians as u32,
             save_intermediates: 0, // Don't save intermediates in regular render
             background: [background.x, background.y, background.z, 0.0],
         };
@@ -769,62 +763,49 @@ impl GpuRenderer {
 
         self.ctx.queue.submit(Some(encoder.finish()));
 
-        // Download, sort, and re-upload projected Gaussians
-        let mut projected: Vec<Gaussian2DGPU> = buffers::read_buffer_blocking(
-            &self.ctx.device,
-            &self.ctx.queue,
-            &projected_buffer,
-            num_gaussians,
-        )
-        .map_err(|e| format!("Failed to read projected Gaussians: {e}"))?;
+        // GPU-side sort (in-place, no download/upload needed)
+        // Note: Invalid depths already marked as z=-1.0 by projection shader
+        let mut encoder = self
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Sort Encoder"),
+            });
 
-        // Debug: Check how many Gaussians survived projection
+        self.sorter.sort(
+            &self.ctx.device,
+            &mut encoder,
+            &projected_buffer,
+            num_gaussians as u32,
+        );
+
+        self.ctx.queue.submit(Some(encoder.finish()));
+
+        // Debug: Check projection results (only download if debugging)
         if std::env::var("SUGAR_GPU_DEBUG").is_ok() {
+            let projected: Vec<Gaussian2DGPU> = buffers::read_buffer_blocking(
+                &self.ctx.device,
+                &self.ctx.queue,
+                &projected_buffer,
+                num_gaussians,
+            )
+            .map_err(|e| format!("Failed to read projected Gaussians: {e}"))?;
+
             let valid_count = projected.iter().filter(|g| g.mean[2] >= 0.0).count();
             let culled_count = projected.len() - valid_count;
-            eprintln!("[GPU DEBUG] Projection results (BEFORE sorting):");
+            eprintln!("[GPU DEBUG] Projection results (AFTER GPU sorting):");
             eprintln!("  Valid Gaussians: {} / {}", valid_count, num_gaussians);
             eprintln!("  Culled Gaussians: {}", culled_count);
 
-            // Show projected Gaussians BEFORE sorting
-            for (i, g) in projected.iter().take(num_gaussians.min(3)).enumerate() {
-                eprintln!("  Gaussian {} (sorted_pos={}): mean_px=({:.2}, {:.2}), depth={:.2}, gaussian_idx_pad.x={}",
-                    i, i, g.mean[0], g.mean[1], g.mean[2], g.gaussian_idx_pad[0]);
-            }
-        }
-
-        // Sanitize invalid depths before sorting.
-        // Do NOT drop entries: the forward pass indexes 0..num_gaussians.
-        let mut invalid_depths = 0usize;
-        for g in projected.iter_mut() {
-            if !g.mean[2].is_finite() {
-                g.mean[2] = -1.0; // culled sentinel used by rasterize.wgsl
-                invalid_depths += 1;
-            }
-        }
-        if invalid_depths > 0 {
-            eprintln!(
-                "[GPU WARNING] Marked {} Gaussians as culled due to non-finite depth values",
-                invalid_depths
-            );
-        }
-
-        projected.sort_by(|a, b| a.mean[2].total_cmp(&b.mean[2]));
-
-        if std::env::var("SUGAR_GPU_DEBUG").is_ok() {
-            eprintln!("[GPU DEBUG] Projection results (AFTER sorting by depth):");
+            // Show first few sorted Gaussians
             for (sorted_idx, g) in projected.iter().take(num_gaussians.min(3)).enumerate() {
-                eprintln!("  SortedGaussian[{}]: depth={:.2}, gaussian_idx_pad.x={} (original index)",
-                    sorted_idx, g.mean[2], g.gaussian_idx_pad[0]);
+                eprintln!("  SortedGaussian[{}]: mean_px=({:.2}, {:.2}), depth={:.2}, gaussian_idx_pad.x={} (original index)",
+                    sorted_idx, g.mean[0], g.mean[1], g.mean[2], g.gaussian_idx_pad[0]);
             }
         }
 
-        let sorted_buffer = buffers::create_buffer_init(
-            &self.ctx.device,
-            "Sorted Gaussians",
-            &projected,
-            BufferUsages::STORAGE,
-        );
+        // Sorted buffer is the same as projected buffer (in-place sort)
+        let sorted_buffer = projected_buffer;
 
         // Create render params with save_intermediates=1
         #[repr(C)]
@@ -1347,37 +1328,26 @@ impl GpuRenderer {
 
         self.ctx.queue.submit(Some(encoder.finish()));
 
-        // Download and sort projected Gaussians on CPU
-        let projected: Vec<crate::gpu::types::Gaussian2DGPU> = buffers::read_buffer_blocking(
+        // GPU-side sort (in-place, no download/upload needed)
+        // Note: Invalid depths already marked as z=-1.0 by projection shader
+        let mut encoder = self
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Sort Encoder"),
+            });
+
+        self.sorter.sort(
             &self.ctx.device,
-            &self.ctx.queue,
+            &mut encoder,
             &projected_buffer,
-            num_gaussians,
-        )
-        .expect("Failed to read projected Gaussians");
-
-        let mut projected = projected;
-        let mut invalid_depths = 0usize;
-        for g in projected.iter_mut() {
-            if !g.mean[2].is_finite() {
-                g.mean[2] = -1.0;
-                invalid_depths += 1;
-            }
-        }
-        if invalid_depths > 0 {
-            eprintln!(
-                "[GPU WARNING] Marked {} Gaussians as culled due to non-finite depth values",
-                invalid_depths
-            );
-        }
-        projected.sort_by(|a, b| a.mean[2].total_cmp(&b.mean[2]));
-
-        let sorted_buffer = buffers::create_buffer_init(
-            &self.ctx.device,
-            "Sorted Buffer",
-            &projected,
-            BufferUsages::STORAGE,
+            num_gaussians as u32,
         );
+
+        self.ctx.queue.submit(Some(encoder.finish()));
+
+        // Sorted buffer is the same as projected buffer (in-place sort)
+        let sorted_buffer = projected_buffer;
 
         // Rasterize forward pass with intermediates
         let output_buffer = buffers::create_buffer_zeroed::<[f32; 4]>(

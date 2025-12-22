@@ -21,6 +21,8 @@ mod shaders;
 mod renderer;
 #[cfg(feature = "gpu")]
 mod gradients;
+#[cfg(feature = "gpu")]
+mod sort;
 
 #[cfg(feature = "gpu")]
 pub use context::GpuContext;
