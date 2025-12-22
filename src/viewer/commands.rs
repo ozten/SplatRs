@@ -1,6 +1,7 @@
 use crate::core::color::linear_f32_to_srgb_u8;
 use crate::core::{Camera, quaternion_to_matrix};
 use crate::io::{self, load_colmap_scene};
+use crate::viewer::camera_storage::{CameraStorage, SavedCamera};
 use crate::viewer::state::AppState;
 use image::ImageEncoder;
 use nalgebra::{Matrix3, Vector3};
@@ -181,6 +182,9 @@ pub async fn load_model(
     let dataset_path = metadata.dataset_path.clone();
 
     *state.model.lock().unwrap() = Some((cloud, metadata));
+
+    // Store current model path for camera saves
+    *state.current_model_path.lock().unwrap() = Some(path);
 
     Ok(ModelMetadataResponse {
         num_gaussians,
@@ -370,4 +374,109 @@ pub async fn get_camera_by_id(
         width: camera_intrinsics.width,
         height: camera_intrinsics.height,
     })
+}
+
+// ===== Camera Save/Load Commands =====
+
+#[derive(Deserialize)]
+pub struct SaveCameraRequest {
+    pub position: [f32; 3],
+    pub yaw: f32,
+    pub pitch: f32,
+    pub fov_y_deg: f32,
+    pub width: u32,
+    pub height: u32,
+    pub name: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct SaveCameraResponse {
+    pub id: u32,
+}
+
+/// Save current camera position to disk.
+///
+/// Cameras are stored in a JSON file next to the model file.
+#[tauri::command]
+pub async fn save_camera(
+    camera: SaveCameraRequest,
+    state: State<'_, AppState>,
+) -> Result<SaveCameraResponse, String> {
+    // Get current model path
+    let model_path = state
+        .current_model_path
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| "No model loaded".to_string())?;
+
+    // Load camera storage
+    let mut storage = CameraStorage::load(&model_path)?;
+
+    // Add camera
+    let id = storage.add_camera(
+        camera.position,
+        camera.yaw,
+        camera.pitch,
+        camera.fov_y_deg,
+        camera.width,
+        camera.height,
+        camera.name,
+    );
+
+    // Save to disk
+    storage.save(&model_path)?;
+
+    println!("[VIEWER] Saved camera {} for model: {}", id, model_path);
+
+    Ok(SaveCameraResponse { id })
+}
+
+/// List all saved cameras for the current model.
+#[tauri::command]
+pub async fn list_saved_cameras(
+    state: State<'_, AppState>,
+) -> Result<Vec<SavedCamera>, String> {
+    // Get current model path
+    let model_path = state
+        .current_model_path
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| "No model loaded".to_string())?;
+
+    // Load camera storage
+    let storage = CameraStorage::load(&model_path)?;
+
+    // Return cameras (cloned from references)
+    Ok(storage.list_cameras().into_iter().cloned().collect())
+}
+
+/// Delete a saved camera by ID.
+#[tauri::command]
+pub async fn delete_saved_camera(
+    id: u32,
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    // Get current model path
+    let model_path = state
+        .current_model_path
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| "No model loaded".to_string())?;
+
+    // Load camera storage
+    let mut storage = CameraStorage::load(&model_path)?;
+
+    // Delete camera
+    let deleted = storage.delete_camera(id);
+
+    if deleted {
+        // Save updated storage
+        storage.save(&model_path)?;
+        println!("[VIEWER] Deleted camera {} from model: {}", id, model_path);
+    }
+
+    Ok(deleted)
 }

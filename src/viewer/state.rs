@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 pub struct AppState {
     pub model: Arc<Mutex<Option<(GaussianCloud, ModelMetadata)>>>,
     pub renderer: Arc<Mutex<GpuRenderer>>,
+    pub current_model_path: Arc<Mutex<Option<String>>>,
 }
 
 impl AppState {
@@ -14,6 +15,7 @@ impl AppState {
         Ok(Self {
             model: Arc::new(Mutex::new(None)),
             renderer: Arc::new(Mutex::new(renderer)),
+            current_model_path: Arc::new(Mutex::new(None)),
         })
     }
 }

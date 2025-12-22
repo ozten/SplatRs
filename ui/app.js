@@ -114,6 +114,9 @@ async function onModelSelected() {
 
         document.getElementById('status').textContent =
             `Loaded ${metadata.num_gaussians} Gaussians - Rendering...`;
+
+        // Refresh saved cameras list for this model
+        await refreshSavedCamerasList();
     } catch (err) {
         await log('Error loading model: ' + err);
         document.getElementById('status').textContent = `Error: ${err}`;
@@ -217,6 +220,136 @@ async function goToCamera() {
         await log(`Error loading camera: ${err}`);
         document.getElementById('status').textContent = `Error: ${err}`;
     }
+}
+
+// ===== Camera Save/Load Functions =====
+
+async function refreshSavedCamerasList() {
+    try {
+        const cameras = await invoke('list_saved_cameras');
+        const select = document.getElementById('savedCamerasSelect');
+
+        // Clear existing options
+        select.innerHTML = '';
+
+        if (cameras.length === 0) {
+            select.innerHTML = '<option value="">-- No Saved Cameras --</option>';
+            document.getElementById('loadCameraButton').disabled = true;
+            document.getElementById('deleteCameraButton').disabled = true;
+        } else {
+            select.innerHTML = '<option value="">-- Select Camera --</option>';
+            cameras.forEach(cam => {
+                const option = document.createElement('option');
+                option.value = cam.id;
+                const name = cam.name || `Camera ${cam.id}`;
+                const date = new Date(cam.timestamp * 1000).toLocaleString();
+                option.textContent = `#${cam.id}: ${name} (${date})`;
+                select.appendChild(option);
+            });
+        }
+    } catch (err) {
+        await log('Error refreshing saved cameras: ' + err);
+    }
+}
+
+async function saveCurrentCamera() {
+    try {
+        const name = prompt('Enter a name for this camera position (optional):');
+
+        // Get current camera state
+        const cameraData = {
+            position: camera.position,
+            yaw: camera.yaw,
+            pitch: camera.pitch,
+            fov_y_deg: camera.fovYDeg,  // Convert camelCase to snake_case for Rust
+            width: camera.width,
+            height: camera.height,
+            name: name && name.trim() ? name.trim() : null
+        };
+
+        const result = await invoke('save_camera', { camera: cameraData });
+
+        document.getElementById('status').textContent = `Camera saved as #${result.id}`;
+        await log(`Camera saved with ID: ${result.id}`);
+
+        // Refresh the saved cameras list
+        await refreshSavedCamerasList();
+    } catch (err) {
+        await log('Error saving camera: ' + err);
+        document.getElementById('status').textContent = `Error saving camera: ${err}`;
+    }
+}
+
+async function loadSelectedCamera() {
+    const select = document.getElementById('savedCamerasSelect');
+    const cameraId = parseInt(select.value);
+
+    if (isNaN(cameraId)) {
+        return;
+    }
+
+    try {
+        const cameras = await invoke('list_saved_cameras');
+        const selectedCamera = cameras.find(c => c.id === cameraId);
+
+        if (!selectedCamera) {
+            document.getElementById('status').textContent = `Camera #${cameraId} not found`;
+            return;
+        }
+
+        // Apply camera state
+        camera.position = selectedCamera.position;
+        camera.yaw = selectedCamera.yaw;
+        camera.pitch = selectedCamera.pitch;
+        camera.fovYDeg = selectedCamera.fov_y_deg;
+        camera.width = selectedCamera.width;
+        camera.height = selectedCamera.height;
+
+        const name = selectedCamera.name || `Camera ${cameraId}`;
+        document.getElementById('status').textContent = `Loaded: ${name}`;
+        await log(`Loaded camera #${cameraId}`);
+    } catch (err) {
+        await log('Error loading camera: ' + err);
+        document.getElementById('status').textContent = `Error loading camera: ${err}`;
+    }
+}
+
+async function deleteSelectedCamera() {
+    const select = document.getElementById('savedCamerasSelect');
+    const cameraId = parseInt(select.value);
+
+    if (isNaN(cameraId)) {
+        return;
+    }
+
+    if (!confirm(`Delete camera #${cameraId}?`)) {
+        return;
+    }
+
+    try {
+        const deleted = await invoke('delete_saved_camera', { id: cameraId });
+
+        if (deleted) {
+            document.getElementById('status').textContent = `Camera #${cameraId} deleted`;
+            await log(`Deleted camera #${cameraId}`);
+
+            // Refresh the saved cameras list
+            await refreshSavedCamerasList();
+        } else {
+            document.getElementById('status').textContent = `Camera #${cameraId} not found`;
+        }
+    } catch (err) {
+        await log('Error deleting camera: ' + err);
+        document.getElementById('status').textContent = `Error deleting camera: ${err}`;
+    }
+}
+
+function onSavedCameraSelected() {
+    const select = document.getElementById('savedCamerasSelect');
+    const hasSelection = select.value !== '';
+
+    document.getElementById('loadCameraButton').disabled = !hasSelection;
+    document.getElementById('deleteCameraButton').disabled = !hasSelection;
 }
 
 window.addEventListener('DOMContentLoaded', () => {

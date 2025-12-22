@@ -11,7 +11,10 @@ fn main() {
             list_models,
             load_model,
             render_frame,
-            get_camera_by_id
+            get_camera_by_id,
+            save_camera,
+            list_saved_cameras,
+            delete_saved_camera
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
