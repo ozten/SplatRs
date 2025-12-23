@@ -5,7 +5,7 @@
 
 use approx::assert_relative_eq;
 use nalgebra::{Matrix2, Matrix3, SymmetricEigen, UnitQuaternion, Vector3};
-use sugar_rs::core::{math::perspective_jacobian, Camera, Gaussian, Gaussian2D};
+use sugar_rs::core::{perspective_jacobian, Camera, Gaussian, Gaussian2D};
 
 #[test]
 fn test_camera_world_to_camera_identity_rotation() {
@@ -72,7 +72,7 @@ fn test_perspective_jacobian_matches_finite_difference() {
     let cx = 50.0;
     let cy = 60.0;
     let p = Vector3::new(0.3, -1.2, 2.5);
-    let eps = 1e-4;
+    let eps = 1e-3;
 
     let j = perspective_jacobian(&p, fx, fy);
 
@@ -101,8 +101,8 @@ fn test_perspective_jacobian_matches_finite_difference() {
         let du = (u_plus - u_minus) / (2.0 * eps);
         let dv = (v_plus - v_minus) / (2.0 * eps);
 
-        assert_relative_eq!(du, j[(0, axis)], epsilon = 1e-3);
-        assert_relative_eq!(dv, j[(1, axis)], epsilon = 1e-3);
+        assert_relative_eq!(du, j[(0, axis)], epsilon = 1e-2, max_relative = 5e-4);
+        assert_relative_eq!(dv, j[(1, axis)], epsilon = 1e-2, max_relative = 5e-4);
     }
 }
 

@@ -21,6 +21,12 @@ use std::path::Path;
 /// * `Ok(RgbImage)` - Image in sRGB color space
 /// * `Err(String)` - Error message if loading/conversion fails
 pub fn load_image_to_srgb(path: &Path) -> Result<RgbImage, String> {
+    if std::env::var("SUGAR_DISABLE_ICC").is_ok() {
+        return image::open(path)
+            .map_err(|e| format!("Failed to open image: {}", e))
+            .map(|img| img.to_rgb8());
+    }
+
     // Load image using image crate (which ignores color profiles)
     let img = image::open(path)
         .map_err(|e| format!("Failed to open image: {}", e))?

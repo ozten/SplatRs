@@ -5,6 +5,7 @@
 //! 2. Depth-sorted alpha blending works
 //! 3. Rendered images have correct colors and depth ordering
 
+use image::GenericImageView;
 use std::path::PathBuf;
 use sugar_rs::core::{init_from_colmap_points, Camera};
 use sugar_rs::io::load_colmap_scene;
@@ -94,6 +95,16 @@ fn test_render_calipers_fixed_size() {
         let output_path = output_dir.join(format!("m3_render_{:02}.png", i));
         img.save(&output_path).expect("Failed to save image");
         println!("  Saved to: {:?}", output_path);
+
+        let loaded = image::open(&output_path).expect("Failed to reload saved image");
+        assert_eq!(loaded.width(), camera.width);
+        assert_eq!(loaded.height(), camera.height);
+        let non_black = loaded
+            .to_rgb8()
+            .pixels()
+            .filter(|p| p[0] > 0 || p[1] > 0 || p[2] > 0)
+            .count();
+        assert!(non_black > 0, "Rendered image appears to be all black");
     }
 
     println!("\n✅ M3 rendering test complete!");

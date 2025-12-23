@@ -13,6 +13,7 @@
 //! - It will be skipped if the local calipers COLMAP path is missing.
 //! - For speed, it downsamples the camera resolution and caps Gaussian count.
 
+use image::GenericImageView;
 use std::path::PathBuf;
 
 use nalgebra::{Matrix3, Vector3};
@@ -113,6 +114,16 @@ fn test_m4_render_calipers_projected_covariance() {
         img.save(&output_path)
             .expect("Failed to save M4 render image");
         println!("  Saved to: {:?}", output_path);
+
+        let loaded = image::open(&output_path).expect("Failed to reload saved image");
+        assert_eq!(loaded.width(), camera.width);
+        assert_eq!(loaded.height(), camera.height);
+        let non_black = loaded
+            .to_rgb8()
+            .pixels()
+            .filter(|p| p[0] > 0 || p[1] > 0 || p[2] > 0)
+            .count();
+        assert!(non_black > 0, "Rendered image appears to be all black");
     }
 
     println!("\n✅ M4 visual render complete!");

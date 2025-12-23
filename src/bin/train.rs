@@ -562,7 +562,40 @@ fn main() {
             Ok(colmap_scene) => {
                 if !colmap_scene.images.is_empty() {
                     let first_image_name = &colmap_scene.images[0].name;
-                    let first_image_path = images_dir.join(first_image_name);
+                    let first_image_path = {
+                        let direct = images_dir.join(first_image_name);
+                        if direct.exists() {
+                            direct
+                        } else {
+                            let mut candidates = Vec::new();
+                            if let Some(ext) = direct.extension().and_then(|e| e.to_str()) {
+                                let ext_lower = ext.to_ascii_lowercase();
+                                if ext_lower == "jpg" || ext_lower == "jpeg" {
+                                    let mut png_path = direct.clone();
+                                    png_path.set_extension("png");
+                                    candidates.push(png_path);
+                                } else if ext_lower == "png" {
+                                    let mut jpg_path = direct.clone();
+                                    jpg_path.set_extension("jpg");
+                                    candidates.push(jpg_path);
+                                    let mut jpeg_path = direct.clone();
+                                    jpeg_path.set_extension("jpeg");
+                                    candidates.push(jpeg_path);
+                                }
+                            } else {
+                                let mut png_path = direct.clone();
+                                png_path.set_extension("png");
+                                candidates.push(png_path);
+                                let mut jpg_path = direct.clone();
+                                jpg_path.set_extension("jpg");
+                                candidates.push(jpg_path);
+                                let mut jpeg_path = direct.clone();
+                                jpeg_path.set_extension("jpeg");
+                                candidates.push(jpeg_path);
+                            }
+                            candidates.into_iter().find(|p| p.exists()).unwrap_or(direct)
+                        }
+                    };
 
                     let max_buffer_size = auto_downsample::get_gpu_max_buffer_size();
                     match auto_downsample::determine_auto_downsample(&first_image_path, max_buffer_size) {
@@ -658,6 +691,53 @@ fn main() {
         out.test_view_target.save(&target_path).ok();
         eprintln!("Saved `{}`", rendered_path.display());
         eprintln!("Saved `{}`", target_path.display());
+
+        if std::env::var("SUGAR_DEBUG_TARGET").is_ok() {
+            let target = &out.test_view_target;
+            let expected_len = (target.width() * target.height() * 3) as usize;
+            let raw = target.as_raw();
+            if raw.len() != expected_len {
+                eprintln!(
+                    "[TARGET DEBUG] Raw length mismatch: got {}, expected {}",
+                    raw.len(),
+                    expected_len
+                );
+            }
+
+            match image::open(&target_path).map(|img| img.to_rgb8()) {
+                Ok(loaded) => {
+                    if loaded.width() != target.width() || loaded.height() != target.height() {
+                        eprintln!(
+                            "[TARGET DEBUG] Reloaded dims mismatch: {}x{} vs {}x{}",
+                            loaded.width(),
+                            loaded.height(),
+                            target.width(),
+                            target.height()
+                        );
+                    } else {
+                        let mut max_diff = 0u8;
+                        let mut diff_pixels = 0u32;
+                        for (a, b) in raw.iter().zip(loaded.as_raw().iter()) {
+                            let d = a.abs_diff(*b);
+                            if d > max_diff {
+                                max_diff = d;
+                            }
+                            if d > 2 {
+                                diff_pixels += 1;
+                            }
+                        }
+                        eprintln!(
+                            "[TARGET DEBUG] Reload diff: max_diff={} diff_pixels={}",
+                            max_diff,
+                            diff_pixels
+                        );
+                    }
+                }
+                Err(err) => {
+                    eprintln!("[TARGET DEBUG] Failed to reload target: {}", err);
+                }
+            }
+        }
 
         // Save trained model
         let model_path = final_out_dir.join("model.gs");

@@ -71,6 +71,27 @@ fn test_load_calipers_colmap() {
     assert!(ply_path.exists(), "PLY file was not created");
     let metadata = std::fs::metadata(&ply_path).expect("Failed to read PLY file metadata");
     assert!(metadata.len() > 0, "PLY file is empty");
+    let contents = std::fs::read_to_string(&ply_path).expect("Failed to read PLY file");
+    let lines: Vec<&str> = contents.lines().collect();
+    assert!(lines.len() > 8, "PLY file missing header lines");
+    assert_eq!(lines[0], "ply");
+    assert_eq!(lines[1], "format ascii 1.0");
+    let expected_vertex_line = format!("element vertex {}", scene.points.len());
+    assert_eq!(lines[2], expected_vertex_line);
+    let header_end = lines
+        .iter()
+        .position(|l| *l == "end_header")
+        .expect("PLY missing end_header");
+    let data_lines: Vec<&str> = lines[header_end + 1..]
+        .iter()
+        .copied()
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    assert_eq!(
+        data_lines.len(),
+        scene.points.len(),
+        "PLY vertex count mismatch"
+    );
 
     println!("   File size: {} bytes", metadata.len());
 }

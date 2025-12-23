@@ -172,7 +172,39 @@ fn downsample_camera(camera: &Camera, factor: f32) -> Camera {
 }
 
 fn load_target_image(images_dir: &Path, name: &str) -> anyhow::Result<RgbImage> {
-    let path = images_dir.join(name);
+    let mut path = images_dir.join(name);
+    if !path.exists() {
+        let mut candidates = Vec::new();
+        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+            let ext_lower = ext.to_ascii_lowercase();
+            if ext_lower == "jpg" || ext_lower == "jpeg" {
+                let mut png_path = path.clone();
+                png_path.set_extension("png");
+                candidates.push(png_path);
+            } else if ext_lower == "png" {
+                let mut jpg_path = path.clone();
+                jpg_path.set_extension("jpg");
+                candidates.push(jpg_path);
+                let mut jpeg_path = path.clone();
+                jpeg_path.set_extension("jpeg");
+                candidates.push(jpeg_path);
+            }
+        } else {
+            let mut png_path = path.clone();
+            png_path.set_extension("png");
+            candidates.push(png_path);
+            let mut jpg_path = path.clone();
+            jpg_path.set_extension("jpg");
+            candidates.push(jpg_path);
+            let mut jpeg_path = path.clone();
+            jpeg_path.set_extension("jpeg");
+            candidates.push(jpeg_path);
+        }
+
+        if let Some(found) = candidates.into_iter().find(|p| p.exists()) {
+            path = found;
+        }
+    }
     // Load with color profile conversion to sRGB
     let img = crate::io::load_image_to_srgb(&path)
         .map_err(|e| anyhow::anyhow!("Failed to load image with color conversion: {}", e))?;
@@ -1940,6 +1972,18 @@ pub fn train_multiview_color_only(
                 test_camera.cy *= scale_y;
             }
 
+            if std::env::var("SUGAR_DEBUG_TARGET").is_ok() {
+                let raw_path = cfg.out_dir.join("debug_test_target_raw.png");
+                let ds_path = cfg.out_dir.join("debug_test_target_ds.png");
+                if test_target.save(&raw_path).is_ok() && test_target_ds.save(&ds_path).is_ok() {
+                    eprintln!(
+                        "[TARGET DEBUG] Saved raw target to `{}` and downsampled target to `{}`",
+                        raw_path.display(),
+                        ds_path.display()
+                    );
+                }
+            }
+
             let test_target_linear = rgb8_to_linear_vec(&test_target_ds);
             (test_camera, test_target_ds, test_target_linear)
         };
@@ -1956,6 +2000,30 @@ pub fn train_multiview_color_only(
                 test_camera.height,
             ));
             test_view_target = Some(test_target_ds);
+
+            if std::env::var("SUGAR_DEBUG_TARGET").is_ok() {
+                let ds_path = cfg.out_dir.join("debug_test_target_ds.png");
+                if let Some(ds) = test_view_target.as_ref() {
+                    if ds.save(&ds_path).is_ok() {
+                        eprintln!(
+                            "[TARGET DEBUG] Saved downsampled target to `{}`",
+                            ds_path.display()
+                        );
+                    }
+                }
+
+                if let Some(test_image_info) = scene.images.get(test_idx) {
+                    if let Ok(raw) = load_target_image(&cfg.images_dir, &test_image_info.name) {
+                        let raw_path = cfg.out_dir.join("debug_test_target_raw.png");
+                        if raw.save(&raw_path).is_ok() {
+                            eprintln!(
+                                "[TARGET DEBUG] Saved raw target to `{}`",
+                                raw_path.display()
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
 
