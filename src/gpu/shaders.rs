@@ -176,7 +176,7 @@ fn project_gaussians(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     // Cull if behind camera OR too close to near plane
     // Near-plane threshold prevents huge splats from divide-by-near-zero in Jacobian
-    const NEAR_PLANE: f32 = 0.01;
+    let NEAR_PLANE: f32 = 0.01;
     if (pos_cam.z <= NEAR_PLANE) {
         // Write sentinel values for all fields to ensure buffer is fully initialized
         gaussians_out[idx].mean = vec4<f32>(0.0, 0.0, -1.0, 0.0); // Mark as culled with z=-1
@@ -237,8 +237,9 @@ fn project_gaussians(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let eps = 1e-6;
 
     // Cull if 2D covariance is degenerate or too large
+    // Note: WGSL has no isnan/isinf - use bounds check instead
     let max_cov = max(cov_xx, cov_yy);
-    if (!isFinite(max_cov) || max_cov <= 0.0) {
+    if (max_cov <= 0.0 || max_cov > 1e10) {
         // Degenerate covariance - mark as culled
         gaussians_out[idx].mean = vec4<f32>(0.0, 0.0, -1.0, 0.0);
         gaussians_out[idx].cov = vec4<f32>(0.0, 0.0, 0.0, 0.0);
