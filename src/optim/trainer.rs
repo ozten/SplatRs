@@ -173,10 +173,32 @@ fn downsample_camera(camera: &Camera, factor: f32) -> Camera {
 
 fn load_target_image(images_dir: &Path, name: &str) -> anyhow::Result<RgbImage> {
     let path = images_dir.join(name);
-    // Load with color profile conversion to sRGB
-    let img = crate::io::load_image_to_srgb(&path)
-        .map_err(|e| anyhow::anyhow!("Failed to load image with color conversion: {}", e))?;
-    Ok(img)
+
+    // Try the exact path first
+    if path.exists() {
+        let img = crate::io::load_image_to_srgb(&path)
+            .map_err(|e| anyhow::anyhow!("Failed to load image with color conversion: {}", e))?;
+        return Ok(img);
+    }
+
+    // Try alternate extensions (COLMAP might have .jpg but actual files are .png or vice versa)
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or(name);
+    let alternate_exts = ["png", "jpg", "jpeg", "PNG", "JPG", "JPEG"];
+
+    for ext in &alternate_exts {
+        let alt_path = images_dir.join(format!("{}.{}", stem, ext));
+        if alt_path.exists() {
+            let img = crate::io::load_image_to_srgb(&alt_path)
+                .map_err(|e| anyhow::anyhow!("Failed to load image with color conversion: {}", e))?;
+            return Ok(img);
+        }
+    }
+
+    // No matching file found
+    Err(anyhow::anyhow!(
+        "Failed to open image: {} (also tried alternate extensions)",
+        path.display()
+    ))
 }
 
 /// Downsample an image intelligently based on the downsample factor.
@@ -230,7 +252,29 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
         .ok_or_else(|| anyhow::anyhow!("Camera {} not found", image_info.camera_id))?;
     let rotation = image_info.rotation.to_rotation_matrix().into_inner();
     let camera_full = camera_with_pose(base_camera, rotation, image_info.translation);
-    let camera = downsample_camera(&camera_full, cfg.downsample_factor);
+
+    // Load target image first to check if dimensions match COLMAP
+    let target_full = load_target_image(&cfg.images_dir, &image_info.name)?;
+
+    // If actual image size differs from COLMAP camera (e.g., images were pre-resized),
+    // update camera to match actual image, then apply downsample factor
+    let camera = if target_full.width() != camera_full.width || target_full.height() != camera_full.height {
+        let scale_x = target_full.width() as f32 / camera_full.width as f32;
+        let scale_y = target_full.height() as f32 / camera_full.height as f32;
+        let adjusted = Camera::new(
+            camera_full.fx * scale_x,
+            camera_full.fy * scale_y,
+            camera_full.cx * scale_x,
+            camera_full.cy * scale_y,
+            target_full.width(),
+            target_full.height(),
+            camera_full.rotation,
+            camera_full.translation,
+        );
+        downsample_camera(&adjusted, cfg.downsample_factor)
+    } else {
+        downsample_camera(&camera_full, cfg.downsample_factor)
+    };
 
     // Initialize a Gaussian subset that is (roughly) evenly distributed in screen space.
     // This avoids spending most Gaussians on only one part of the image (e.g. the caliper)
@@ -276,8 +320,6 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
         g.scale = Vector3::new(log_sigma, log_sigma, log_sigma);
     }
 
-    // Target image.
-    let target_full = load_target_image(&cfg.images_dir, &image_info.name)?;
     let target_ds = downsample_image_smart(&target_full, camera.width, camera.height, cfg.downsample_factor);
     let target_linear = rgb8_to_linear_vec(&target_ds);
 
@@ -1126,8 +1168,8 @@ pub fn train_multiview_color_only(
     }
 
     let mut view_cache: HashMap<usize, ViewData> = HashMap::new();
-    let should_preload_images = cfg.max_images != 0;
-    if should_preload_images {
+    // Always preload images - the cache is needed for training and final output
+    {
         for &idx in image_indices.iter() {
             let image_info = &scene.images[idx];
             let base_camera = scene

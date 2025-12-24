@@ -251,7 +251,7 @@ fn project_gaussians(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     // Cull if radius would exceed screen dimensions (prevents screen-filling splats)
     let radius_sq = 9.0 * max_cov; // 3-sigma radius squared
-    let max_screen_dim = max(f32(camera.width), f32(camera.height));
+    let max_screen_dim = max(f32(camera.dims.x), f32(camera.dims.y));
     if (radius_sq > max_screen_dim * max_screen_dim) {
         // Too large - mark as culled
         gaussians_out[idx].mean = vec4<f32>(0.0, 0.0, -1.0, 0.0);
