@@ -572,8 +572,10 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
 
             // Clamp log-space scales to prevent exp() overflow
             // exp(20) ≈ 485M (very large), exp(-20) ≈ 2e-9 (very small but valid)
-            const MAX_LOG_SCALE: f32 = 20.0;
-            const MIN_LOG_SCALE: f32 = -20.0;
+            // Reasonable bounds: exp(8) ≈ 3000, exp(-14) ≈ 8e-7
+            // Original 3DGS uses tighter bounds to prevent degenerate ellipsoids
+            const MAX_LOG_SCALE: f32 = 8.0;
+            const MIN_LOG_SCALE: f32 = -14.0;
             for scale in log_scales.iter_mut() {
                 scale.x = scale.x.clamp(MIN_LOG_SCALE, MAX_LOG_SCALE);
                 scale.y = scale.y.clamp(MIN_LOG_SCALE, MAX_LOG_SCALE);
@@ -1650,8 +1652,10 @@ pub fn train_multiview_color_only(
 
             // Clamp log-space scales to prevent exp() overflow
             // exp(20) ≈ 485M (very large), exp(-20) ≈ 2e-9 (very small but valid)
-            const MAX_LOG_SCALE: f32 = 20.0;
-            const MIN_LOG_SCALE: f32 = -20.0;
+            // Reasonable bounds: exp(8) ≈ 3000, exp(-14) ≈ 8e-7
+            // Original 3DGS uses tighter bounds to prevent degenerate ellipsoids
+            const MAX_LOG_SCALE: f32 = 8.0;
+            const MIN_LOG_SCALE: f32 = -14.0;
             for scale in log_scales.iter_mut() {
                 scale.x = scale.x.clamp(MIN_LOG_SCALE, MAX_LOG_SCALE);
                 scale.y = scale.y.clamp(MIN_LOG_SCALE, MAX_LOG_SCALE);
