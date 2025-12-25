@@ -585,10 +585,21 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
             // Tighter bounds prevent stretched/exploding Gaussians during training
             const MAX_LOG_SCALE: f32 = 5.0;
             const MIN_LOG_SCALE: f32 = -10.0;
+            // Max ratio between largest and smallest scale axis (prevents needles)
+            // ln(10) ≈ 2.3, so max 10:1 aspect ratio
+            const MAX_LOG_ANISOTROPY: f32 = 2.3;
             for scale in log_scales.iter_mut() {
+                // First clamp individual axes
                 scale.x = scale.x.clamp(MIN_LOG_SCALE, MAX_LOG_SCALE);
                 scale.y = scale.y.clamp(MIN_LOG_SCALE, MAX_LOG_SCALE);
                 scale.z = scale.z.clamp(MIN_LOG_SCALE, MAX_LOG_SCALE);
+
+                // Then enforce anisotropy constraint: pull smaller axes toward largest
+                let max_s = scale.x.max(scale.y).max(scale.z);
+                let min_allowed = max_s - MAX_LOG_ANISOTROPY;
+                scale.x = scale.x.max(min_allowed);
+                scale.y = scale.y.max(min_allowed);
+                scale.z = scale.z.max(min_allowed);
             }
         }
         if cfg.learn_rotation {
@@ -844,6 +855,7 @@ struct DensifyStats {
     kept: usize,
     pruned: usize,
     pruned_outliers: usize,
+    pruned_needles: usize,
     split: usize,
     cloned: usize,
     cap_hit: bool,
@@ -901,6 +913,7 @@ fn densify_and_prune<R: Rng + ?Sized>(
             kept: before,
             pruned: 0,
             pruned_outliers: 0,
+            pruned_needles: 0,
             split: 0,
             cloned: 0,
             cap_hit: false,
@@ -939,10 +952,15 @@ fn densify_and_prune<R: Rng + ?Sized>(
     let mut kept = 0usize;
     let mut pruned = 0usize;
     let mut pruned_outliers = 0usize;
+    let mut pruned_needles = 0usize;
     let mut split = 0usize;
     let mut cloned = 0usize;
     let mut cap_hit = false;
     let mut kept_avg_grads: Vec<f32> = Vec::new();
+
+    // Max log-space anisotropy before pruning (ln(20) ≈ 3.0, so 20:1 aspect ratio)
+    // This is more permissive than the per-step constraint (10:1) to allow some flexibility
+    const NEEDLE_PRUNE_ANISOTROPY: f32 = 3.0;
 
     for i in 0..gaussians.len() {
         // Prune outliers: gaussians too far from scene center
@@ -955,6 +973,16 @@ fn densify_and_prune<R: Rng + ?Sized>(
 
         let opacity = sigmoid(opacity_logits[i]);
         if opacity < prune_opacity_threshold {
+            pruned += 1;
+            continue;
+        }
+
+        // Prune needles: Gaussians with extreme aspect ratios
+        let scale = &log_scales[i];
+        let max_s = scale.x.max(scale.y).max(scale.z);
+        let min_s = scale.x.min(scale.y).min(scale.z);
+        if max_s - min_s > NEEDLE_PRUNE_ANISOTROPY {
+            pruned_needles += 1;
             pruned += 1;
             continue;
         }
@@ -1012,7 +1040,16 @@ fn densify_and_prune<R: Rng + ?Sized>(
         new_gaussians[keep_idx].opacity = child_opacity_logit;
 
         if sigma > split_sigma_threshold {
-            // SPLIT: add a second gaussian, slightly offset and slightly smaller.
+            // SPLIT: shrink BOTH parent and child by 0.2 in log-space (factor ~0.82)
+            // This prevents needles from persisting through splits
+            let scale_reduction = Vector3::new(0.2, 0.2, 0.2);
+            let shrunk_scale = log_scales[i] - scale_reduction;
+
+            // Shrink the parent (kept Gaussian) - CRITICAL FIX
+            new_log_scales[keep_idx] = shrunk_scale;
+            new_gaussians[keep_idx].scale = shrunk_scale;
+
+            // Create child with same shrunk scale, offset position
             let mut g2 = gaussians[i].clone();
             for k in 0..16 {
                 g2.sh_coeffs[k][0] = sh_params[i][k].x;
@@ -1021,13 +1058,13 @@ fn densify_and_prune<R: Rng + ?Sized>(
             }
             g2.opacity = child_opacity_logit;
             g2.position = new_pos;
-            g2.scale = log_scales[i] - Vector3::new(0.2, 0.2, 0.2);
+            g2.scale = shrunk_scale;
             g2.rotation = rotations[i];
             new_gaussians.push(g2);
             new_sh_params.push(sh_params[i]);
             new_opacity_logits.push(child_opacity_logit);
             new_positions.push(new_pos);
-            new_log_scales.push(log_scales[i] - Vector3::new(0.2, 0.2, 0.2));
+            new_log_scales.push(shrunk_scale);
             new_rotations.push(rotations[i]);
             new_grad_accum.push(0.0);
             split += 1;
@@ -1072,6 +1109,7 @@ fn densify_and_prune<R: Rng + ?Sized>(
         kept,
         pruned,
         pruned_outliers,
+        pruned_needles,
         split,
         cloned,
         cap_hit,
@@ -1698,10 +1736,21 @@ pub fn train_multiview_color_only(
             // Tighter bounds prevent stretched/exploding Gaussians during training
             const MAX_LOG_SCALE: f32 = 5.0;
             const MIN_LOG_SCALE: f32 = -10.0;
+            // Max ratio between largest and smallest scale axis (prevents needles)
+            // ln(10) ≈ 2.3, so max 10:1 aspect ratio
+            const MAX_LOG_ANISOTROPY: f32 = 2.3;
             for scale in log_scales.iter_mut() {
+                // First clamp individual axes
                 scale.x = scale.x.clamp(MIN_LOG_SCALE, MAX_LOG_SCALE);
                 scale.y = scale.y.clamp(MIN_LOG_SCALE, MAX_LOG_SCALE);
                 scale.z = scale.z.clamp(MIN_LOG_SCALE, MAX_LOG_SCALE);
+
+                // Then enforce anisotropy constraint: pull smaller axes toward largest
+                let max_s = scale.x.max(scale.y).max(scale.z);
+                let min_allowed = max_s - MAX_LOG_ANISOTROPY;
+                scale.x = scale.x.max(min_allowed);
+                scale.y = scale.y.max(min_allowed);
+                scale.z = scale.z.max(min_allowed);
             }
         }
         if cfg.learn_rotation {
@@ -1956,8 +2005,13 @@ pub fn train_multiview_color_only(
             } else {
                 String::new()
             };
+            let needle_msg = if stats.pruned_needles > 0 {
+                format!(" pruned_needles={}", stats.pruned_needles)
+            } else {
+                String::new()
+            };
             eprintln!(
-                "densify @iter {}/{}: gaussians {} -> {} (kept={} pruned={}{} split={} cloned={} cap_hit={} grad_p50={:.4} grad_p90={:.4})",
+                "densify @iter {}/{}: gaussians {} -> {} (kept={} pruned={}{}{} split={} cloned={} cap_hit={} grad_p50={:.4} grad_p90={:.4})",
                 iter + 1,
                 cfg.iters,
                 before,
@@ -1965,6 +2019,7 @@ pub fn train_multiview_color_only(
                 stats.kept,
                 stats.pruned,
                 outlier_msg,
+                needle_msg,
                 stats.split,
                 stats.cloned,
                 stats.cap_hit,
