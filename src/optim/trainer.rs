@@ -24,9 +24,9 @@ use crate::optim::loss::{
 };
 use crate::core::sigmoid;
 use crate::render::full_diff::{
-    coverage_mask_bool, debug_contrib_count, debug_coverage_mask, debug_final_transmittance,
-    debug_overlay_means, downsample_rgb_bilinear, downsample_rgb_box, linear_vec_to_rgb8_img,
-    render_full_color_grads, render_full_linear, rgb8_to_linear_vec,
+    coverage_mask_bool, coverage_weights_downsampled, debug_contrib_count, debug_coverage_mask,
+    debug_final_transmittance, debug_overlay_means, downsample_rgb_bilinear, downsample_rgb_box,
+    linear_vec_to_rgb8_img, render_full_color_grads, render_full_linear, rgb8_to_linear_vec,
 };
 use image::RgbImage;
 use nalgebra::{Matrix3, Vector3};
@@ -568,14 +568,23 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
             }
         }
         if cfg.learn_scale {
-            scale_opt.step(&mut log_scales, &d_log_scales);
+            // Clip scale gradients to prevent extreme updates
+            const SCALE_GRAD_CLIP: f32 = 1.0;
+            let d_log_scales_clipped: Vec<Vector3<f32>> = d_log_scales
+                .iter()
+                .map(|g| Vector3::new(
+                    g.x.clamp(-SCALE_GRAD_CLIP, SCALE_GRAD_CLIP),
+                    g.y.clamp(-SCALE_GRAD_CLIP, SCALE_GRAD_CLIP),
+                    g.z.clamp(-SCALE_GRAD_CLIP, SCALE_GRAD_CLIP),
+                ))
+                .collect();
+            scale_opt.step(&mut log_scales, &d_log_scales_clipped);
 
-            // Clamp log-space scales to prevent exp() overflow
-            // exp(20) ≈ 485M (very large), exp(-20) ≈ 2e-9 (very small but valid)
-            // Reasonable bounds: exp(8) ≈ 3000, exp(-14) ≈ 8e-7
-            // Original 3DGS uses tighter bounds to prevent degenerate ellipsoids
-            const MAX_LOG_SCALE: f32 = 8.0;
-            const MIN_LOG_SCALE: f32 = -14.0;
+            // Clamp log-space scales to prevent degenerate ellipsoids
+            // exp(5) ≈ 148 (large but reasonable), exp(-10) ≈ 4.5e-5 (tiny but valid)
+            // Tighter bounds prevent stretched/exploding Gaussians during training
+            const MAX_LOG_SCALE: f32 = 5.0;
+            const MIN_LOG_SCALE: f32 = -10.0;
             for scale in log_scales.iter_mut() {
                 scale.x = scale.x.clamp(MIN_LOG_SCALE, MAX_LOG_SCALE);
                 scale.y = scale.y.clamp(MIN_LOG_SCALE, MAX_LOG_SCALE);
@@ -1435,6 +1444,17 @@ pub fn train_multiview_color_only(
     let mut last_grad_p50: f32 = 0.0;
     let mut last_grad_p90: f32 = 0.0;
 
+    // Cached coverage weights for GPU training
+    // Updated every COVERAGE_INTERVAL iterations at 4x downsampled resolution
+    #[cfg(feature = "gpu")]
+    const COVERAGE_INTERVAL: usize = 25;
+    #[cfg(feature = "gpu")]
+    const COVERAGE_DOWNSAMPLE: u32 = 4;
+    #[cfg(feature = "gpu")]
+    let mut cached_coverage_weights: Option<Vec<f32>> = None;
+    #[cfg(feature = "gpu")]
+    let mut cached_coverage_dims: (u32, u32) = (0, 0);
+
     for iter in 0..cfg.iters {
         // Apply LR schedule: exponential decay
         let lr_multiplier = lr_decay_rate.powi(iter as i32);
@@ -1523,11 +1543,24 @@ pub fn train_multiview_color_only(
 
         let t0 = Instant::now();
 
-        // Skip coverage computation when using GPU (it's a full render pass!)
-        // With GPU rendering being fast, we can afford to weight all pixels equally
+        // Coverage weighting: weight covered pixels more than background
+        // GPU path uses downsampled coverage computed periodically to reduce overhead
         #[cfg(feature = "gpu")]
         let weights: Vec<f32> = if gpu_renderer.is_some() {
-            vec![1.0; (train_camera.width * train_camera.height) as usize]
+            // Update cached coverage every COVERAGE_INTERVAL iterations or when dimensions change
+            let current_dims = (train_camera.width, train_camera.height);
+            if cached_coverage_weights.is_none()
+                || cached_coverage_dims != current_dims
+                || iter % COVERAGE_INTERVAL == 0
+            {
+                cached_coverage_weights = Some(coverage_weights_downsampled(
+                    &gaussians,
+                    &train_camera,
+                    COVERAGE_DOWNSAMPLE,
+                ));
+                cached_coverage_dims = current_dims;
+            }
+            cached_coverage_weights.clone().unwrap()
         } else {
             let coverage_bool = coverage_mask_bool(&gaussians, &train_camera);
             coverage_bool
@@ -1648,14 +1681,23 @@ pub fn train_multiview_color_only(
             }
         }
         if cfg.learn_scale {
-            scale_opt.step(&mut log_scales, &d_log_scales);
+            // Clip scale gradients to prevent extreme updates
+            const SCALE_GRAD_CLIP: f32 = 1.0;
+            let d_log_scales_clipped: Vec<Vector3<f32>> = d_log_scales
+                .iter()
+                .map(|g| Vector3::new(
+                    g.x.clamp(-SCALE_GRAD_CLIP, SCALE_GRAD_CLIP),
+                    g.y.clamp(-SCALE_GRAD_CLIP, SCALE_GRAD_CLIP),
+                    g.z.clamp(-SCALE_GRAD_CLIP, SCALE_GRAD_CLIP),
+                ))
+                .collect();
+            scale_opt.step(&mut log_scales, &d_log_scales_clipped);
 
-            // Clamp log-space scales to prevent exp() overflow
-            // exp(20) ≈ 485M (very large), exp(-20) ≈ 2e-9 (very small but valid)
-            // Reasonable bounds: exp(8) ≈ 3000, exp(-14) ≈ 8e-7
-            // Original 3DGS uses tighter bounds to prevent degenerate ellipsoids
-            const MAX_LOG_SCALE: f32 = 8.0;
-            const MIN_LOG_SCALE: f32 = -14.0;
+            // Clamp log-space scales to prevent degenerate ellipsoids
+            // exp(5) ≈ 148 (large but reasonable), exp(-10) ≈ 4.5e-5 (tiny but valid)
+            // Tighter bounds prevent stretched/exploding Gaussians during training
+            const MAX_LOG_SCALE: f32 = 5.0;
+            const MIN_LOG_SCALE: f32 = -10.0;
             for scale in log_scales.iter_mut() {
                 scale.x = scale.x.clamp(MIN_LOG_SCALE, MAX_LOG_SCALE);
                 scale.y = scale.y.clamp(MIN_LOG_SCALE, MAX_LOG_SCALE);

@@ -894,6 +894,58 @@ pub fn coverage_mask_bool(gaussians: &[Gaussian], camera: &Camera) -> Vec<bool> 
     covered
 }
 
+/// Compute coverage weights at downsampled resolution and upsample to full resolution.
+///
+/// This provides a fast approximation of coverage weighting for GPU training,
+/// where computing full-resolution coverage on CPU would be too slow.
+///
+/// Returns a Vec<f32> with length width*height, row-major.
+/// Covered pixels get weight 1.0, uncovered pixels get weight 0.1.
+pub fn coverage_weights_downsampled(
+    gaussians: &[Gaussian],
+    camera: &Camera,
+    downsample: u32,
+) -> Vec<f32> {
+    let full_width = camera.width;
+    let full_height = camera.height;
+
+    // Create downsampled camera
+    let ds_width = (full_width + downsample - 1) / downsample;
+    let ds_height = (full_height + downsample - 1) / downsample;
+    let scale = 1.0 / downsample as f32;
+
+    let ds_camera = Camera::new(
+        camera.fx * scale,
+        camera.fy * scale,
+        camera.cx * scale,
+        camera.cy * scale,
+        ds_width,
+        ds_height,
+        camera.rotation,
+        camera.translation,
+    );
+
+    // Compute coverage at low resolution
+    let ds_coverage = coverage_mask_bool(gaussians, &ds_camera);
+
+    // Upsample to full resolution with nearest-neighbor
+    let mut weights = vec![0.1f32; (full_width * full_height) as usize];
+
+    for py in 0..full_height {
+        for px in 0..full_width {
+            let ds_x = px / downsample;
+            let ds_y = py / downsample;
+            let ds_idx = (ds_y * ds_width + ds_x) as usize;
+
+            if ds_idx < ds_coverage.len() && ds_coverage[ds_idx] {
+                weights[(py * full_width + px) as usize] = 1.0;
+            }
+        }
+    }
+
+    weights
+}
+
 /// Debug: visualize the final transmittance `T_N` per pixel (white=transparent, black=opaque).
 pub fn debug_final_transmittance(gaussians: &[Gaussian], camera: &Camera) -> RgbImage {
     let width = camera.width as i32;
