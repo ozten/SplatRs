@@ -1112,7 +1112,10 @@ impl GpuRenderer {
             None
         };
 
-        // Read gradient buffer as i32 (fixed-point representation)
+        // Read gradient buffer as i32 (fixed-point with scale 10^9)
+        // Higher precision scale allows gradients as small as 10^-9 to contribute
+        const FIXED_POINT_SCALE_INV: f32 = 1e-9;
+
         let pixel_grads_i32: Vec<i32> = buffers::read_buffer_blocking(
             &self.ctx.device,
             &self.ctx.queue,
@@ -1121,30 +1124,28 @@ impl GpuRenderer {
         )
         .map_err(|e| format!("Failed to read per-Gaussian gradients: {e}"))?;
 
-        // Convert from fixed-point i32 to f32 gradients
-        // Shader uses FIXED_POINT_SCALE = 10000000.0
-        const FIXED_POINT_SCALE: f32 = 10000000.0;
+        // Convert from fixed-point i32 back to f32 by dividing by scale
         let mut final_grads = crate::gpu::gradients::GaussianGradients2D::zeros(num_gaussians);
         for i in 0..num_gaussians {
             let base = i * GRADIENT_I32_PER_GAUSSIAN;
             // d_color: offsets 0-2 (3 is padding)
             final_grads.d_colors[i] = Vector3::new(
-                pixel_grads_i32[base + 0] as f32 / FIXED_POINT_SCALE,
-                pixel_grads_i32[base + 1] as f32 / FIXED_POINT_SCALE,
-                pixel_grads_i32[base + 2] as f32 / FIXED_POINT_SCALE,
+                pixel_grads_i32[base + 0] as f32 * FIXED_POINT_SCALE_INV,
+                pixel_grads_i32[base + 1] as f32 * FIXED_POINT_SCALE_INV,
+                pixel_grads_i32[base + 2] as f32 * FIXED_POINT_SCALE_INV,
             );
             // d_opacity_logit_pad: offset 4 (5-7 are padding)
-            final_grads.d_opacity_logits[i] = pixel_grads_i32[base + 4] as f32 / FIXED_POINT_SCALE;
+            final_grads.d_opacity_logits[i] = pixel_grads_i32[base + 4] as f32 * FIXED_POINT_SCALE_INV;
             // d_mean_px: offsets 8-9 (10-11 are padding)
             final_grads.d_mean_px[i] = Vector2::new(
-                pixel_grads_i32[base + 8] as f32 / FIXED_POINT_SCALE,
-                pixel_grads_i32[base + 9] as f32 / FIXED_POINT_SCALE,
+                pixel_grads_i32[base + 8] as f32 * FIXED_POINT_SCALE_INV,
+                pixel_grads_i32[base + 9] as f32 * FIXED_POINT_SCALE_INV,
             );
             // d_cov_2d: offsets 12-14 (15 is padding)
             final_grads.d_cov_2d[i] = Vector3::new(
-                pixel_grads_i32[base + 12] as f32 / FIXED_POINT_SCALE,
-                pixel_grads_i32[base + 13] as f32 / FIXED_POINT_SCALE,
-                pixel_grads_i32[base + 14] as f32 / FIXED_POINT_SCALE,
+                pixel_grads_i32[base + 12] as f32 * FIXED_POINT_SCALE_INV,
+                pixel_grads_i32[base + 13] as f32 * FIXED_POINT_SCALE_INV,
+                pixel_grads_i32[base + 14] as f32 * FIXED_POINT_SCALE_INV,
             );
         }
 
@@ -1231,6 +1232,9 @@ impl GpuRenderer {
     ) -> (Vec<Vector3<f32>>, crate::gpu::gradients::GaussianGradients2D) {
         use crate::gpu::gradients::accumulate_tile_gradients;
         use crate::gpu::types::{ContributionGPU, GradientGPU, MAX_CONTRIBUTIONS_PER_PIXEL};
+
+        // 16 i32s = 64 bytes per Gaussian (matches shader GRADIENT_STRIDE)
+        const GRADIENT_I32_PER_GAUSSIAN: usize = 16;
 
         let num_gaussians = gaussians.len();
         let width = camera.width;

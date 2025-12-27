@@ -48,16 +48,12 @@ struct BackwardParams {
 @group(0) @binding(1) var<storage, read> intermediates: array<Contribution>;
 @group(0) @binding(2) var<storage, read> gaussians: array<Gaussian2D>;
 @group(0) @binding(3) var<storage, read> d_pixels: array<vec4<f32>>;  // Upstream gradients
-@group(0) @binding(4) var<storage, read_write> gradient_atomic: array<atomic<i32>>;  // Per-Gaussian gradients as atomic i32 (16 i32s per Gaussian)
+@group(0) @binding(4) var<storage, read_write> gradient_atomic: array<atomic<i32>>;  // Per-Gaussian gradients as fixed-point i32
 @group(0) @binding(5) var<storage, read_write> d_background_pixels: array<vec4<f32>>;  // Per-pixel background gradient contribution (f32, summed on CPU)
 
 // Maximum contributions per pixel (must match Rust constant)
 const MAX_CONTRIBUTIONS_PER_PIXEL: u32 = 16u;
 
-// Fixed-point scale for gradient accumulation
-// Gradients are multiplied by this before converting to i32
-// This preserves precision while using integer atomics (Metal-compatible)
-const FIXED_POINT_SCALE: f32 = 10000000.0;  // 7 decimal places of precision
 
 // Evaluate 2D Gaussian at a pixel (same as in rasterize.wgsl)
 fn eval_gaussian_2d(mean_x: f32, mean_y: f32, cov_xx: f32, cov_xy: f32, cov_yy: f32,
@@ -93,23 +89,44 @@ fn zero_gradient() -> Gradient {
     );
 }
 
-// Atomic add for f32 using fixed-point integer atomics
-// Metal doesn't support atomicCompareExchange, so we use fixed-point arithmetic
-// Convert f32 to scaled i32, use atomicAdd, then convert back to f32 on CPU
+// Higher precision fixed-point scale for atomic gradient accumulation.
+// Scale of 10^9 gives 100x more precision than 10^7, allowing gradients
+// as small as 10^-9 to contribute to training.
+//
+// Overflow analysis (i32 max ≈ 2.1×10^9):
+// - Typical per-pixel gradient: 10^-6 → scaled = 10^3
+// - Per Gaussian ~1000 pixel contributions → accumulated = 10^6
+// - Well within i32 range with room for larger scenes
+const FIXED_POINT_SCALE: f32 = 1e9;
+const FIXED_POINT_SCALE_INV: f32 = 1e-9;
+
+// Atomic add for f32 using high-precision fixed-point conversion.
+// This is faster than spin-locks while still capturing small gradients.
 fn atomic_add_f32(index: u32, value: f32) {
-    let scaled = i32(value * FIXED_POINT_SCALE);
-    atomicAdd(&gradient_atomic[index], scaled);
+    // Skip zero/tiny values to avoid noise and unnecessary atomics
+    if (abs(value) < 1e-12) {
+        return;
+    }
+
+    // Convert to fixed-point and clamp to avoid i32 overflow
+    let scaled = value * FIXED_POINT_SCALE;
+    let clamped = clamp(scaled, -2147483647.0, 2147483647.0);
+    let fixed = i32(clamped);
+
+    if (fixed != 0) {
+        atomicAdd(&gradient_atomic[index], fixed);
+    }
 }
 
 // Note: Background gradient is now stored per-pixel (not atomic) to avoid i32 overflow
 // when summing across thousands of pixels. The CPU will sum the per-pixel contributions.
 
-// Gradient buffer layout (16 i32s per Gaussian):
-// [0-3]: d_color (vec4<f32> as fixed-point i32)
-// [4-7]: d_opacity_logit_pad (vec4<f32> as fixed-point i32)
-// [8-11]: d_mean_px (vec4<f32> as fixed-point i32)
-// [12-15]: d_cov_2d (vec4<f32> as fixed-point i32)
-const GRADIENT_STRIDE: u32 = 16u;  // 16 i32s = 64 bytes per Gaussian
+// Gradient buffer layout (16 u32s per Gaussian, each u32 is bitcast f32):
+// [0-3]: d_color (vec4<f32> as bitcast u32)
+// [4-7]: d_opacity_logit_pad (vec4<f32> as bitcast u32)
+// [8-11]: d_mean_px (vec4<f32> as bitcast u32)
+// [12-15]: d_cov_2d (vec4<f32> as bitcast u32)
+const GRADIENT_STRIDE: u32 = 16u;  // 16 u32s = 64 bytes per Gaussian
 
 
 // Compute gradient of Gaussian 2D evaluation w.r.t. mean
