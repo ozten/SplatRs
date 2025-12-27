@@ -89,16 +89,17 @@ fn zero_gradient() -> Gradient {
     );
 }
 
-// Higher precision fixed-point scale for atomic gradient accumulation.
-// Scale of 10^9 gives 100x more precision than 10^7, allowing gradients
-// as small as 10^-9 to contribute to training.
+// Fixed-point scale for atomic gradient accumulation.
+// Scale of 10^7 balances precision with overflow avoidance:
+// - Training: normalized d_out (~10^-6) × 10^7 = ~10 per pixel
+// - Testing: unnormalized d_out (~0.5) × 10^7 = 5×10^6 per pixel
+// - With ~1000 pixels/Gaussian: max accumulated = 5×10^9 → may overflow
 //
-// Overflow analysis (i32 max ≈ 2.1×10^9):
-// - Typical per-pixel gradient: 10^-6 → scaled = 10^3
-// - Per Gaussian ~1000 pixel contributions → accumulated = 10^6
-// - Well within i32 range with room for larger scenes
-const FIXED_POINT_SCALE: f32 = 1e9;
-const FIXED_POINT_SCALE_INV: f32 = 1e-9;
+// To prevent overflow, we use 10^6 which gives headroom:
+// - 0.5 × 10^6 × 1000 pixels = 5×10^8 → safe
+// - 10^-6 × 10^6 = 1 → marginal but OK for training
+const FIXED_POINT_SCALE: f32 = 1e6;
+const FIXED_POINT_SCALE_INV: f32 = 1e-6;
 
 // Atomic add for f32 using high-precision fixed-point conversion.
 // This is faster than spin-locks while still capturing small gradients.
@@ -253,7 +254,9 @@ fn backward_pass(
     //
     // Using reverse-mode accumulation of transmittance gradients.
 
-    var g_t_next = 0.0; // dL/d(T_{i+1}) as we go backwards
+    // Initialize g_T_N from background term: out includes T_N * bg
+    // dL/dT_N = d_out · bg (because changing T_N changes out by T_N * bg)
+    var g_t_next = dot(d_out, params.background.xyz); // dL/d(T_{i+1}) as we go backwards
 
     // Process contributions in reverse order
     for (var i = 0u; i < num_contribs; i++) {
