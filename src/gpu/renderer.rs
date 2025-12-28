@@ -1112,9 +1112,10 @@ impl GpuRenderer {
             None
         };
 
-        // Read gradient buffer as i32 (fixed-point with scale 10^7)
-        // Higher scale provides better precision for small training gradients
+        // Read gradient buffer as i32 (fixed-point)
+        // Color/opacity use scale 10^7, position/covariance use scale 10^9
         const FIXED_POINT_SCALE_INV: f32 = 1e-7;
+        const FIXED_POINT_SCALE_POSITION_INV: f32 = 1e-9;
 
         let pixel_grads_i32: Vec<i32> = buffers::read_buffer_blocking(
             &self.ctx.device,
@@ -1137,15 +1138,17 @@ impl GpuRenderer {
             // d_opacity_logit_pad: offset 4 (5-7 are padding)
             final_grads.d_opacity_logits[i] = pixel_grads_i32[base + 4] as f32 * FIXED_POINT_SCALE_INV;
             // d_mean_px: offsets 8-9 (10-11 are padding)
+            // Uses higher precision scale (10^9)
             final_grads.d_mean_px[i] = Vector2::new(
-                pixel_grads_i32[base + 8] as f32 * FIXED_POINT_SCALE_INV,
-                pixel_grads_i32[base + 9] as f32 * FIXED_POINT_SCALE_INV,
+                pixel_grads_i32[base + 8] as f32 * FIXED_POINT_SCALE_POSITION_INV,
+                pixel_grads_i32[base + 9] as f32 * FIXED_POINT_SCALE_POSITION_INV,
             );
             // d_cov_2d: offsets 12-14 (15 is padding)
+            // Uses higher precision scale (10^9)
             final_grads.d_cov_2d[i] = Vector3::new(
-                pixel_grads_i32[base + 12] as f32 * FIXED_POINT_SCALE_INV,
-                pixel_grads_i32[base + 13] as f32 * FIXED_POINT_SCALE_INV,
-                pixel_grads_i32[base + 14] as f32 * FIXED_POINT_SCALE_INV,
+                pixel_grads_i32[base + 12] as f32 * FIXED_POINT_SCALE_POSITION_INV,
+                pixel_grads_i32[base + 13] as f32 * FIXED_POINT_SCALE_POSITION_INV,
+                pixel_grads_i32[base + 14] as f32 * FIXED_POINT_SCALE_POSITION_INV,
             );
         }
 
