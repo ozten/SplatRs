@@ -1112,9 +1112,9 @@ impl GpuRenderer {
             None
         };
 
-        // Read gradient buffer as i32 (fixed-point with scale 10^6)
-        // This scale balances precision with overflow avoidance
-        const FIXED_POINT_SCALE_INV: f32 = 1e-6;
+        // Read gradient buffer as i32 (fixed-point with scale 10^7)
+        // Higher scale provides better precision for small training gradients
+        const FIXED_POINT_SCALE_INV: f32 = 1e-7;
 
         let pixel_grads_i32: Vec<i32> = buffers::read_buffer_blocking(
             &self.ctx.device,

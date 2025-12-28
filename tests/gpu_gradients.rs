@@ -69,11 +69,14 @@ fn test_gpu_vs_cpu_gradients() {
 
     // Create synthetic upstream gradients (dL/d(pixel))
     // For testing, use simple pattern: gradient increases from left to right
+    // IMPORTANT: Normalize gradients similar to training (divide by pixel count)
+    // to avoid fixed-point overflow with scale 10^7
     let num_pixels = (camera.width * camera.height) as usize;
+    let norm_scale = 1.0 / num_pixels as f32;
     let d_pixels: Vec<Vector3<f32>> = (0..num_pixels)
         .map(|i| {
             let x = (i % camera.width as usize) as f32 / camera.width as f32;
-            Vector3::new(x, 0.5, 1.0 - x)
+            Vector3::new(x * norm_scale, 0.5 * norm_scale, (1.0 - x) * norm_scale)
         })
         .collect();
 
@@ -199,10 +202,15 @@ fn test_gpu_vs_cpu_gradients() {
 
     // Validation thresholds
     // Allow for some numerical differences between CPU and GPU
-    // Note: Current differences are ~0.02 for color, ~2.0 for opacity
-    // This is acceptable given GPU/CPU numerical precision differences
-    let color_tolerance = 0.02;
-    let opacity_tolerance = 2.5;
+    // With normalized gradients, use relative tolerance based on gradient magnitude
+    // (gradients are now ~1/num_pixels smaller)
+    let max_cpu_color = cpu_d_colors.iter().map(|c| c.norm()).fold(0.0f32, f32::max);
+    let max_cpu_opacity = cpu_d_opacity_logits.iter().map(|o| o.abs()).fold(0.0f32, f32::max);
+
+    // Use 5% relative tolerance for color, 15% for opacity (more sensitive to fixed-point quantization)
+    // Include absolute floor for near-zero gradients
+    let color_tolerance = (max_cpu_color * 0.05).max(1e-5);
+    let opacity_tolerance = (max_cpu_opacity * 0.15).max(1e-5);
 
     assert!(
         max_color_diff < color_tolerance,
@@ -231,8 +239,8 @@ fn test_gpu_vs_cpu_gradients() {
     }
 
     println!("\n✅ GPU gradients match CPU within tolerance!");
-    println!("   Color gradient max diff:   {:.6} (< {:.6})", max_color_diff, color_tolerance);
-    println!("   Opacity gradient max diff: {:.6} (< {:.6})", max_opacity_diff, opacity_tolerance);
+    println!("   Color gradient max diff:   {:.6} (< {:.6}, {:.1}% of max)", max_color_diff, color_tolerance, 100.0 * max_color_diff / max_cpu_color.max(1e-10));
+    println!("   Opacity gradient max diff: {:.6} (< {:.6}, {:.1}% of max)", max_opacity_diff, opacity_tolerance, 100.0 * max_opacity_diff / max_cpu_opacity.max(1e-10));
 }
 
 #[test]
@@ -279,12 +287,14 @@ fn test_gpu_gradients_benchmark() {
     let background = Vector3::new(0.1, 0.1, 0.15);
 
     // Synthetic upstream gradients
+    // Normalize similar to training to avoid fixed-point overflow
     let num_pixels = (camera.width * camera.height) as usize;
+    let norm_scale = 1.0 / num_pixels as f32;
     let d_pixels: Vec<Vector3<f32>> = (0..num_pixels)
         .map(|i| {
             let x = (i % camera.width as usize) as f32 / camera.width as f32;
             let y = (i / camera.width as usize) as f32 / camera.height as f32;
-            Vector3::new(x, y, 1.0 - x)
+            Vector3::new(x * norm_scale, y * norm_scale, (1.0 - x) * norm_scale)
         })
         .collect();
 

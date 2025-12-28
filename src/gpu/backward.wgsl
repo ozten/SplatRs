@@ -95,11 +95,12 @@ fn zero_gradient() -> Gradient {
 // - Testing: unnormalized d_out (~0.5) × 10^7 = 5×10^6 per pixel
 // - With ~1000 pixels/Gaussian: max accumulated = 5×10^9 → may overflow
 //
-// To prevent overflow, we use 10^6 which gives headroom:
-// - 0.5 × 10^6 × 1000 pixels = 5×10^8 → safe
-// - 10^-6 × 10^6 = 1 → marginal but OK for training
-const FIXED_POINT_SCALE: f32 = 1e6;
-const FIXED_POINT_SCALE_INV: f32 = 1e-6;
+// We use 10^7 for good training precision:
+// - Training normalized gradients: ~10^-6 × 10^7 = 10 per pixel → good precision
+// - With 1000 pixels/Gaussian: 10 × 1000 = 10^4 per Gaussian → safe
+// - Test gradients must be normalized (divided by pixel count) to avoid overflow
+const FIXED_POINT_SCALE: f32 = 1e7;
+const FIXED_POINT_SCALE_INV: f32 = 1e-7;
 
 // Atomic add for f32 using high-precision fixed-point conversion.
 // This is faster than spin-locks while still capturing small gradients.

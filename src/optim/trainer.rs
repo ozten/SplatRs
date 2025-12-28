@@ -611,6 +611,10 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
             let bg_grad = vec![d_bg];
             bg_opt.step(&mut bg_param, &bg_grad);
             bg = bg_param[0];
+            // Clamp background to valid RGB range [0, 1]
+            bg.x = bg.x.clamp(0.0, 1.0);
+            bg.y = bg.y.clamp(0.0, 1.0);
+            bg.z = bg.z.clamp(0.0, 1.0);
         }
         let t_step = t2.elapsed();
 
@@ -1761,6 +1765,10 @@ pub fn train_multiview_color_only(
             let bg_grad = vec![d_bg];
             bg_opt.step(&mut bg_param, &bg_grad);
             bg = bg_param[0];
+            // Clamp background to valid RGB range [0, 1]
+            bg.x = bg.x.clamp(0.0, 1.0);
+            bg.y = bg.y.clamp(0.0, 1.0);
+            bg.z = bg.z.clamp(0.0, 1.0);
         }
         let t_step = t2.elapsed();
 
