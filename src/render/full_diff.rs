@@ -59,13 +59,14 @@ fn project_gaussian(
     gaussian: &Gaussian,
     camera: &Camera,
     gaussian_idx: usize,
+    disable_sh: bool,
 ) -> Option<Gaussian2D> {
     // 1) Transform mean to camera space.
     let mean_cam = camera.world_to_camera(&gaussian.position);
 
     // Cull if behind camera OR too close to near plane
     // Near-plane threshold prevents huge splats from divide-by-near-zero in Jacobian
-    const NEAR_PLANE: f32 = 0.01;
+    const NEAR_PLANE: f32 = 0.2; // was 0.01
     if mean_cam.z <= NEAR_PLANE {
         return None;
     }
@@ -104,13 +105,20 @@ fn project_gaussian(
         return None; // Too large - would fill screen
     }
 
+    // Compute color: DC-only when disable_sh is true, full SH otherwise
+    let color = if disable_sh {
+        crate::core::evaluate_sh_dc_only(&gaussian.sh_coeffs)
+    } else {
+        crate::core::evaluate_sh_unclamped(
+            &gaussian.sh_coeffs,
+            &camera.view_direction(&gaussian.position),
+        )
+    };
+
     Some(Gaussian2D {
         mean: Vector3::new(mean_px.x, mean_px.y, mean_cam.z),
         cov: Vector3::new(cov_xx, cov_xy, cov_yy),
-        color: crate::core::evaluate_sh_unclamped(
-            &gaussian.sh_coeffs,
-            &camera.view_direction(&gaussian.position),
-        ),
+        color,
         opacity: crate::core::sigmoid(gaussian.opacity),
         gaussian_idx,
     })
@@ -190,6 +198,7 @@ pub fn render_full_color_grads(
     camera: &Camera,
     d_image: &[Vector3<f32>],
     bg: &Vector3<f32>,
+    disable_sh: bool,
 ) -> (
     RgbImage,
     Vec<Vector3<f32>>,
@@ -210,7 +219,7 @@ pub fn render_full_color_grads(
     let mut projected: Vec<Gaussian2D> = gaussians
         .iter()
         .enumerate()
-        .filter_map(|(i, g)| project_gaussian(g, camera, i))
+        .filter_map(|(i, g)| project_gaussian(g, camera, i, disable_sh))
         .collect();
 
     // Filter out invalid Gaussians (NaN or inf depth) before sorting
@@ -464,6 +473,7 @@ pub fn render_full_linear(
     gaussians: &[Gaussian],
     camera: &Camera,
     bg: &Vector3<f32>,
+    disable_sh: bool,
 ) -> Vec<Vector3<f32>> {
     let width = camera.width as i32;
     let height = camera.height as i32;
@@ -472,7 +482,7 @@ pub fn render_full_linear(
     let mut projected: Vec<Gaussian2D> = gaussians
         .iter()
         .enumerate()
-        .filter_map(|(i, g)| project_gaussian(g, camera, i))
+        .filter_map(|(i, g)| project_gaussian(g, camera, i, disable_sh))
         .collect();
 
     // Be robust to upstream numerical issues (e.g., NaN depth after training).
@@ -737,7 +747,7 @@ pub fn debug_overlay_means(
     let mut projected: Vec<Gaussian2D> = gaussians
         .iter()
         .enumerate()
-        .filter_map(|(i, g)| project_gaussian(g, camera, i))
+        .filter_map(|(i, g)| project_gaussian(g, camera, i, false))
         .collect();
 
     // Filter out invalid Gaussians (NaN or inf depth) before sorting
@@ -849,7 +859,7 @@ pub fn coverage_mask_bool(gaussians: &[Gaussian], camera: &Camera) -> Vec<bool> 
     let mut projected: Vec<Gaussian2D> = gaussians
         .iter()
         .enumerate()
-        .filter_map(|(i, g)| project_gaussian(g, camera, i))
+        .filter_map(|(i, g)| project_gaussian(g, camera, i, false))
         .collect();
 
     // Filter out invalid Gaussians (NaN or inf depth) before sorting
@@ -954,7 +964,7 @@ pub fn debug_final_transmittance(gaussians: &[Gaussian], camera: &Camera) -> Rgb
     let mut projected: Vec<Gaussian2D> = gaussians
         .iter()
         .enumerate()
-        .filter_map(|(i, g)| project_gaussian(g, camera, i))
+        .filter_map(|(i, g)| project_gaussian(g, camera, i, false))
         .collect();
 
     // Filter out invalid Gaussians (NaN or inf depth) before sorting
@@ -1004,7 +1014,7 @@ pub fn debug_contrib_count(gaussians: &[Gaussian], camera: &Camera, clamp_max: u
     let mut projected: Vec<Gaussian2D> = gaussians
         .iter()
         .enumerate()
-        .filter_map(|(i, g)| project_gaussian(g, camera, i))
+        .filter_map(|(i, g)| project_gaussian(g, camera, i, false))
         .collect();
 
     // Filter out invalid Gaussians (NaN or inf depth) before sorting

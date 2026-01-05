@@ -93,7 +93,7 @@ fn test_full_backward_pass_gpu_vs_cpu() {
         cpu_d_log_scales,
         cpu_d_rot_vecs,
         cpu_d_bg,
-    ) = render_full_color_grads(&gaussians, &camera, &d_pixels, &background);
+    ) = render_full_color_grads(&gaussians, &camera, &d_pixels, &background, false);
 
     println!("CPU Results:");
     for i in 0..gaussians.len() {

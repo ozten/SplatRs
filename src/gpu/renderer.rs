@@ -68,6 +68,17 @@ impl GpuRenderer {
                             },
                             count: None,
                         },
+                        // Settings uniform (disable_sh flag)
+                        wgpu::BindGroupLayoutEntry {
+                            binding: 3,
+                            visibility: wgpu::ShaderStages::COMPUTE,
+                            ty: wgpu::BindingType::Buffer {
+                                ty: wgpu::BufferBindingType::Uniform,
+                                has_dynamic_offset: false,
+                                min_binding_size: None,
+                            },
+                            count: None,
+                        },
                     ],
                 });
 
@@ -360,6 +371,18 @@ impl GpuRenderer {
         camera: &Camera,
         background: &Vector3<f32>,
     ) -> Result<Vec<Vector3<f32>>, String> {
+        self.render_with_sh_mode(gaussians, camera, background, false)
+    }
+
+    /// Render with explicit SH mode control.
+    /// If `disable_sh` is true, only the DC term is used for color (view-independent).
+    pub fn render_with_sh_mode(
+        &self,
+        gaussians: &[Gaussian],
+        camera: &Camera,
+        background: &Vector3<f32>,
+        disable_sh: bool,
+    ) -> Result<Vec<Vector3<f32>>, String> {
         let enable_timing = std::env::var("SUGAR_GPU_TIMING").is_ok();
         let t_start = if enable_timing { Some(std::time::Instant::now()) } else { None };
 
@@ -422,6 +445,19 @@ impl GpuRenderer {
             BufferUsages::STORAGE | BufferUsages::COPY_SRC,
         );
 
+        // Create settings buffer based on SH mode
+        let settings_gpu = if disable_sh {
+            SettingsGPU::dc_only()
+        } else {
+            SettingsGPU::full_sh()
+        };
+        let settings_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "Settings Buffer",
+            &[settings_gpu],
+            BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        );
+
         // Create projection bind group
         let project_bind_group = self.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Project Bind Group"),
@@ -438,6 +474,10 @@ impl GpuRenderer {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: projected_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: settings_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -724,6 +764,15 @@ impl GpuRenderer {
             BufferUsages::STORAGE | BufferUsages::COPY_SRC,
         );
 
+        // Create settings buffer (default to full SH for backward compatibility)
+        let settings_gpu = SettingsGPU::full_sh();
+        let settings_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "Settings Buffer",
+            &[settings_gpu],
+            BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        );
+
         // Execute projection
         let project_bind_group = self.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Project Bind Group"),
@@ -740,6 +789,10 @@ impl GpuRenderer {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: projected_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: settings_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -1298,6 +1351,15 @@ impl GpuRenderer {
             BufferUsages::STORAGE | BufferUsages::COPY_SRC,
         );
 
+        // Create settings buffer (default to full SH for backward compatibility)
+        let settings_gpu = SettingsGPU::full_sh();
+        let settings_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "Settings Buffer",
+            &[settings_gpu],
+            BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        );
+
         // Project Gaussians
         let project_bind_group = self.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Project Bind Group"),
@@ -1314,6 +1376,10 @@ impl GpuRenderer {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: projected_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: settings_buffer.as_entire_binding(),
                 },
             ],
         });

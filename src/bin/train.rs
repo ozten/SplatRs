@@ -131,6 +131,7 @@ fn main() {
     let mut split_sigma_threshold: f32 = 0.05;
     let mut seed: Option<u64> = None;
     let mut use_gpu: bool = true;
+    let mut disable_sh: bool = false;
 
     fn apply_preset(
         name: &str,
@@ -408,9 +409,42 @@ fn main() {
                 *split_sigma_threshold = 0.05;
                 *seed = Some(0);
             }
+            "debug" => {
+                // Debug preset: Ultra-fast iteration for bug hunting
+                // Optimized for: single parameter testing, fast loss feedback, tiny models
+                *multiview = false;         // Single view for isolation
+                *iters = 50;                // Very few iterations
+                *lr = 0.01;                 // Larger LR for faster convergence signal
+                *lr_position = 0.001;       // 10x higher for visible movement
+                *lr_rotation = 0.01;
+                *lr_scale = 0.05;
+                *lr_opacity = 0.1;
+                *lr_sh = 0.025;
+                *lr_background = 0.01;
+                *downsample = 0.0625;       // 1/16 resolution (~32x32 for 512px)
+                *max_gaussians = 10;        // Tiny model
+                *log_interval = 1;          // Log every iteration
+                *learn_background = false;  // Isolate Gaussian learning
+                *learn_opacity = true;
+                *learn_position = true;
+                *learn_scale = true;
+                *learn_rotation = false;    // Disable rotation for simpler gradients
+                *learn_sh = true;
+                *loss = sugar_rs::optim::loss::LossKind::L2;  // Simpler loss
+                *train_fraction = 1.0;      // Use all images for training (no validation)
+                *val_interval = 10;
+                *max_test_views_for_metrics = 0;
+                *max_images = 1;            // Single image
+                *densify_interval = 0;      // Disable densification
+                *densify_max_gaussians = 10;
+                *densify_grad_threshold = 1e9;  // Effectively disable
+                *prune_opacity_threshold = 0.0; // Disable pruning
+                *split_sigma_threshold = 1e9;
+                *seed = Some(42);           // Fixed seed for reproducibility
+            }
             other => {
                 return Err(format!(
-                    "Unknown preset `{other}` (expected one of: m7, m8-smoke, m8, m9, micro, onehour, full, m10, m10-quick)"
+                    "Unknown preset `{other}` (expected one of: m7, m8-smoke, m8, m9, micro, onehour, full, m10, m10-quick, debug)"
                 ));
             }
         }
@@ -464,6 +498,12 @@ fn main() {
             "--images" => images = args.next().map(std::path::PathBuf::from),
             "--iters" => iters = args.next().unwrap().parse().unwrap(),
             "--lr" => lr = args.next().unwrap().parse().unwrap(),
+            "--lr-position" => lr_position = args.next().unwrap().parse().unwrap(),
+            "--lr-rotation" => lr_rotation = args.next().unwrap().parse().unwrap(),
+            "--lr-scale" => lr_scale = args.next().unwrap().parse().unwrap(),
+            "--lr-opacity" => lr_opacity = args.next().unwrap().parse().unwrap(),
+            "--lr-sh" => lr_sh = args.next().unwrap().parse().unwrap(),
+            "--lr-background" => lr_background = args.next().unwrap().parse().unwrap(),
             "--downsample" => {
                 downsample = args.next().unwrap().parse().unwrap();
                 downsample_explicit = true;
@@ -502,6 +542,7 @@ fn main() {
             "--seed" => seed = Some(args.next().unwrap().parse().unwrap()),
             "--gpu" => use_gpu = true,
             "--cpu" | "--no-gpu" => use_gpu = false,
+            "--disable-sh" => disable_sh = true,
             "--help" | "-h" => {
                 eprintln!("Usage:");
                 eprintln!("  sugar-train --preset m7|m8-smoke|m8|m9|m10 [--dataset-root <root> | --scene <sparse/0>] [--images <dir>] [overrides...]");
@@ -633,6 +674,7 @@ fn main() {
             use_gpu,
             csv_output_path: Some(final_out_dir.join("metrics.csv")),
             out_dir: final_out_dir.clone(),
+            disable_sh,
         };
 
         let out = sugar_rs::optim::trainer::train_multiview_color_only(&cfg)
@@ -710,6 +752,7 @@ fn main() {
             rng_seed: seed,
             use_gpu,
             csv_output_path: Some(final_out_dir.join("metrics.csv")),
+            disable_sh,
         };
 
         let out =

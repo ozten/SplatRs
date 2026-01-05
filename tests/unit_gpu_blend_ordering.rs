@@ -46,7 +46,7 @@ fn test_gpu_matches_cpu_blend_ordering_tiny() {
     );
 
     let bg = Vector3::zeros();
-    let cpu = render_full_linear(&[far.clone(), near.clone()], &camera, &bg);
+    let cpu = render_full_linear(&[far.clone(), near.clone()], &camera, &bg, false);
     let gpu = GpuRenderer::new()
         .expect("Failed to initialize GPU")
         .render(&[far, near], &camera, &bg)

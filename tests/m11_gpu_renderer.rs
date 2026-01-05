@@ -63,7 +63,7 @@ fn test_gpu_vs_cpu_rendering() {
     let background = Vector3::new(0.1, 0.1, 0.15);
 
     // Render with CPU
-    let cpu_result = render_full_linear(&gaussians, &camera, &background);
+    let cpu_result = render_full_linear(&gaussians, &camera, &background, false);
 
     // Render with GPU
     let gpu_renderer = GpuRenderer::new().expect("Failed to initialize GPU");

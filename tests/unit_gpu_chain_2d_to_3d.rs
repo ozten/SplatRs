@@ -52,7 +52,7 @@ fn test_gpu_2d_chain_matches_cpu_3d_grads() {
     let d_pixels = vec![Vector3::new(1.0, -0.5, 0.25); num_pixels];
 
     let (_cpu_img, _cpu_d_colors, _cpu_d_opacity, cpu_d_pos, cpu_d_scale, cpu_d_rot, _cpu_d_bg) =
-        render_full_color_grads(&gaussians, &camera, &d_pixels, &bg);
+        render_full_color_grads(&gaussians, &camera, &d_pixels, &bg, false);
 
     let (_gpu_img, gpu_grads) = GpuRenderer::new()
         .expect("Failed to initialize GPU")

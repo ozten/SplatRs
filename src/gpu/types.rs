@@ -117,6 +117,36 @@ impl CameraGPU {
     }
 }
 
+/// GPU render settings.
+///
+/// Matches the Settings struct in shaders.rs.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct SettingsGPU {
+    /// 1 = DC-only mode (ignore higher SH bands), 0 = full SH
+    pub disable_sh: u32,
+    /// Padding to 16-byte alignment
+    pub _pad: [u32; 3],
+}
+
+impl SettingsGPU {
+    /// Create settings with full SH evaluation.
+    pub fn full_sh() -> Self {
+        Self {
+            disable_sh: 0,
+            _pad: [0; 3],
+        }
+    }
+
+    /// Create settings with DC-only color evaluation.
+    pub fn dc_only() -> Self {
+        Self {
+            disable_sh: 1,
+            _pad: [0; 3],
+        }
+    }
+}
+
 /// GPU representation of a contribution for backward pass.
 ///
 /// Stores the intermediate values needed for gradient computation:

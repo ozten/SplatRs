@@ -57,6 +57,7 @@ fn test_m9_densify_smoke_tandt() {
         use_gpu: cfg!(feature = "gpu"),
         csv_output_path: None,
         out_dir: PathBuf::from("test_output"),
+        disable_sh: false,
     };
 
     let result = train_multiview_color_only(&cfg).expect("Training failed");

@@ -11,7 +11,9 @@ fn main() {
             list_models,
             load_model,
             render_frame,
-            get_camera_by_id
+            get_camera_by_id,
+            set_disable_sh,
+            get_disable_sh
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

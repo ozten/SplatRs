@@ -78,7 +78,7 @@ fn main() {
 
     // CPU Benchmark
     println!("\n=== CPU Rendering Benchmark ===");
-    let cpu_warmup = render_full_linear(&gaussians, &camera, &background);
+    let cpu_warmup = render_full_linear(&gaussians, &camera, &background, false);
     println!("  Warmup complete");
 
     let cpu_iterations = 10;
@@ -86,7 +86,7 @@ fn main() {
 
     for i in 0..cpu_iterations {
         let start = Instant::now();
-        let _result = render_full_linear(&gaussians, &camera, &background);
+        let _result = render_full_linear(&gaussians, &camera, &background, false);
         let elapsed = start.elapsed();
         cpu_times.push(elapsed.as_secs_f64());
         println!("  Iteration {}: {:.3}s", i + 1, elapsed.as_secs_f64());

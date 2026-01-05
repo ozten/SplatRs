@@ -228,8 +228,8 @@ fn main() {
         camera.width, camera.height
     );
 
-    // Render
-    let pixels = render_full_linear(&cloud.gaussians, &camera, &background);
+    // Render (use full SH for final rendering)
+    let pixels = render_full_linear(&cloud.gaussians, &camera, &background, false);
 
     // Convert to RGB8 image
     let img = linear_vec_to_rgb8_img(&pixels, camera.width, camera.height);

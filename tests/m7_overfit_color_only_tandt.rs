@@ -54,6 +54,7 @@ fn test_m7_overfit_color_only_tandt_train() {
         rng_seed: Some(0),
         use_gpu: true,
         csv_output_path: None,
+        disable_sh: false,
     };
 
     let _out = train_single_image_color_only(&cfg).expect("Training failed");

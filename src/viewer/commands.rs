@@ -43,6 +43,23 @@ pub async fn log_to_stdout(message: String) {
     println!("[JS] {}", message);
 }
 
+#[tauri::command]
+pub async fn set_disable_sh(
+    value: bool,
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    state.set_disable_sh(value);
+    println!("[VIEWER] set_disable_sh: {}", value);
+    Ok(value)
+}
+
+#[tauri::command]
+pub async fn get_disable_sh(
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    Ok(state.get_disable_sh())
+}
+
 /// Recursively scan a directory for .gs files
 fn scan_directory_for_models(dir: &PathBuf, models: &mut Vec<ModelInfo>) {
     if !dir.exists() {
@@ -247,8 +264,9 @@ pub async fn render_frame(
     // Render on GPU
     let mut renderer = state.renderer.lock().unwrap();
     let background = Vector3::new(0.0, 0.0, 0.0); // Black background
+    let disable_sh = state.get_disable_sh();
     let pixels = renderer
-        .render(&cloud.gaussians, &camera, &background)
+        .render_with_sh_mode(&cloud.gaussians, &camera, &background, disable_sh)
         .map_err(|e| format!("GPU render failed: {e}"))?;
 
     if frame < 3 {

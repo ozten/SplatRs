@@ -91,7 +91,7 @@ fn test_gpu_vs_cpu_gradients() {
         _cpu_d_log_scales,
         _cpu_d_rot_vecs,
         _cpu_d_bg,
-    ) = render_full_color_grads(&gaussians, &camera, &d_pixels, &background);
+    ) = render_full_color_grads(&gaussians, &camera, &d_pixels, &background, false);
     let cpu_time = t_cpu_start.elapsed();
     println!("  CPU time: {:?}", cpu_time);
 
@@ -316,7 +316,7 @@ fn test_gpu_gradients_benchmark() {
 
     for i in 0..cpu_iterations {
         let t = std::time::Instant::now();
-        let _ = render_full_color_grads(&gaussians, &camera, &d_pixels, &background);
+        let _ = render_full_color_grads(&gaussians, &camera, &d_pixels, &background, false);
         let elapsed = t.elapsed();
         cpu_times.push(elapsed);
         println!("  Iteration {}: {:?}", i + 1, elapsed);
