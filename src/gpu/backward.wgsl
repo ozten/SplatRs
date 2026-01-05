@@ -48,16 +48,12 @@ struct BackwardParams {
 @group(0) @binding(1) var<storage, read> intermediates: array<Contribution>;
 @group(0) @binding(2) var<storage, read> gaussians: array<Gaussian2D>;
 @group(0) @binding(3) var<storage, read> d_pixels: array<vec4<f32>>;  // Upstream gradients
-@group(0) @binding(4) var<storage, read_write> gradient_atomic: array<atomic<i32>>;  // Per-Gaussian gradients as atomic i32 (16 i32s per Gaussian)
+@group(0) @binding(4) var<storage, read_write> gradient_atomic: array<atomic<i32>>;  // Per-Gaussian gradients as fixed-point i32
 @group(0) @binding(5) var<storage, read_write> d_background_pixels: array<vec4<f32>>;  // Per-pixel background gradient contribution (f32, summed on CPU)
 
 // Maximum contributions per pixel (must match Rust constant)
 const MAX_CONTRIBUTIONS_PER_PIXEL: u32 = 16u;
 
-// Fixed-point scale for gradient accumulation
-// Gradients are multiplied by this before converting to i32
-// This preserves precision while using integer atomics (Metal-compatible)
-const FIXED_POINT_SCALE: f32 = 10000000.0;  // 7 decimal places of precision
 
 // Evaluate 2D Gaussian at a pixel (same as in rasterize.wgsl)
 fn eval_gaussian_2d(mean_x: f32, mean_y: f32, cov_xx: f32, cov_xy: f32, cov_yy: f32,
@@ -93,23 +89,57 @@ fn zero_gradient() -> Gradient {
     );
 }
 
-// Atomic add for f32 using fixed-point integer atomics
-// Metal doesn't support atomicCompareExchange, so we use fixed-point arithmetic
-// Convert f32 to scaled i32, use atomicAdd, then convert back to f32 on CPU
+// Fixed-point scales for atomic gradient accumulation.
+// Different scales for color/opacity vs position/covariance because position
+// gradients have more multiplicative factors and are ~100× smaller.
+//
+// Color/opacity scale (10^7):
+// - Color gradients: d_out × alpha × transmittance ≈ 10^-6 × 10^7 = 10 per pixel
+// - With 1000 pixels: 10,000 per Gaussian → safe
+//
+// Position/covariance scale (10^9):
+// - Position gradients: d_mean × d_weight ≈ 10^-8 × 10^9 = 10 per pixel
+// - With 1000 pixels: 10,000 per Gaussian → safe
+// - Higher scale needed because position grads are ~100× smaller than color
+const FIXED_POINT_SCALE: f32 = 1e7;
+const FIXED_POINT_SCALE_POSITION: f32 = 1e9;
+
+// Atomic add for color/opacity gradients (scale 10^7)
 fn atomic_add_f32(index: u32, value: f32) {
-    let scaled = i32(value * FIXED_POINT_SCALE);
-    atomicAdd(&gradient_atomic[index], scaled);
+    if (abs(value) < 1e-12) {
+        return;
+    }
+    let scaled = value * FIXED_POINT_SCALE;
+    let clamped = clamp(scaled, -2147483647.0, 2147483647.0);
+    let fixed = i32(clamped);
+    if (fixed != 0) {
+        atomicAdd(&gradient_atomic[index], fixed);
+    }
+}
+
+// Atomic add for position/covariance gradients (scale 10^9)
+// Higher precision needed because these gradients are ~100× smaller
+fn atomic_add_f32_position(index: u32, value: f32) {
+    if (abs(value) < 1e-14) {
+        return;
+    }
+    let scaled = value * FIXED_POINT_SCALE_POSITION;
+    let clamped = clamp(scaled, -2147483647.0, 2147483647.0);
+    let fixed = i32(clamped);
+    if (fixed != 0) {
+        atomicAdd(&gradient_atomic[index], fixed);
+    }
 }
 
 // Note: Background gradient is now stored per-pixel (not atomic) to avoid i32 overflow
 // when summing across thousands of pixels. The CPU will sum the per-pixel contributions.
 
-// Gradient buffer layout (16 i32s per Gaussian):
-// [0-3]: d_color (vec4<f32> as fixed-point i32)
-// [4-7]: d_opacity_logit_pad (vec4<f32> as fixed-point i32)
-// [8-11]: d_mean_px (vec4<f32> as fixed-point i32)
-// [12-15]: d_cov_2d (vec4<f32> as fixed-point i32)
-const GRADIENT_STRIDE: u32 = 16u;  // 16 i32s = 64 bytes per Gaussian
+// Gradient buffer layout (16 u32s per Gaussian, each u32 is bitcast f32):
+// [0-3]: d_color (vec4<f32> as bitcast u32)
+// [4-7]: d_opacity_logit_pad (vec4<f32> as bitcast u32)
+// [8-11]: d_mean_px (vec4<f32> as bitcast u32)
+// [12-15]: d_cov_2d (vec4<f32> as bitcast u32)
+const GRADIENT_STRIDE: u32 = 16u;  // 16 u32s = 64 bytes per Gaussian
 
 
 // Compute gradient of Gaussian 2D evaluation w.r.t. mean
@@ -236,7 +266,9 @@ fn backward_pass(
     //
     // Using reverse-mode accumulation of transmittance gradients.
 
-    var g_t_next = 0.0; // dL/d(T_{i+1}) as we go backwards
+    // Initialize g_T_N from background term: out includes T_N * bg
+    // dL/dT_N = d_out · bg (because changing T_N changes out by T_N * bg)
+    var g_t_next = dot(d_out, params.background.xyz); // dL/d(T_{i+1}) as we go backwards
 
     // Process contributions in reverse order
     for (var i = 0u; i < num_contribs; i++) {
@@ -329,13 +361,15 @@ fn backward_pass(
         atomic_add_f32(base_idx + 4u, d_opacity_logit);
 
         // d_mean_px (offsets 8-9 for x,y; 10-11 are padding)
-        atomic_add_f32(base_idx + 8u, d_mean.x * d_weight);
-        atomic_add_f32(base_idx + 9u, d_mean.y * d_weight);
+        // Use higher precision (10^9) for position gradients
+        atomic_add_f32_position(base_idx + 8u, d_mean.x * d_weight);
+        atomic_add_f32_position(base_idx + 9u, d_mean.y * d_weight);
 
         // d_cov_2d (offsets 12-14 for xx,xy,yy; 15 is padding)
-        atomic_add_f32(base_idx + 12u, d_cov.x * d_weight);
-        atomic_add_f32(base_idx + 13u, d_cov.y * d_weight);
-        atomic_add_f32(base_idx + 14u, d_cov.z * d_weight);
+        // Use higher precision (10^9) for covariance gradients
+        atomic_add_f32_position(base_idx + 12u, d_cov.x * d_weight);
+        atomic_add_f32_position(base_idx + 13u, d_cov.y * d_weight);
+        atomic_add_f32_position(base_idx + 14u, d_cov.z * d_weight);
     }
 
     // Background gradient contribution

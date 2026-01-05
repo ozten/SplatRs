@@ -20,4 +20,4 @@ pub use color::{linear_f32_to_srgb_u8, srgb_u8_to_linear_f32};
 pub use gaussian::{Gaussian, Gaussian2D, GaussianCloud};
 pub use init::{init_from_colmap_points, init_from_colmap_points_visible_stratified};
 pub use math::{inverse_sigmoid, perspective_jacobian, quaternion_to_matrix, sigmoid};
-pub use sh::{evaluate_sh, evaluate_sh_unclamped, sh_basis};
+pub use sh::{evaluate_sh, evaluate_sh_dc_only, evaluate_sh_unclamped, sh_basis, SH_C0};

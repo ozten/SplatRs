@@ -60,13 +60,20 @@ impl AdamF32 {
 
         for i in 0..params.len() {
             let g = grads[i];
+            if !g.is_finite() {
+                continue;
+            }
             self.m[i] = self.m[i] * b1 + g * (1.0 - b1);
             self.v[i] = self.v[i] * b2 + g * g * (1.0 - b2);
 
             let m_hat = self.m[i] / bias1;
             let v_hat = self.v[i] / bias2;
 
-            params[i] -= self.lr * m_hat / (v_hat.sqrt() + self.eps);
+            let step = self.lr * m_hat / (v_hat.sqrt() + self.eps);
+            if !step.is_finite() {
+                continue;
+            }
+            params[i] -= step;
         }
     }
 }
@@ -219,6 +226,9 @@ impl AdamSo3 {
 
         for i in 0..rotations.len() {
             let g = grads[i];
+            if !g.x.is_finite() || !g.y.is_finite() || !g.z.is_finite() {
+                continue;
+            }
             self.m[i] = self.m[i] * b1 + g * (1.0 - b1);
             self.v[i] = self.v[i] * b2 + g.component_mul(&g) * (1.0 - b2);
 
@@ -234,7 +244,10 @@ impl AdamSo3 {
             // Keep updates small; otherwise a single bad gradient can flip rotations.
             let max_step_rad = 0.2f32;
             let n = step_vec.norm();
-            if n.is_finite() && n > max_step_rad {
+            if !n.is_finite() {
+                continue;
+            }
+            if n > max_step_rad {
                 step_vec *= max_step_rad / n;
             }
 
@@ -296,15 +309,24 @@ impl AdamSh16 {
         for i in 0..params.len() {
             for k in 0..16 {
                 let g = grads[i][k];
+                if !g.x.is_finite() || !g.y.is_finite() || !g.z.is_finite() {
+                    continue;
+                }
                 self.m[i][k] = self.m[i][k] * b1 + g * (1.0 - b1);
                 self.v[i][k] = self.v[i][k] * b2 + g.component_mul(&g) * (1.0 - b2);
 
                 let m_hat = self.m[i][k] / bias1;
                 let v_hat = self.v[i][k] / bias2;
 
-                params[i][k].x -= self.lr * m_hat.x / (v_hat.x.sqrt() + self.eps);
-                params[i][k].y -= self.lr * m_hat.y / (v_hat.y.sqrt() + self.eps);
-                params[i][k].z -= self.lr * m_hat.z / (v_hat.z.sqrt() + self.eps);
+                let step_x = self.lr * m_hat.x / (v_hat.x.sqrt() + self.eps);
+                let step_y = self.lr * m_hat.y / (v_hat.y.sqrt() + self.eps);
+                let step_z = self.lr * m_hat.z / (v_hat.z.sqrt() + self.eps);
+                if !step_x.is_finite() || !step_y.is_finite() || !step_z.is_finite() {
+                    continue;
+                }
+                params[i][k].x -= step_x;
+                params[i][k].y -= step_y;
+                params[i][k].z -= step_z;
             }
         }
     }

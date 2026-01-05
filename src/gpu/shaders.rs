@@ -38,8 +38,17 @@ struct Camera {
     translation: vec4<f32>,   // (x, y, z, pad)
 }
 
+// Render settings (16 bytes, must match SettingsGPU in types.rs)
+struct Settings {
+    disable_sh: u32, // 1 = DC-only, 0 = full SH
+    _pad1: u32,
+    _pad2: u32,
+    _pad3: u32,
+}
+
 // Uniforms
 @group(0) @binding(0) var<uniform> camera: Camera;
+@group(0) @binding(3) var<uniform> settings: Settings;
 
 // Input/Output buffers
 @group(0) @binding(1) var<storage, read> gaussians_in: array<Gaussian3D>;
@@ -151,6 +160,17 @@ fn eval_sh(sh_coeffs: array<vec4<f32>, 16>, dir: vec3<f32>) -> vec3<f32> {
     return color;
 }
 
+// Evaluate DC-only color from SH coefficients (ignores higher bands)
+// color = sh_coeffs[0] * SH_C0 + 0.5
+fn eval_sh_dc_only(sh_coeffs: array<vec4<f32>, 16>) -> vec3<f32> {
+    let C0 = 0.28209479177387814;
+    return vec3<f32>(
+        sh_coeffs[0].x * C0 + 0.5,
+        sh_coeffs[0].y * C0 + 0.5,
+        sh_coeffs[0].z * C0 + 0.5
+    );
+}
+
 // Main projection kernel
 @compute @workgroup_size(256)
 fn project_gaussians(@builtin(global_invocation_id) global_id: vec3<u32>) {
@@ -176,8 +196,8 @@ fn project_gaussians(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     // Cull if behind camera OR too close to near plane
     // Near-plane threshold prevents huge splats from divide-by-near-zero in Jacobian
-    let near_plane: f32 = 0.01;
-    if (pos_cam.z <= near_plane) {
+    let NEAR_PLANE: f32 = 0.2; // was 0.01
+    if (pos_cam.z <= NEAR_PLANE) {
         // Write sentinel values for all fields to ensure buffer is fully initialized
         gaussians_out[idx].mean = vec4<f32>(0.0, 0.0, -1.0, 0.0); // Mark as culled with z=-1
         gaussians_out[idx].cov = vec4<f32>(0.0, 0.0, 0.0, 0.0);
@@ -237,9 +257,9 @@ fn project_gaussians(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let eps = 1e-6;
 
     // Cull if 2D covariance is degenerate or too large
+    // Note: WGSL has no isnan/isinf - use bounds check instead
     let max_cov = max(cov_xx, cov_yy);
-    let max_cov_bad = (max_cov != max_cov) || (abs(max_cov) > 1e20) || max_cov <= 0.0;
-    if (max_cov_bad) {
+    if (max_cov <= 0.0 || max_cov > 1e10) {
         // Degenerate covariance - mark as culled
         gaussians_out[idx].mean = vec4<f32>(0.0, 0.0, -1.0, 0.0);
         gaussians_out[idx].cov = vec4<f32>(0.0, 0.0, 0.0, 0.0);
@@ -262,13 +282,20 @@ fn project_gaussians(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
-    // 6. Evaluate view-dependent color with full SH
-    // Compute view direction: FROM Gaussian TO camera (in world space)
-    // Camera center in world space: C = -R^T * t
-    let rot_mat_transpose = transpose(rot_mat);
-    let camera_center_world = -(rot_mat_transpose * camera.translation.xyz);
-    let view_dir = normalize(camera_center_world - pos_world);
-    let color = eval_sh(g.sh_coeffs, view_dir);
+    // 6. Evaluate color: DC-only when disable_sh is set, full SH otherwise
+    var color: vec3<f32>;
+    if (settings.disable_sh != 0u) {
+        // DC-only mode: use sh_coeffs[0] * SH_C0 + 0.5
+        color = eval_sh_dc_only(g.sh_coeffs);
+    } else {
+        // Full SH: compute view direction and evaluate all SH bands
+        // Compute view direction: FROM Gaussian TO camera (in world space)
+        // Camera center in world space: C = -R^T * t
+        let rot_mat_transpose = transpose(rot_mat);
+        let camera_center_world = -(rot_mat_transpose * camera.translation.xyz);
+        let view_dir = normalize(camera_center_world - pos_world);
+        color = eval_sh(g.sh_coeffs, view_dir);
+    }
 
     // 7. Convert opacity from logit to [0,1]
     let opacity = sigmoid(g.opacity_pad.x);
@@ -318,3 +345,4 @@ pub fn create_project_backward_shader(device: &Device) -> ShaderModule {
         source: wgpu::ShaderSource::Wgsl(PROJECT_BACKWARD_SHADER.into()),
     })
 }
+

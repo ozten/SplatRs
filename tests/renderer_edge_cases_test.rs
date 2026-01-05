@@ -50,6 +50,7 @@ fn test_render_with_nan_position_gaussian() {
         &camera,
         &d_image,
         &bg,
+        false,
     );
 
     // Should return a valid image
@@ -75,6 +76,7 @@ fn test_render_with_inf_depth_gaussian() {
         &camera,
         &d_image,
         &bg,
+        false,
     );
 
     // Should return a valid image
@@ -114,6 +116,7 @@ fn test_render_all_gaussians_with_invalid_depth() {
         &camera,
         &d_image,
         &bg,
+        false,
     );
 
     // Should return a valid image (likely all background color)
@@ -151,6 +154,7 @@ fn test_render_mixed_valid_invalid_gaussians() {
         &camera,
         &d_image,
         &bg,
+        false,
     );
 
     // Should return valid results
@@ -174,6 +178,7 @@ fn test_render_empty_gaussian_list() {
         &camera,
         &d_image,
         &bg,
+        false,
     );
 
     // Should return valid results
@@ -199,6 +204,7 @@ fn test_render_very_small_image() {
         &camera,
         &d_image,
         &bg,
+        false,
     );
 
     assert_eq!(img.width(), 1);
@@ -223,6 +229,7 @@ fn test_render_with_extreme_scale_gaussian() {
         &camera,
         &d_image,
         &bg,
+        false,
     );
 
     assert_eq!(img.width(), 50);

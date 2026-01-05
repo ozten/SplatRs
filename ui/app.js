@@ -181,6 +181,20 @@ async function renderLoop() {
     requestAnimationFrame(renderLoop);
 }
 
+async function onDisableShChanged() {
+    const checkbox = document.getElementById('disableShCheckbox');
+    const value = checkbox.checked;
+
+    try {
+        await invoke('set_disable_sh', { value });
+        await log('SH mode changed: ' + (value ? 'DC-only' : 'Full SH'));
+    } catch (err) {
+        await log('Error setting SH mode: ' + err);
+        // Revert checkbox on error
+        checkbox.checked = !value;
+    }
+}
+
 async function goToCamera() {
     const cameraIdInput = document.getElementById('cameraIdInput');
     const datasetRootInput = document.getElementById('datasetRootInput');

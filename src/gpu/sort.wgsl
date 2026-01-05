@@ -37,7 +37,8 @@ fn bitonic_sort(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let left_idx = (idx / pair_distance) * block_size + (idx % pair_distance);
     let right_idx = left_idx + pair_distance;
 
-    if (right_idx >= params.count) { return; }
+    // Both indices must be within bounds
+    if (left_idx >= params.count || right_idx >= params.count) { return; }
 
     // Determine sort direction (ascending/descending) for bitonic sequence
     // Alternates between ascending and descending for each stage

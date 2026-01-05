@@ -24,9 +24,9 @@ use crate::optim::loss::{
 };
 use crate::core::sigmoid;
 use crate::render::full_diff::{
-    coverage_mask_bool, debug_contrib_count, debug_coverage_mask, debug_final_transmittance,
-    debug_overlay_means, downsample_rgb_bilinear, downsample_rgb_box, linear_vec_to_rgb8_img,
-    render_full_color_grads, render_full_linear, rgb8_to_linear_vec,
+    coverage_mask_bool, coverage_weights_downsampled, debug_contrib_count, debug_coverage_mask,
+    debug_final_transmittance, debug_overlay_means, downsample_rgb_bilinear, downsample_rgb_box,
+    linear_vec_to_rgb8_img, render_full_color_grads, render_full_linear, rgb8_to_linear_vec,
 };
 use image::RgbImage;
 use nalgebra::{Matrix3, Vector3};
@@ -49,7 +49,7 @@ impl CsvLogger {
         let mut file = std::fs::File::create(path)?;
         writeln!(
             file,
-            "iteration,loss,psnr,num_gaussians,forward_ms,backward_ms,step_ms,total_ms,densify_split,densify_clone,densify_prune,grad_p50,grad_p90,bg_r,bg_g,bg_b"
+            "iteration,loss,psnr,num_gaussians,forward_ms,backward_ms,step_ms,total_ms,densify_split,densify_clone,densify_prune,grad_p50,grad_p90,bg_r,bg_g,bg_b,scale_median,aniso_median,aniso_p90,aniso_max,opacity_median,opacity_low_pct,pos_grad_median,scale_grad_median,rot_grad_median"
         )?;
         // Make the header visible immediately even if the process runs for a long time
         // before the first row is written (e.g., when `val_interval` is large).
@@ -73,10 +73,11 @@ impl CsvLogger {
         grad_p50: f32,
         grad_p90: f32,
         bg: &Vector3<f32>,
+        stats: &GaussianStats,
     ) -> std::io::Result<()> {
         writeln!(
             self.file,
-            "{},{:.6},{:.2},{},{:.2},{:.2},{:.2},{:.2},{},{},{},{:.4},{:.4},{:.6},{:.6},{:.6}",
+            "{},{:.6},{:.2},{},{:.2},{:.2},{:.2},{:.2},{},{},{},{:.4},{:.4},{:.6},{:.6},{:.6},{:.4},{:.2},{:.2},{:.2},{:.3},{:.1},{:.6},{:.6},{:.6}",
             iter + 1,
             loss,
             psnr,
@@ -92,9 +93,117 @@ impl CsvLogger {
             grad_p90,
             bg.x,
             bg.y,
-            bg.z
+            bg.z,
+            stats.scale_median,
+            stats.aniso_median,
+            stats.aniso_p90,
+            stats.aniso_max,
+            stats.opacity_median,
+            stats.opacity_low_pct,
+            stats.pos_grad_median,
+            stats.scale_grad_median,
+            stats.rot_grad_median,
         )?;
         self.file.flush()
+    }
+}
+
+/// Statistics about Gaussian health for monitoring training
+#[derive(Default, Clone, Debug)]
+pub struct GaussianStats {
+    /// Median scale (geometric mean of linear x,y,z)
+    pub scale_median: f32,
+    /// Median anisotropy (max/min scale ratio)
+    pub aniso_median: f32,
+    /// 90th percentile anisotropy
+    pub aniso_p90: f32,
+    /// Maximum anisotropy
+    pub aniso_max: f32,
+    /// Median opacity (after sigmoid)
+    pub opacity_median: f32,
+    /// Percentage of Gaussians with opacity < 0.1
+    pub opacity_low_pct: f32,
+    /// Median position gradient magnitude
+    pub pos_grad_median: f32,
+    /// Median scale gradient magnitude
+    pub scale_grad_median: f32,
+    /// Median rotation gradient magnitude
+    pub rot_grad_median: f32,
+}
+
+impl GaussianStats {
+    /// Compute statistics from current Gaussian state
+    pub fn compute(
+        log_scales: &[Vector3<f32>],
+        opacity_logits: &[f32],
+        d_positions: Option<&[Vector3<f32>]>,
+        d_log_scales: Option<&[Vector3<f32>]>,
+        d_rot_vecs: Option<&[Vector3<f32>]>,
+    ) -> Self {
+        let n = log_scales.len();
+        if n == 0 {
+            return Self::default();
+        }
+
+        // Compute scale statistics
+        let mut scales_linear: Vec<f32> = log_scales
+            .iter()
+            .map(|s| ((s.x + s.y + s.z) / 3.0).exp()) // Geometric mean
+            .collect();
+        scales_linear.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Compute anisotropy for each Gaussian
+        let mut anisotropies: Vec<f32> = log_scales
+            .iter()
+            .map(|s| {
+                let max_s = s.x.max(s.y).max(s.z);
+                let min_s = s.x.min(s.y).min(s.z);
+                (max_s - min_s).exp() // Ratio in linear space
+            })
+            .collect();
+        anisotropies.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Compute opacity statistics
+        let mut opacities: Vec<f32> = opacity_logits.iter().map(|&o| sigmoid(o)).collect();
+        opacities.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let low_opacity_count = opacities.iter().filter(|&&o| o < 0.1).count();
+
+        // Compute gradient statistics
+        let pos_grad_median = if let Some(d_pos) = d_positions {
+            let mut norms: Vec<f32> = d_pos.iter().map(|g| g.norm()).collect();
+            norms.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            norms.get(n / 2).copied().unwrap_or(0.0)
+        } else {
+            0.0
+        };
+
+        let scale_grad_median = if let Some(d_scale) = d_log_scales {
+            let mut norms: Vec<f32> = d_scale.iter().map(|g| g.norm()).collect();
+            norms.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            norms.get(n / 2).copied().unwrap_or(0.0)
+        } else {
+            0.0
+        };
+
+        let rot_grad_median = if let Some(d_rot) = d_rot_vecs {
+            let mut norms: Vec<f32> = d_rot.iter().map(|g| g.norm()).collect();
+            norms.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            norms.get(n / 2).copied().unwrap_or(0.0)
+        } else {
+            0.0
+        };
+
+        Self {
+            scale_median: scales_linear.get(n / 2).copied().unwrap_or(0.0),
+            aniso_median: anisotropies.get(n / 2).copied().unwrap_or(1.0),
+            aniso_p90: anisotropies.get(n * 90 / 100).copied().unwrap_or(1.0),
+            aniso_max: anisotropies.last().copied().unwrap_or(1.0),
+            opacity_median: opacities.get(n / 2).copied().unwrap_or(0.5),
+            opacity_low_pct: 100.0 * low_opacity_count as f32 / n as f32,
+            pos_grad_median,
+            scale_grad_median,
+            rot_grad_median,
+        }
     }
 }
 
@@ -127,6 +236,8 @@ pub struct TrainConfig {
     pub use_gpu: bool,
     /// Optional CSV output path for metrics logging.
     pub csv_output_path: Option<PathBuf>,
+    /// Disable SH: treat sh_coeffs[0] as RGB color directly, ignore higher bands.
+    pub disable_sh: bool,
 }
 
 pub struct TrainOutputs {
@@ -172,43 +283,33 @@ fn downsample_camera(camera: &Camera, factor: f32) -> Camera {
 }
 
 fn load_target_image(images_dir: &Path, name: &str) -> anyhow::Result<RgbImage> {
-    let mut path = images_dir.join(name);
-    if !path.exists() {
-        let mut candidates = Vec::new();
-        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-            let ext_lower = ext.to_ascii_lowercase();
-            if ext_lower == "jpg" || ext_lower == "jpeg" {
-                let mut png_path = path.clone();
-                png_path.set_extension("png");
-                candidates.push(png_path);
-            } else if ext_lower == "png" {
-                let mut jpg_path = path.clone();
-                jpg_path.set_extension("jpg");
-                candidates.push(jpg_path);
-                let mut jpeg_path = path.clone();
-                jpeg_path.set_extension("jpeg");
-                candidates.push(jpeg_path);
-            }
-        } else {
-            let mut png_path = path.clone();
-            png_path.set_extension("png");
-            candidates.push(png_path);
-            let mut jpg_path = path.clone();
-            jpg_path.set_extension("jpg");
-            candidates.push(jpg_path);
-            let mut jpeg_path = path.clone();
-            jpeg_path.set_extension("jpeg");
-            candidates.push(jpeg_path);
-        }
+    let path = images_dir.join(name);
 
-        if let Some(found) = candidates.into_iter().find(|p| p.exists()) {
-            path = found;
+    // Try the exact path first
+    if path.exists() {
+        let img = crate::io::load_image_to_srgb(&path)
+            .map_err(|e| anyhow::anyhow!("Failed to load image with color conversion: {}", e))?;
+        return Ok(img);
+    }
+
+    // Try alternate extensions (COLMAP might have .jpg but actual files are .png or vice versa)
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or(name);
+    let alternate_exts = ["png", "jpg", "jpeg", "PNG", "JPG", "JPEG"];
+
+    for ext in &alternate_exts {
+        let alt_path = images_dir.join(format!("{}.{}", stem, ext));
+        if alt_path.exists() {
+            let img = crate::io::load_image_to_srgb(&alt_path)
+                .map_err(|e| anyhow::anyhow!("Failed to load image with color conversion: {}", e))?;
+            return Ok(img);
         }
     }
-    // Load with color profile conversion to sRGB
-    let img = crate::io::load_image_to_srgb(&path)
-        .map_err(|e| anyhow::anyhow!("Failed to load image with color conversion: {}", e))?;
-    Ok(img)
+
+    // No matching file found
+    Err(anyhow::anyhow!(
+        "Failed to open image: {} (also tried alternate extensions)",
+        path.display()
+    ))
 }
 
 /// Downsample an image intelligently based on the downsample factor.
@@ -238,6 +339,16 @@ fn downsample_image_smart(img: &RgbImage, target_width: u32, target_height: u32,
 }
 
 pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainOutputs> {
+    // When disable_sh is true, force learn_sh to false (DC-only mode)
+    let learn_sh = if cfg.disable_sh {
+        if cfg.learn_sh {
+            eprintln!("Warning: --disable-sh forces learn_sh=false (DC-only mode)");
+        }
+        false
+    } else {
+        cfg.learn_sh
+    };
+
     // Generate or use provided seed
     let actual_seed = cfg.rng_seed.unwrap_or_else(|| {
         use std::time::SystemTime;
@@ -262,7 +373,29 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
         .ok_or_else(|| anyhow::anyhow!("Camera {} not found", image_info.camera_id))?;
     let rotation = image_info.rotation.to_rotation_matrix().into_inner();
     let camera_full = camera_with_pose(base_camera, rotation, image_info.translation);
-    let camera = downsample_camera(&camera_full, cfg.downsample_factor);
+
+    // Load target image first to check if dimensions match COLMAP
+    let target_full = load_target_image(&cfg.images_dir, &image_info.name)?;
+
+    // If actual image size differs from COLMAP camera (e.g., images were pre-resized),
+    // update camera to match actual image, then apply downsample factor
+    let camera = if target_full.width() != camera_full.width || target_full.height() != camera_full.height {
+        let scale_x = target_full.width() as f32 / camera_full.width as f32;
+        let scale_y = target_full.height() as f32 / camera_full.height as f32;
+        let adjusted = Camera::new(
+            camera_full.fx * scale_x,
+            camera_full.fy * scale_y,
+            camera_full.cx * scale_x,
+            camera_full.cy * scale_y,
+            target_full.width(),
+            target_full.height(),
+            camera_full.rotation,
+            camera_full.translation,
+        );
+        downsample_camera(&adjusted, cfg.downsample_factor)
+    } else {
+        downsample_camera(&camera_full, cfg.downsample_factor)
+    };
 
     // Initialize a Gaussian subset that is (roughly) evenly distributed in screen space.
     // This avoids spending most Gaussians on only one part of the image (e.g. the caliper)
@@ -308,8 +441,6 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
         g.scale = Vector3::new(log_sigma, log_sigma, log_sigma);
     }
 
-    // Target image.
-    let target_full = load_target_image(&cfg.images_dir, &image_info.name)?;
     let target_ds = downsample_image_smart(&target_full, camera.width, camera.height, cfg.downsample_factor);
     let target_linear = rgb8_to_linear_vec(&target_ds);
 
@@ -380,6 +511,9 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
     let mut rotations: Vec<nalgebra::UnitQuaternion<f32>> =
         gaussians.iter().map(|g| g.rotation).collect();
 
+    // Capture disable_sh from config for use in closures
+    let disable_sh = cfg.disable_sh;
+
     // Conditional render function: GPU if available, otherwise CPU
     #[cfg(feature = "gpu")]
     let render = |gaussians: &[Gaussian], camera: &Camera, bg: &Vector3<f32>| {
@@ -388,17 +522,17 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
                 Ok(img) => img,
                 Err(e) => {
                     eprintln!("GPU render failed, falling back to CPU: {e}");
-                    render_full_linear(gaussians, camera, bg)
+                    render_full_linear(gaussians, camera, bg, disable_sh)
                 }
             }
         } else {
-            render_full_linear(gaussians, camera, bg)
+            render_full_linear(gaussians, camera, bg, disable_sh)
         }
     };
 
     #[cfg(not(feature = "gpu"))]
     let render = |gaussians: &[Gaussian], camera: &Camera, bg: &Vector3<f32>| {
-        render_full_linear(gaussians, camera, bg)
+        render_full_linear(gaussians, camera, bg, disable_sh)
     };
 
     // Initialize CSV logger if requested
@@ -485,7 +619,7 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
                     if iter == 0 {
                         eprintln!("GPU backward disabled, using CPU backward: {reason}");
                     }
-                    render_full_color_grads(&gaussians, &camera, &d_image, &bg)
+                    render_full_color_grads(&gaussians, &camera, &d_image, &bg, disable_sh)
                 } else {
                     match renderer.render_with_gradients(&gaussians, &camera, &bg, &d_image) {
                     Ok((_pixels, grads_2d)) => {
@@ -509,23 +643,23 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
                     Err(e) => {
                         eprintln!("GPU backward failed, falling back to CPU: {e}");
                         gpu_backward_disabled_reason = Some(e);
-                        render_full_color_grads(&gaussians, &camera, &d_image, &bg)
+                        render_full_color_grads(&gaussians, &camera, &d_image, &bg, disable_sh)
                     }
                 }
                 }
             } else {
                 // CPU backward pass
-                render_full_color_grads(&gaussians, &camera, &d_image, &bg)
+                render_full_color_grads(&gaussians, &camera, &d_image, &bg, disable_sh)
             }
 
             #[cfg(not(feature = "gpu"))]
-            render_full_color_grads(&gaussians, &camera, &d_image, &bg)
+            render_full_color_grads(&gaussians, &camera, &d_image, &bg, disable_sh)
         };
         let t_backward = t1.elapsed();
 
         // Convert dL/d(color) -> dL/d(SH coeffs) using per-Gaussian SH basis.
         let mut d_sh: Vec<[Vector3<f32>; 16]> = vec![[Vector3::zeros(); 16]; gaussians.len()];
-        if cfg.learn_sh {
+        if learn_sh {
             for (i, g) in gaussians.iter().enumerate() {
                 let basis = crate::core::sh_basis(&camera.view_direction(&g.position));
                 for k in 0..16 {
@@ -533,8 +667,8 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
                 }
             }
         } else {
-            // DC-only learning (k=0).
-            let sh0 = crate::core::sh_basis(&Vector3::new(0.0, 0.0, 1.0))[0];
+            // DC-only learning (k=0). Uses SH_C0 constant.
+            let sh0 = crate::core::SH_C0;
             for i in 0..gaussians.len() {
                 d_sh[i][0] = d_color[i] * sh0;
             }
@@ -558,16 +692,38 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
             }
         }
         if cfg.learn_scale {
-            scale_opt.step(&mut log_scales, &d_log_scales);
+            // Clip scale gradients to prevent extreme updates
+            const SCALE_GRAD_CLIP: f32 = 1.0;
+            let d_log_scales_clipped: Vec<Vector3<f32>> = d_log_scales
+                .iter()
+                .map(|g| Vector3::new(
+                    g.x.clamp(-SCALE_GRAD_CLIP, SCALE_GRAD_CLIP),
+                    g.y.clamp(-SCALE_GRAD_CLIP, SCALE_GRAD_CLIP),
+                    g.z.clamp(-SCALE_GRAD_CLIP, SCALE_GRAD_CLIP),
+                ))
+                .collect();
+            scale_opt.step(&mut log_scales, &d_log_scales_clipped);
 
-            // Clamp log-space scales to prevent exp() overflow
-            // exp(20) ≈ 485M (very large), exp(-20) ≈ 2e-9 (very small but valid)
-            const MAX_LOG_SCALE: f32 = 20.0;
-            const MIN_LOG_SCALE: f32 = -20.0;
+            // Clamp log-space scales to prevent degenerate ellipsoids
+            // exp(5) ≈ 148 (large but reasonable), exp(-10) ≈ 4.5e-5 (tiny but valid)
+            // Tighter bounds prevent stretched/exploding Gaussians during training
+            const MAX_LOG_SCALE: f32 = 5.0;
+            const MIN_LOG_SCALE: f32 = -10.0;
+            // Max ratio between largest and smallest scale axis (prevents needles)
+            // ln(5) ≈ 1.6, so max 5:1 aspect ratio (tightened from 10:1 for sharper results)
+            const MAX_LOG_ANISOTROPY: f32 = 1.6;
             for scale in log_scales.iter_mut() {
+                // First clamp individual axes
                 scale.x = scale.x.clamp(MIN_LOG_SCALE, MAX_LOG_SCALE);
                 scale.y = scale.y.clamp(MIN_LOG_SCALE, MAX_LOG_SCALE);
                 scale.z = scale.z.clamp(MIN_LOG_SCALE, MAX_LOG_SCALE);
+
+                // Then enforce anisotropy constraint: pull smaller axes toward largest
+                let max_s = scale.x.max(scale.y).max(scale.z);
+                let min_allowed = max_s - MAX_LOG_ANISOTROPY;
+                scale.x = scale.x.max(min_allowed);
+                scale.y = scale.y.max(min_allowed);
+                scale.z = scale.z.max(min_allowed);
             }
         }
         if cfg.learn_rotation {
@@ -579,6 +735,10 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
             let bg_grad = vec![d_bg];
             bg_opt.step(&mut bg_param, &bg_grad);
             bg = bg_param[0];
+            // Clamp background to valid RGB range [0, 1]
+            bg.x = bg.x.clamp(0.0, 1.0);
+            bg.y = bg.y.clamp(0.0, 1.0);
+            bg.z = bg.z.clamp(0.0, 1.0);
         }
         let t_step = t2.elapsed();
 
@@ -597,6 +757,13 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
 
             // Log to CSV if enabled
             if let Some(ref mut csv) = csv_logger {
+                let stats = GaussianStats::compute(
+                    &log_scales,
+                    &opacity_logits,
+                    Some(&d_positions),
+                    Some(&d_log_scales),
+                    Some(&d_rot_vecs),
+                );
                 if let Err(e) = csv.log_iteration(
                     iter,
                     loss,
@@ -612,6 +779,7 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
                     0.0, // grad_p50
                     0.0, // grad_p90
                     &bg,
+                    &stats,
                 ) {
                     eprintln!("Warning: Failed to write CSV row: {}", e);
                 }
@@ -766,6 +934,8 @@ pub struct MultiViewTrainConfig {
     pub csv_output_path: Option<PathBuf>,
     /// Output directory for incremental renders.
     pub out_dir: PathBuf,
+    /// Disable SH: treat sh_coeffs[0] as RGB color directly, ignore higher bands.
+    pub disable_sh: bool,
 }
 
 pub struct MultiViewTrainOutputs {
@@ -823,6 +993,7 @@ struct DensifyStats {
     kept: usize,
     pruned: usize,
     pruned_outliers: usize,
+    pruned_needles: usize,
     split: usize,
     cloned: usize,
     cap_hit: bool,
@@ -880,6 +1051,7 @@ fn densify_and_prune<R: Rng + ?Sized>(
             kept: before,
             pruned: 0,
             pruned_outliers: 0,
+            pruned_needles: 0,
             split: 0,
             cloned: 0,
             cap_hit: false,
@@ -918,10 +1090,15 @@ fn densify_and_prune<R: Rng + ?Sized>(
     let mut kept = 0usize;
     let mut pruned = 0usize;
     let mut pruned_outliers = 0usize;
+    let mut pruned_needles = 0usize;
     let mut split = 0usize;
     let mut cloned = 0usize;
     let mut cap_hit = false;
     let mut kept_avg_grads: Vec<f32> = Vec::new();
+
+    // Max log-space anisotropy before pruning (ln(7.4) ≈ 2.0, so ~7:1 aspect ratio)
+    // Slightly more permissive than the per-step constraint (5:1) to allow some flexibility
+    const NEEDLE_PRUNE_ANISOTROPY: f32 = 2.0;
 
     for i in 0..gaussians.len() {
         // Prune outliers: gaussians too far from scene center
@@ -934,6 +1111,16 @@ fn densify_and_prune<R: Rng + ?Sized>(
 
         let opacity = sigmoid(opacity_logits[i]);
         if opacity < prune_opacity_threshold {
+            pruned += 1;
+            continue;
+        }
+
+        // Prune needles: Gaussians with extreme aspect ratios
+        let scale = &log_scales[i];
+        let max_s = scale.x.max(scale.y).max(scale.z);
+        let min_s = scale.x.min(scale.y).min(scale.z);
+        if max_s - min_s > NEEDLE_PRUNE_ANISOTROPY {
+            pruned_needles += 1;
             pruned += 1;
             continue;
         }
@@ -991,7 +1178,16 @@ fn densify_and_prune<R: Rng + ?Sized>(
         new_gaussians[keep_idx].opacity = child_opacity_logit;
 
         if sigma > split_sigma_threshold {
-            // SPLIT: add a second gaussian, slightly offset and slightly smaller.
+            // SPLIT: shrink BOTH parent and child by 0.2 in log-space (factor ~0.82)
+            // This prevents needles from persisting through splits
+            let scale_reduction = Vector3::new(0.2, 0.2, 0.2);
+            let shrunk_scale = log_scales[i] - scale_reduction;
+
+            // Shrink the parent (kept Gaussian) - CRITICAL FIX
+            new_log_scales[keep_idx] = shrunk_scale;
+            new_gaussians[keep_idx].scale = shrunk_scale;
+
+            // Create child with same shrunk scale, offset position
             let mut g2 = gaussians[i].clone();
             for k in 0..16 {
                 g2.sh_coeffs[k][0] = sh_params[i][k].x;
@@ -1000,13 +1196,13 @@ fn densify_and_prune<R: Rng + ?Sized>(
             }
             g2.opacity = child_opacity_logit;
             g2.position = new_pos;
-            g2.scale = log_scales[i] - Vector3::new(0.2, 0.2, 0.2);
+            g2.scale = shrunk_scale;
             g2.rotation = rotations[i];
             new_gaussians.push(g2);
             new_sh_params.push(sh_params[i]);
             new_opacity_logits.push(child_opacity_logit);
             new_positions.push(new_pos);
-            new_log_scales.push(log_scales[i] - Vector3::new(0.2, 0.2, 0.2));
+            new_log_scales.push(shrunk_scale);
             new_rotations.push(rotations[i]);
             new_grad_accum.push(0.0);
             split += 1;
@@ -1051,6 +1247,7 @@ fn densify_and_prune<R: Rng + ?Sized>(
         kept,
         pruned,
         pruned_outliers,
+        pruned_needles,
         split,
         cloned,
         cap_hit,
@@ -1069,6 +1266,16 @@ fn densify_and_prune<R: Rng + ?Sized>(
 pub fn train_multiview_color_only(
     cfg: &MultiViewTrainConfig,
 ) -> anyhow::Result<MultiViewTrainOutputs> {
+    // When disable_sh is true, force learn_sh to false (DC-only mode)
+    let learn_sh = if cfg.disable_sh {
+        if cfg.learn_sh {
+            eprintln!("Warning: --disable-sh forces learn_sh=false (DC-only mode)");
+        }
+        false
+    } else {
+        cfg.learn_sh
+    };
+
     let scene = load_colmap_scene(&cfg.sparse_dir)?;
     if scene.cameras.is_empty() || scene.images.is_empty() {
         return Err(anyhow::anyhow!("Scene has no cameras/images"));
@@ -1158,8 +1365,8 @@ pub fn train_multiview_color_only(
     }
 
     let mut view_cache: HashMap<usize, ViewData> = HashMap::new();
-    let should_preload_images = cfg.max_images != 0;
-    if should_preload_images {
+    // Always preload images - the cache is needed for training and final output
+    {
         for &idx in image_indices.iter() {
             let image_info = &scene.images[idx];
             let base_camera = scene
@@ -1317,6 +1524,9 @@ pub fn train_multiview_color_only(
     let mut grad_accum_pos_norm: Vec<f32> = vec![0.0; gaussians.len()];
     let mut grad_window_iters: usize = 0;
 
+    // Capture disable_sh from config for use in closures
+    let disable_sh = cfg.disable_sh;
+
     // Conditional render function: GPU if available, otherwise CPU
     #[cfg(feature = "gpu")]
     let render = |gaussians: &[Gaussian], camera: &Camera, bg: &Vector3<f32>| {
@@ -1325,17 +1535,17 @@ pub fn train_multiview_color_only(
                 Ok(img) => img,
                 Err(e) => {
                     eprintln!("GPU render failed, falling back to CPU: {e}");
-                    render_full_linear(gaussians, camera, bg)
+                    render_full_linear(gaussians, camera, bg, disable_sh)
                 }
             }
         } else {
-            render_full_linear(gaussians, camera, bg)
+            render_full_linear(gaussians, camera, bg, disable_sh)
         }
     };
 
     #[cfg(not(feature = "gpu"))]
     let render = |gaussians: &[Gaussian], camera: &Camera, bg: &Vector3<f32>| {
-        render_full_linear(gaussians, camera, bg)
+        render_full_linear(gaussians, camera, bg, disable_sh)
     };
 
     // Compute initial PSNR on test views
@@ -1422,6 +1632,18 @@ pub fn train_multiview_color_only(
     let mut last_densify_prune: usize = 0;
     let mut last_grad_p50: f32 = 0.0;
     let mut last_grad_p90: f32 = 0.0;
+    let mut last_gaussian_stats: GaussianStats = GaussianStats::default();
+
+    // Cached coverage weights for GPU training
+    // Updated every COVERAGE_INTERVAL iterations at 4x downsampled resolution
+    #[cfg(feature = "gpu")]
+    const COVERAGE_INTERVAL: usize = 25;
+    #[cfg(feature = "gpu")]
+    const COVERAGE_DOWNSAMPLE: u32 = 4;
+    #[cfg(feature = "gpu")]
+    let mut cached_coverage_weights: Option<Vec<f32>> = None;
+    #[cfg(feature = "gpu")]
+    let mut cached_coverage_dims: (u32, u32) = (0, 0);
 
     for iter in 0..cfg.iters {
         // Apply LR schedule: exponential decay
@@ -1511,11 +1733,24 @@ pub fn train_multiview_color_only(
 
         let t0 = Instant::now();
 
-        // Skip coverage computation when using GPU (it's a full render pass!)
-        // With GPU rendering being fast, we can afford to weight all pixels equally
+        // Coverage weighting: weight covered pixels more than background
+        // GPU path uses downsampled coverage computed periodically to reduce overhead
         #[cfg(feature = "gpu")]
         let weights: Vec<f32> = if gpu_renderer.is_some() {
-            vec![1.0; (train_camera.width * train_camera.height) as usize]
+            // Update cached coverage every COVERAGE_INTERVAL iterations or when dimensions change
+            let current_dims = (train_camera.width, train_camera.height);
+            if cached_coverage_weights.is_none()
+                || cached_coverage_dims != current_dims
+                || iter % COVERAGE_INTERVAL == 0
+            {
+                cached_coverage_weights = Some(coverage_weights_downsampled(
+                    &gaussians,
+                    &train_camera,
+                    COVERAGE_DOWNSAMPLE,
+                ));
+                cached_coverage_dims = current_dims;
+            }
+            cached_coverage_weights.clone().unwrap()
         } else {
             let coverage_bool = coverage_mask_bool(&gaussians, &train_camera);
             coverage_bool
@@ -1563,7 +1798,7 @@ pub fn train_multiview_color_only(
                     if iter == 0 {
                         eprintln!("GPU backward disabled, using CPU backward: {reason}");
                     }
-                    render_full_color_grads(&gaussians, &train_camera, &d_image, &bg)
+                    render_full_color_grads(&gaussians, &train_camera, &d_image, &bg, disable_sh)
                 } else {
                     match renderer.render_with_gradients(&gaussians, &train_camera, &bg, &d_image) {
                     Ok((_pixels, grads_2d)) => {
@@ -1587,23 +1822,23 @@ pub fn train_multiview_color_only(
                     Err(e) => {
                         eprintln!("GPU backward failed, falling back to CPU: {e}");
                         gpu_backward_disabled_reason = Some(e);
-                        render_full_color_grads(&gaussians, &train_camera, &d_image, &bg)
+                        render_full_color_grads(&gaussians, &train_camera, &d_image, &bg, disable_sh)
                     }
                 }
                 }
             } else {
                 // CPU backward pass
-                render_full_color_grads(&gaussians, &train_camera, &d_image, &bg)
+                render_full_color_grads(&gaussians, &train_camera, &d_image, &bg, disable_sh)
             }
 
             #[cfg(not(feature = "gpu"))]
-            render_full_color_grads(&gaussians, &train_camera, &d_image, &bg)
+            render_full_color_grads(&gaussians, &train_camera, &d_image, &bg, disable_sh)
         };
         let t_backward = t1.elapsed();
 
         // Convert dL/d(color) -> dL/d(SH coeffs) using per-Gaussian SH basis.
         let mut d_sh: Vec<[Vector3<f32>; 16]> = vec![[Vector3::zeros(); 16]; gaussians.len()];
-        if cfg.learn_sh {
+        if learn_sh {
             for (i, g) in gaussians.iter().enumerate() {
                 let basis = crate::core::sh_basis(&train_camera.view_direction(&g.position));
                 for k in 0..16 {
@@ -1611,8 +1846,8 @@ pub fn train_multiview_color_only(
                 }
             }
         } else {
-            // DC-only learning (k=0).
-            let sh0 = crate::core::sh_basis(&Vector3::new(0.0, 0.0, 1.0))[0];
+            // DC-only learning (k=0). Uses SH_C0 constant.
+            let sh0 = crate::core::SH_C0;
             for i in 0..gaussians.len() {
                 d_sh[i][0] = d_color[i] * sh0;
             }
@@ -1636,16 +1871,38 @@ pub fn train_multiview_color_only(
             }
         }
         if cfg.learn_scale {
-            scale_opt.step(&mut log_scales, &d_log_scales);
+            // Clip scale gradients to prevent extreme updates
+            const SCALE_GRAD_CLIP: f32 = 1.0;
+            let d_log_scales_clipped: Vec<Vector3<f32>> = d_log_scales
+                .iter()
+                .map(|g| Vector3::new(
+                    g.x.clamp(-SCALE_GRAD_CLIP, SCALE_GRAD_CLIP),
+                    g.y.clamp(-SCALE_GRAD_CLIP, SCALE_GRAD_CLIP),
+                    g.z.clamp(-SCALE_GRAD_CLIP, SCALE_GRAD_CLIP),
+                ))
+                .collect();
+            scale_opt.step(&mut log_scales, &d_log_scales_clipped);
 
-            // Clamp log-space scales to prevent exp() overflow
-            // exp(20) ≈ 485M (very large), exp(-20) ≈ 2e-9 (very small but valid)
-            const MAX_LOG_SCALE: f32 = 20.0;
-            const MIN_LOG_SCALE: f32 = -20.0;
+            // Clamp log-space scales to prevent degenerate ellipsoids
+            // exp(5) ≈ 148 (large but reasonable), exp(-10) ≈ 4.5e-5 (tiny but valid)
+            // Tighter bounds prevent stretched/exploding Gaussians during training
+            const MAX_LOG_SCALE: f32 = 5.0;
+            const MIN_LOG_SCALE: f32 = -10.0;
+            // Max ratio between largest and smallest scale axis (prevents needles)
+            // ln(5) ≈ 1.6, so max 5:1 aspect ratio (tightened from 10:1 for sharper results)
+            const MAX_LOG_ANISOTROPY: f32 = 1.6;
             for scale in log_scales.iter_mut() {
+                // First clamp individual axes
                 scale.x = scale.x.clamp(MIN_LOG_SCALE, MAX_LOG_SCALE);
                 scale.y = scale.y.clamp(MIN_LOG_SCALE, MAX_LOG_SCALE);
                 scale.z = scale.z.clamp(MIN_LOG_SCALE, MAX_LOG_SCALE);
+
+                // Then enforce anisotropy constraint: pull smaller axes toward largest
+                let max_s = scale.x.max(scale.y).max(scale.z);
+                let min_allowed = max_s - MAX_LOG_ANISOTROPY;
+                scale.x = scale.x.max(min_allowed);
+                scale.y = scale.y.max(min_allowed);
+                scale.z = scale.z.max(min_allowed);
             }
         }
         if cfg.learn_rotation {
@@ -1656,6 +1913,10 @@ pub fn train_multiview_color_only(
             let bg_grad = vec![d_bg];
             bg_opt.step(&mut bg_param, &bg_grad);
             bg = bg_param[0];
+            // Clamp background to valid RGB range [0, 1]
+            bg.x = bg.x.clamp(0.0, 1.0);
+            bg.y = bg.y.clamp(0.0, 1.0);
+            bg.z = bg.z.clamp(0.0, 1.0);
         }
         let t_step = t2.elapsed();
 
@@ -1663,6 +1924,14 @@ pub fn train_multiview_color_only(
 
         // Log a lightweight row at `log_interval` even if validation is infrequent.
         if should_log && !is_validation_iter {
+            // Compute Gaussian health stats for monitoring
+            last_gaussian_stats = GaussianStats::compute(
+                &log_scales,
+                &opacity_logits,
+                Some(&d_positions),
+                Some(&d_log_scales),
+                Some(&d_rot_vecs),
+            );
             if let Some(ref mut logger) = csv_logger {
                 let total_time = iter_start.map(|s| s.elapsed().as_secs_f32() * 1000.0).unwrap_or(0.0);
                 let forward_ms = t_forward.as_secs_f32() * 1000.0;
@@ -1683,6 +1952,7 @@ pub fn train_multiview_color_only(
                     last_grad_p50,
                     last_grad_p90,
                     &bg,
+                    &last_gaussian_stats,
                 );
             }
         }
@@ -1774,6 +2044,15 @@ pub fn train_multiview_color_only(
                 let backward_ms = t_backward.as_secs_f32() * 1000.0;
                 let step_ms = t_step.as_secs_f32() * 1000.0;
 
+                // Update Gaussian health stats for validation logging
+                last_gaussian_stats = GaussianStats::compute(
+                    &log_scales,
+                    &opacity_logits,
+                    Some(&d_positions),
+                    Some(&d_log_scales),
+                    Some(&d_rot_vecs),
+                );
+
                 let _ = logger.log_iteration(
                     iter,
                     train_loss,
@@ -1789,6 +2068,7 @@ pub fn train_multiview_color_only(
                     last_grad_p50,
                     last_grad_p90,
                     &bg,
+                    &last_gaussian_stats,
                 );
             }
 
@@ -1885,6 +2165,16 @@ pub fn train_multiview_color_only(
             position_opt.reset_moments_keep_t(positions.len());
             scale_opt.reset_moments_keep_t(log_scales.len());
             rotation_opt.reset_moments_keep_t(rotations.len());
+
+            // Reset opacities to encourage relearning (original 3DGS technique)
+            // This helps prevent transmittance blocking where front Gaussians
+            // block gradient flow to Gaussians behind them
+            let reset_logit = 0.0; // sigmoid(0) = 0.5
+            for i in 0..opacity_logits.len() {
+                opacity_logits[i] = reset_logit;
+                gaussians[i].opacity = reset_logit;
+            }
+
             grad_window_iters = 0;
             densify_events += 1;
 
@@ -1900,8 +2190,13 @@ pub fn train_multiview_color_only(
             } else {
                 String::new()
             };
+            let needle_msg = if stats.pruned_needles > 0 {
+                format!(" pruned_needles={}", stats.pruned_needles)
+            } else {
+                String::new()
+            };
             eprintln!(
-                "densify @iter {}/{}: gaussians {} -> {} (kept={} pruned={}{} split={} cloned={} cap_hit={} grad_p50={:.4} grad_p90={:.4})",
+                "densify @iter {}/{}: gaussians {} -> {} (kept={} pruned={}{}{} split={} cloned={} cap_hit={} grad_p50={:.4} grad_p90={:.4})",
                 iter + 1,
                 cfg.iters,
                 before,
@@ -1909,6 +2204,7 @@ pub fn train_multiview_color_only(
                 stats.kept,
                 stats.pruned,
                 outlier_msg,
+                needle_msg,
                 stats.split,
                 stats.cloned,
                 stats.cap_hit,
@@ -1972,18 +2268,6 @@ pub fn train_multiview_color_only(
                 test_camera.cy *= scale_y;
             }
 
-            if std::env::var("SUGAR_DEBUG_TARGET").is_ok() {
-                let raw_path = cfg.out_dir.join("debug_test_target_raw.png");
-                let ds_path = cfg.out_dir.join("debug_test_target_ds.png");
-                if test_target.save(&raw_path).is_ok() && test_target_ds.save(&ds_path).is_ok() {
-                    eprintln!(
-                        "[TARGET DEBUG] Saved raw target to `{}` and downsampled target to `{}`",
-                        raw_path.display(),
-                        ds_path.display()
-                    );
-                }
-            }
-
             let test_target_linear = rgb8_to_linear_vec(&test_target_ds);
             (test_camera, test_target_ds, test_target_linear)
         };
@@ -2000,30 +2284,6 @@ pub fn train_multiview_color_only(
                 test_camera.height,
             ));
             test_view_target = Some(test_target_ds);
-
-            if std::env::var("SUGAR_DEBUG_TARGET").is_ok() {
-                let ds_path = cfg.out_dir.join("debug_test_target_ds.png");
-                if let Some(ds) = test_view_target.as_ref() {
-                    if ds.save(&ds_path).is_ok() {
-                        eprintln!(
-                            "[TARGET DEBUG] Saved downsampled target to `{}`",
-                            ds_path.display()
-                        );
-                    }
-                }
-
-                if let Some(test_image_info) = scene.images.get(test_idx) {
-                    if let Ok(raw) = load_target_image(&cfg.images_dir, &test_image_info.name) {
-                        let raw_path = cfg.out_dir.join("debug_test_target_raw.png");
-                        if raw.save(&raw_path).is_ok() {
-                            eprintln!(
-                                "[TARGET DEBUG] Saved raw target to `{}`",
-                                raw_path.display()
-                            );
-                        }
-                    }
-                }
-            }
         }
     }
 

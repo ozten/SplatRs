@@ -35,7 +35,7 @@ fn test_position_grads_are_finite_for_simple_scene() {
     let gaussians = vec![g];
     let bg = Vector3::new(0.0, 0.0, 0.0);
 
-    let rendered = render_full_linear(&gaussians, &camera, &bg);
+    let rendered = render_full_linear(&gaussians, &camera, &bg, false);
     // Target is a slightly darker version: encourages non-zero gradients.
     let target: Vec<Vector3<f32>> = rendered.iter().map(|p| *p * 0.9).collect();
     let d_image: Vec<Vector3<f32>> = rendered
@@ -45,7 +45,7 @@ fn test_position_grads_are_finite_for_simple_scene() {
         .collect();
 
     let (_img, _d_color, _d_opacity, d_pos, _d_log_scales, _d_rot, _d_bg) =
-        render_full_color_grads(&gaussians, &camera, &d_image, &bg);
+        render_full_color_grads(&gaussians, &camera, &d_image, &bg, false);
 
     assert_eq!(d_pos.len(), gaussians.len());
     let dp = d_pos[0];

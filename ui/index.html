@@ -27,16 +27,12 @@
                 </div>
             </div>
             <div class="control-group">
-                <label>Saved Cameras:</label>
-                <div style="display: flex; gap: 5px; flex-direction: column;">
-                    <button id="saveCameraButton" onclick="saveCurrentCamera()" style="width: 100%;">💾 Save Current Camera</button>
-                    <div style="display: flex; gap: 5px;">
-                        <select id="savedCamerasSelect" style="flex: 1;" onchange="onSavedCameraSelected()">
-                            <option value="">-- No Saved Cameras --</option>
-                        </select>
-                        <button id="loadCameraButton" onclick="loadSelectedCamera()" disabled>Load</button>
-                        <button id="deleteCameraButton" onclick="deleteSelectedCamera()" disabled>Delete</button>
-                    </div>
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                    <input type="checkbox" id="disableShCheckbox" onchange="onDisableShChanged()">
+                    <span>DC-only mode (disable SH)</span>
+                </label>
+                <div style="font-size: 0.85em; color: #888; margin-top: 4px;">
+                    View-independent color (ignores view direction)
                 </div>
             </div>
             <div class="status" id="status">Ready</div>

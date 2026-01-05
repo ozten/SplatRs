@@ -119,6 +119,21 @@ pub fn evaluate_sh_unclamped(sh_coeffs: &[[f32; 3]; 16], direction: &Vector3<f32
     color
 }
 
+/// SH degree-0 normalization constant.
+pub const SH_C0: f32 = 0.282_094_791_773_878_14;
+
+/// Evaluate DC-only color from SH coefficients (ignores higher bands).
+///
+/// This is useful for debugging to isolate view-independent color.
+/// color = sh_coeffs[0] * SH_C0 + 0.5
+pub fn evaluate_sh_dc_only(sh_coeffs: &[[f32; 3]; 16]) -> Vector3<f32> {
+    Vector3::new(
+        sh_coeffs[0][0] * SH_C0 + 0.5,
+        sh_coeffs[0][1] * SH_C0 + 0.5,
+        sh_coeffs[0][2] * SH_C0 + 0.5,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

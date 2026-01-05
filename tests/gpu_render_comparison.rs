@@ -61,7 +61,7 @@ fn test_render_vs_render_with_gradients() {
 
     // CPU rendering
     println!("CPU rendering...");
-    let cpu_pixels = render_full_linear(&gaussians, &camera, &background);
+    let cpu_pixels = render_full_linear(&gaussians, &camera, &background, false);
 
     // GPU rendering via render()
     println!("GPU render()...");

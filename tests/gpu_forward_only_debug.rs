@@ -40,7 +40,7 @@ fn test_forward_rendering_only() {
 
     // CPU rendering
     println!("\nCPU Rendering...");
-    let cpu_pixels = render_full_linear(&[gaussian.clone()], &camera, &background);
+    let cpu_pixels = render_full_linear(&[gaussian.clone()], &camera, &background, false);
 
     // GPU rendering
     println!("GPU Rendering...");

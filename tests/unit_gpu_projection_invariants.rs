@@ -38,7 +38,7 @@ fn test_gpu_matches_cpu_projection_tiny() {
     );
 
     let bg = Vector3::zeros();
-    let cpu = render_full_linear(&[g.clone()], &camera, &bg);
+    let cpu = render_full_linear(&[g.clone()], &camera, &bg, false);
     let gpu = GpuRenderer::new()
         .expect("Failed to initialize GPU")
         .render(&[g], &camera, &bg)

@@ -49,7 +49,7 @@ fn test_background_gradient_only() {
         _cpu_d_log_scales,
         _cpu_d_rot_vecs,
         cpu_d_bg,
-    ) = render_full_color_grads(&[gaussian.clone()], &camera, &d_pixels, &background);
+    ) = render_full_color_grads(&[gaussian.clone()], &camera, &d_pixels, &background, false);
 
     println!("CPU d_background: {:?}", cpu_d_bg);
 

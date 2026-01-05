@@ -16,13 +16,14 @@ fn project_gaussian(
     gaussian: &Gaussian,
     camera: &Camera,
     gaussian_idx: usize,
+    disable_sh: bool,
 ) -> Option<Gaussian2D> {
     // 1) Transform mean to camera space.
     let mean_cam = camera.world_to_camera(&gaussian.position);
 
     // Cull if behind camera OR too close to near plane
     // Near-plane threshold prevents huge splats from divide-by-near-zero in Jacobian
-    const NEAR_PLANE: f32 = 0.01;
+    const NEAR_PLANE: f32 = 0.2; // was 0.01
     if mean_cam.z <= NEAR_PLANE {
         return None;
     }
@@ -63,13 +64,20 @@ fn project_gaussian(
         return None; // Too large - would fill screen
     }
 
+    // Compute color: DC-only when disable_sh is true, full SH otherwise
+    let color = if disable_sh {
+        crate::core::evaluate_sh_dc_only(&gaussian.sh_coeffs)
+    } else {
+        crate::core::evaluate_sh_unclamped(
+            &gaussian.sh_coeffs,
+            &camera.view_direction(&gaussian.position),
+        )
+    };
+
     Some(Gaussian2D {
         mean: Vector3::new(mean_px.x, mean_px.y, mean_cam.z),
         cov: Vector3::new(cov_xx, cov_xy, cov_yy),
-        color: crate::core::evaluate_sh_unclamped(
-            &gaussian.sh_coeffs,
-            &camera.view_direction(&gaussian.position),
-        ),
+        color,
         opacity: crate::core::sigmoid(gaussian.opacity),
         gaussian_idx,
     })
@@ -88,11 +96,11 @@ impl FullRenderer {
     pub fn render(&mut self, gaussians: &[Gaussian], camera: &Camera) -> RgbImage {
         let mut img = RgbImage::new(camera.width, camera.height);
 
-        // Project all Gaussians to 2D.
+        // Project all Gaussians to 2D (FullRenderer uses full SH by default).
         let mut projected: Vec<Gaussian2D> = gaussians
             .iter()
             .enumerate()
-            .filter_map(|(i, g)| project_gaussian(g, camera, i))
+            .filter_map(|(i, g)| project_gaussian(g, camera, i, false))
             .collect();
 
         // Filter out NaN depths to prevent sorting panic
