@@ -1,0 +1,30 @@
+## 2026-01-14 15:49 - Completed SplatRs-jwg
+
+### What was done
+- Verified existing dataset structure: Mip-NeRF 360 scenes (bicycle, garden, stump, bonsai, counter, kitchen, room) are present
+- Confirmed NeRF Synthetic lego dataset is already downloaded in datasets/nerf_synthetic/lego/
+- Installed Python evaluation libraries:
+  - scikit-image 0.26.0 (SSIM reference)
+  - lpips 0.1.4 (Perceptual metrics)
+  - opencv-python 4.12.0 (Image I/O)
+  - matplotlib 3.10.8 (Visualization)
+  - numpy 2.2.6 (Numerical computations)
+  - torch 2.9.1 and torchvision 0.24.1
+- Created datasets/synthetic/ directory for procedurally generated test cases
+- Verified datasets/ is properly excluded in .gitignore
+- Created requirements.txt to document Python dependencies
+
+### Key decisions made
+- Used existing virtual environment (Python 3.13.5) for dependency installation
+- Created requirements.txt with version constraints based on installed versions
+- synthetic/ directory placed under datasets/ so it's automatically ignored by git
+
+### Suggestions for next tasks
+All Phase 1 verification tasks are now unblocked. Recommended order:
+1. TC-INP-001: COLMAP Camera Intrinsics Parsing (critical foundation)
+2. TC-INP-002: COLMAP Camera Extrinsics Parsing (critical foundation)
+3. TC-INP-003: Coordinate System Convention (critical foundation)
+4. TC-INP-010: COLMAP Point Cloud Loading (critical foundation)
+5. TC-COV-001: Covariance matrix construction
+6. TC-SH-001: SH degree 0 testing
+7. TC-SH-003: SH coefficient count verification

@@ -1,0 +1,365 @@
+   Compiling sugar-rs v0.1.0 (/Users/ozten/Projects/SplatRs)
+warning: unused import: `BindGroup`
+ --> src/gpu/renderer.rs:6:12
+  |
+6 | use wgpu::{BindGroup, BindGroupLayout, BufferUsages, ComputePipeline};
+  |            ^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default
+
+warning: unused import: `GradientGPU`
+   --> src/gpu/renderer.rs:638:50
+    |
+638 |         use crate::gpu::types::{ContributionGPU, GradientGPU, MAX_CONTRIBUTIONS_PER_PIXEL};
+    |                                                  ^^^^^^^^^^^
+
+warning: value assigned to `offset` is never read
+   --> src/io/model.rs:259:5
+    |
+259 |     offset += 4;
+    |     ^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+    = note: `#[warn(unused_assignments)]` on by default
+
+warning: unused variable: `mesh`
+  --> src/io/obj.rs:24:17
+   |
+24 | pub fn save_obj(mesh: &Mesh, path: &Path) -> Result<(), LoadError> {
+   |                 ^^^^ help: if this is intentional, prefix it with an underscore: `_mesh`
+   |
+   = note: `#[warn(unused_variables)]` on by default
+
+warning: unused variable: `path`
+  --> src/io/obj.rs:24:30
+   |
+24 | pub fn save_obj(mesh: &Mesh, path: &Path) -> Result<(), LoadError> {
+   |                              ^^^^ help: if this is intentional, prefix it with an underscore: `_path`
+
+warning: unused variable: `cloud`
+  --> src/io/ply.rs:55:17
+   |
+55 | pub fn save_ply(cloud: &GaussianCloud, path: &Path) -> Result<(), LoadError> {
+   |                 ^^^^^ help: if this is intentional, prefix it with an underscore: `_cloud`
+
+warning: unused variable: `path`
+  --> src/io/ply.rs:55:40
+   |
+55 | pub fn save_ply(cloud: &GaussianCloud, path: &Path) -> Result<(), LoadError> {
+   |                                        ^^^^ help: if this is intentional, prefix it with an underscore: `_path`
+
+warning: unused variable: `path`
+  --> src/io/ply.rs:66:17
+   |
+66 | pub fn load_ply(path: &Path) -> Result<GaussianCloud, LoadError> {
+   |                 ^^^^ help: if this is intentional, prefix it with an underscore: `_path`
+
+warning: unused variable: `t_total`
+   --> src/render/full_diff.rs:184:9
+    |
+184 |     let t_total = if enable_timing { Some(std::time::Instant::now()) } else { None };
+    |         ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_t_total`
+
+warning: unused variable: `t_start`
+   --> src/gpu/renderer.rs:655:13
+    |
+655 |         let t_start = if enable_timing {
+    |             ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_t_start`
+
+warning: unused variable: `t_backward`
+   --> src/gpu/renderer.rs:984:13
+    |
+984 |         let t_backward = if enable_timing {
+    |             ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_t_backward`
+
+warning: unused variable: `t_download`
+    --> src/gpu/renderer.rs:1128:13
+     |
+1128 |         let t_download = if enable_timing {
+     |             ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_t_download`
+
+warning: unused variable: `t_start`
+    --> src/gpu/renderer.rs:1277:13
+     |
+1277 |         let t_start = if enable_timing {
+     |             ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_t_start`
+
+warning: associated function `zero` is never used
+   --> src/gpu/types.rs:223:18
+    |
+221 | impl Gradient3DGPU {
+    | ------------------ associated function in this implementation
+222 |     /// Create a zero gradient (for initialization).
+223 |     pub const fn zero() -> Self {
+    |                  ^^^^
+    |
+    = note: `#[warn(dead_code)]` on by default
+
+warning: `sugar-rs` (lib) generated 14 warnings (run `cargo fix --lib -p sugar-rs` to apply 2 suggestions)
+    Finished `release` profile [optimized] target(s) in 1m 17s
+     Running `target/release/sugar-train --seed 123 --preset onehour --dataset-root datasets/tandt_db/tandt/train/ --gpu`
+GPU: Apple M2 Max (Metal)
+GPU max storage buffer binding size: 4095 MB
+⚠️  WARNING: Auto-downsampling enabled
+   Original resolution: 980×545 (0.5 MP)
+   GPU buffer limit: 128 MB
+   Using power-of-2 divisor: 1/2 (box filter, no aliasing)
+   Training resolution: 490×272 (0.1 MP)
+   To disable auto-downsampling, explicitly set --downsample <factor>
+
+Multi-view training: 56 train views, 19 test views
+Preloaded 75 images (max_images=75)
+Initialized 25000 Gaussians
+Initializing GPU renderer...
+GPU: Apple M2 Max (Metal)
+GPU max storage buffer binding size: 4095 MB
+Initial test PSNR: 12.73 dB
+iter 1/10000 start  view=00066.jpg  gaussians=25000  res=490x273
+iter 1/10000 done   train_loss=0.295900  forward=136.76ms backward=67.70ms step=2.29ms total=208.66ms
+iter 101/10000 start  view=00041.jpg  gaussians=25000  res=490x273
+iter 101/10000 done   train_loss=0.540995  forward=134.40ms backward=65.07ms step=1.40ms total=202.27ms
+iter 201/10000 start  view=00047.jpg  gaussians=25000  res=490x273
+iter 201/10000 done   train_loss=0.252590  forward=134.60ms backward=63.40ms step=1.39ms total=200.82ms
+iter 301/10000 start  view=00005.jpg  gaussians=25000  res=490x273
+iter 301/10000 done   train_loss=0.177932  forward=134.59ms backward=65.50ms step=1.49ms total=202.94ms
+iter 401/10000 start  view=00041.jpg  gaussians=25000  res=490x273
+iter 401/10000 done   train_loss=0.288778  forward=134.79ms backward=65.46ms step=1.46ms total=203.13ms
+iter 500/10000  train_loss=0.149607  test_psnr=13.67 dB  bg=(0.133,0.206,0.269)  center=(-2.69,-0.04,-0.10)  bounds=[-160.39,-47.38,-3.50]->[8.54,4.15,209.83]
+densify @iter 500/10000: gaussians 25000 -> 26519 (kept=24944 pruned=56 pruned_outliers=56 split=0 cloned=1575 cap_hit=false grad_p50=0.0000 grad_p90=0.0002)
+iter 501/10000 start  view=00068.jpg  gaussians=26519  res=490x273
+iter 501/10000 done   train_loss=0.266488  forward=138.13ms backward=68.37ms step=1.76ms total=210.54ms
+iter 601/10000 start  view=00047.jpg  gaussians=26519  res=490x273
+iter 601/10000 done   train_loss=0.247297  forward=137.70ms backward=67.18ms step=1.56ms total=208.10ms
+iter 701/10000 start  view=00047.jpg  gaussians=26519  res=490x273
+iter 701/10000 done   train_loss=0.245720  forward=137.18ms backward=66.48ms step=1.59ms total=206.93ms
+iter 801/10000 start  view=00026.jpg  gaussians=26519  res=490x273
+iter 801/10000 done   train_loss=0.386020  forward=107.57ms backward=36.98ms step=1.52ms total=147.75ms
+iter 901/10000 start  view=00001.jpg  gaussians=26519  res=490x273
+iter 901/10000 done   train_loss=0.196642  forward=136.83ms backward=66.25ms step=1.60ms total=206.10ms
+iter 1000/10000  train_loss=0.142389  test_psnr=14.16 dB  bg=(0.134,0.209,0.233)  center=(-2.39,0.02,-0.51)  bounds=[-27.39,-9.60,-3.50]->[8.55,4.14,35.69]
+densify @iter 1000/10000: gaussians 26519 -> 28246 (kept=26517 pruned=2 split=53 cloned=1676 cap_hit=false grad_p50=0.0000 grad_p90=0.0002)
+iter 1001/10000 start  view=00041.jpg  gaussians=28246  res=490x273
+iter 1001/10000 done   train_loss=0.246228  forward=139.84ms backward=70.69ms step=1.93ms total=214.76ms
+iter 1101/10000 start  view=00015.jpg  gaussians=28246  res=490x273
+iter 1101/10000 done   train_loss=0.158003  forward=139.73ms backward=70.91ms step=1.72ms total=213.91ms
+iter 1201/10000 start  view=00015.jpg  gaussians=28246  res=490x273
+iter 1201/10000 done   train_loss=0.135926  forward=139.81ms backward=70.89ms step=1.64ms total=213.87ms
+iter 1301/10000 start  view=00007.jpg  gaussians=28246  res=490x273
+iter 1301/10000 done   train_loss=0.139749  forward=139.30ms backward=69.08ms step=1.66ms total=211.60ms
+iter 1401/10000 start  view=00038.jpg  gaussians=28246  res=490x273
+iter 1401/10000 done   train_loss=0.261070  forward=139.55ms backward=71.05ms step=1.66ms total=213.88ms
+iter 1500/10000  train_loss=0.232917  test_psnr=13.70 dB  bg=(0.128,0.202,0.232)  center=(-2.34,0.01,-0.54)  bounds=[-27.38,-9.59,-3.51]->[8.53,4.14,35.67]
+densify @iter 1500/10000: gaussians 28246 -> 30349 (kept=28242 pruned=4 split=160 cloned=1947 cap_hit=false grad_p50=0.0000 grad_p90=0.0002)
+iter 1501/10000 start  view=00055.jpg  gaussians=30349  res=490x273
+iter 1501/10000 done   train_loss=0.290503  forward=143.16ms backward=74.13ms step=1.98ms total=221.62ms
+iter 1601/10000 start  view=00028.jpg  gaussians=30349  res=490x273
+iter 1601/10000 done   train_loss=0.229943  forward=142.73ms backward=74.01ms step=1.81ms total=220.48ms
+iter 1701/10000 start  view=00045.jpg  gaussians=30349  res=490x273
+iter 1701/10000 done   train_loss=0.295500  forward=144.28ms backward=74.59ms step=1.76ms total=222.31ms
+iter 1801/10000 start  view=00003.jpg  gaussians=30349  res=490x273
+iter 1801/10000 done   train_loss=0.186005  forward=159.24ms backward=75.27ms step=1.75ms total=238.16ms
+iter 1901/10000 start  view=00036.jpg  gaussians=30349  res=490x273
+iter 1901/10000 done   train_loss=0.217289  forward=144.36ms backward=75.04ms step=1.68ms total=222.96ms
+iter 2000/10000  train_loss=0.135621  test_psnr=13.52 dB  bg=(0.115,0.189,0.212)  center=(-2.31,-0.01,-0.58)  bounds=[-27.38,-9.59,-3.52]->[8.54,4.14,35.67]
+densify @iter 2000/10000: gaussians 30349 -> 31741 (kept=30321 pruned=28 split=355 cloned=1065 cap_hit=false grad_p50=0.0000 grad_p90=0.0001)
+iter 2001/10000 start  view=00075.jpg  gaussians=31741  res=490x273
+iter 2001/10000 done   train_loss=0.191497  forward=146.02ms backward=76.65ms step=2.06ms total=227.39ms
+iter 2101/10000 start  view=00036.jpg  gaussians=31741  res=490x273
+iter 2101/10000 done   train_loss=0.230137  forward=146.34ms backward=76.29ms step=1.81ms total=226.42ms
+iter 2201/10000 start  view=00033.jpg  gaussians=31741  res=490x273
+iter 2201/10000 done   train_loss=0.239043  forward=147.96ms backward=75.75ms step=1.79ms total=227.37ms
+iter 2301/10000 start  view=00034.jpg  gaussians=31741  res=490x273
+iter 2301/10000 done   train_loss=0.230195  forward=145.78ms backward=75.42ms step=1.75ms total=224.90ms
+iter 2401/10000 start  view=00045.jpg  gaussians=31741  res=490x273
+iter 2401/10000 done   train_loss=0.291798  forward=146.27ms backward=76.38ms step=1.76ms total=226.42ms
+iter 2500/10000  train_loss=0.211842  test_psnr=13.22 dB  bg=(0.100,0.170,0.187)  center=(-2.29,-0.02,-0.59)  bounds=[-27.38,-9.59,-3.52]->[8.54,4.14,35.67]
+densify @iter 2500/10000: gaussians 31741 -> 32917 (kept=31676 pruned=65 split=619 cloned=622 cap_hit=false grad_p50=0.0000 grad_p90=0.0001)
+iter 2501/10000 start  view=00007.jpg  gaussians=32917  res=490x273
+iter 2501/10000 done   train_loss=0.144696  forward=148.20ms backward=79.58ms step=2.18ms total=232.59ms
+iter 2601/10000 start  view=00055.jpg  gaussians=32917  res=490x273
+iter 2601/10000 done   train_loss=0.284486  forward=147.64ms backward=78.95ms step=1.81ms total=230.54ms
+iter 2701/10000 start  view=00027.jpg  gaussians=32917  res=490x273
+iter 2701/10000 done   train_loss=0.289829  forward=147.94ms backward=79.19ms step=1.88ms total=231.11ms
+iter 2801/10000 start  view=00059.jpg  gaussians=32917  res=490x273
+iter 2801/10000 done   train_loss=0.243115  forward=149.18ms backward=78.79ms step=1.83ms total=231.93ms
+iter 2901/10000 start  view=00034.jpg  gaussians=32917  res=490x273
+iter 2901/10000 done   train_loss=0.246230  forward=148.49ms backward=81.36ms step=1.85ms total=233.78ms
+iter 3000/10000  train_loss=0.193523  test_psnr=13.37 dB  bg=(0.068,0.133,0.131)  center=(-2.28,-0.03,-0.58)  bounds=[-27.39,-9.59,-3.52]->[8.54,4.15,35.66]
+densify @iter 3000/10000: gaussians 32917 -> 34461 (kept=32809 pruned=108 split=933 cloned=719 cap_hit=false grad_p50=0.0000 grad_p90=0.0001)
+iter 3001/10000 start  view=00015.jpg  gaussians=34461  res=490x273
+iter 3001/10000 done   train_loss=0.178099  forward=150.97ms backward=83.21ms step=2.28ms total=239.65ms
+iter 3101/10000 start  view=00008.jpg  gaussians=34461  res=490x273
+iter 3101/10000 done   train_loss=0.170286  forward=150.96ms backward=81.38ms step=1.94ms total=236.32ms
+iter 3201/10000 start  view=00067.jpg  gaussians=34461  res=490x273
+iter 3201/10000 done   train_loss=0.219767  forward=149.67ms backward=81.16ms step=1.95ms total=234.89ms
+iter 3301/10000 start  view=00059.jpg  gaussians=34461  res=490x273
+iter 3301/10000 done   train_loss=0.240846  forward=151.44ms backward=81.14ms step=1.92ms total=236.66ms
+iter 3401/10000 start  view=00046.jpg  gaussians=34461  res=490x273
+iter 3401/10000 done   train_loss=0.261953  forward=149.32ms backward=80.40ms step=1.88ms total=233.71ms
+iter 3500/10000  train_loss=0.290090  test_psnr=12.58 dB  bg=(0.040,0.093,0.086)  center=(-2.28,-0.03,-0.56)  bounds=[-27.40,-9.60,-3.52]->[8.54,4.15,35.66]
+densify @iter 3500/10000: gaussians 34461 -> 36390 (kept=34291 pruned=170 split=1502 cloned=597 cap_hit=false grad_p50=0.0000 grad_p90=0.0001)
+iter 3501/10000 start  view=00038.jpg  gaussians=36390  res=490x273
+iter 3501/10000 done   train_loss=0.278011  forward=145.22ms backward=77.64ms step=2.40ms total=228.63ms
+iter 3601/10000 start  view=00039.jpg  gaussians=36390  res=490x273
+iter 3601/10000 done   train_loss=0.244861  forward=149.97ms backward=80.06ms step=2.05ms total=234.36ms
+iter 3701/10000 start  view=00015.jpg  gaussians=36390  res=490x273
+iter 3701/10000 done   train_loss=0.196378  forward=151.11ms backward=82.81ms step=2.05ms total=238.44ms
+iter 3801/10000 start  view=00075.jpg  gaussians=36390  res=490x273
+iter 3801/10000 done   train_loss=0.186938  forward=148.19ms backward=79.82ms step=2.02ms total=232.32ms
+iter 3901/10000 start  view=00068.jpg  gaussians=36390  res=490x273
+iter 3901/10000 done   train_loss=0.233930  forward=149.63ms backward=80.94ms step=2.04ms total=234.93ms
+iter 4000/10000  train_loss=0.243172  test_psnr=12.60 dB  bg=(0.014,0.051,0.045)  center=(-2.27,-0.04,-0.53)  bounds=[-27.41,-9.60,-3.52]->[8.54,4.14,35.66]
+densify @iter 4000/10000: gaussians 36390 -> 38986 (kept=35940 pruned=450 split=2319 cloned=727 cap_hit=false grad_p50=0.0000 grad_p90=0.0001)
+iter 4001/10000 start  view=00023.jpg  gaussians=38986  res=490x273
+iter 4001/10000 done   train_loss=0.402022  forward=109.31ms backward=41.49ms step=2.52ms total=157.31ms
+iter 4101/10000 start  view=00024.jpg  gaussians=38986  res=490x273
+iter 4101/10000 done   train_loss=0.406409  forward=113.97ms backward=49.71ms step=2.17ms total=168.32ms
+iter 4201/10000 start  view=00036.jpg  gaussians=38986  res=490x273
+iter 4201/10000 done   train_loss=0.259786  forward=149.66ms backward=83.16ms step=2.15ms total=237.43ms
+iter 4301/10000 start  view=00074.jpg  gaussians=38986  res=490x273
+iter 4301/10000 done   train_loss=0.196844  forward=150.61ms backward=84.61ms step=2.15ms total=239.93ms
+iter 4401/10000 start  view=00074.jpg  gaussians=38986  res=490x273
+iter 4401/10000 done   train_loss=0.194179  forward=151.00ms backward=85.43ms step=2.15ms total=241.16ms
+iter 4500/10000  train_loss=0.279854  test_psnr=13.36 dB  bg=(-0.000,0.029,0.020)  center=(-2.24,-0.06,-0.47)  bounds=[-27.41,-9.60,-3.52]->[8.54,4.14,35.66]
+densify @iter 4500/10000: gaussians 38986 -> 42377 (kept=38317 pruned=669 split=3495 cloned=565 cap_hit=false grad_p50=0.0000 grad_p90=0.0003)
+iter 4501/10000 start  view=00051.jpg  gaussians=42377  res=490x273
+iter 4501/10000 done   train_loss=0.297557  forward=106.79ms backward=43.07ms step=2.73ms total=156.84ms
+iter 4601/10000 start  view=00041.jpg  gaussians=42377  res=490x273
+iter 4601/10000 done   train_loss=0.260628  forward=157.86ms backward=92.74ms step=2.37ms total=256.03ms
+iter 4701/10000 start  view=00047.jpg  gaussians=42377  res=490x273
+iter 4701/10000 done   train_loss=0.263627  forward=159.45ms backward=92.26ms step=2.35ms total=256.81ms
+iter 4801/10000 start  view=00043.jpg  gaussians=42377  res=490x273
+iter 4801/10000 done   train_loss=0.279295  forward=161.20ms backward=92.61ms step=2.32ms total=259.14ms
+iter 4901/10000 start  view=00011.jpg  gaussians=42377  res=490x273
+iter 4901/10000 done   train_loss=0.260094  forward=161.10ms backward=96.18ms step=2.36ms total=262.74ms
+iter 5000/10000  train_loss=0.231779  test_psnr=13.97 dB  bg=(-0.003,0.028,0.011)  center=(-2.20,-0.08,-0.38)  bounds=[-27.40,-9.60,-3.52]->[8.54,4.14,35.66]
+densify @iter 5000/10000: gaussians 42377 -> 46925 (kept=41151 pruned=1226 split=5065 cloned=709 cap_hit=false grad_p50=0.0000 grad_p90=0.0031)
+iter 5001/10000 start  view=00029.jpg  gaussians=46925  res=490x273
+iter 5001/10000 done   train_loss=0.248997  forward=163.77ms backward=96.24ms step=3.12ms total=268.45ms
+iter 5101/10000 start  view=00044.jpg  gaussians=46925  res=490x273
+iter 5101/10000 done   train_loss=0.286357  forward=169.84ms backward=100.64ms step=2.66ms total=275.99ms
+iter 5201/10000 start  view=00046.jpg  gaussians=46925  res=490x273
+iter 5201/10000 done   train_loss=0.271855  forward=170.83ms backward=99.21ms step=2.68ms total=275.38ms
+iter 5301/10000 start  view=00044.jpg  gaussians=46925  res=490x273
+iter 5301/10000 done   train_loss=0.285879  forward=169.83ms backward=98.16ms step=2.64ms total=273.63ms
+iter 5401/10000 start  view=00047.jpg  gaussians=46925  res=490x273
+iter 5401/10000 done   train_loss=0.262258  forward=169.52ms backward=100.51ms step=2.65ms total=275.57ms
+iter 5500/10000  train_loss=0.257386  test_psnr=13.75 dB  bg=(-0.012,0.025,0.003)  center=(-2.13,-0.11,-0.27)  bounds=[-27.40,-9.60,-3.52]->[8.54,4.14,35.66]
+densify @iter 5500/10000: gaussians 46925 -> 51998 (kept=44997 pruned=1928 split=6387 cloned=614 cap_hit=true grad_p50=0.0000 grad_p90=0.0154)
+iter 5501/10000 start  view=00002.jpg  gaussians=51998  res=490x273
+iter 5501/10000 done   train_loss=0.219716  forward=186.00ms backward=113.95ms step=2.77ms total=308.11ms
+iter 5601/10000 start  view=00063.jpg  gaussians=51998  res=490x273
+iter 5601/10000 done   train_loss=0.231331  forward=175.91ms backward=108.75ms step=2.80ms total=291.41ms
+iter 5701/10000 start  view=00028.jpg  gaussians=51998  res=490x273
+iter 5701/10000 done   train_loss=0.293757  forward=174.99ms backward=109.01ms step=2.75ms total=290.68ms
+iter 5801/10000 start  view=00038.jpg  gaussians=51998  res=490x273
+iter 5801/10000 done   train_loss=0.257222  forward=149.33ms backward=87.73ms step=2.77ms total=243.80ms
+iter 5901/10000 start  view=00043.jpg  gaussians=51998  res=490x273
+iter 5901/10000 done   train_loss=0.295110  forward=178.65ms backward=107.37ms step=2.76ms total=292.25ms
+iter 6000/10000  train_loss=0.230610  test_psnr=13.57 dB  bg=(-0.022,0.024,-0.006)  center=(-2.06,-0.13,-0.16)  bounds=[-27.40,-9.60,-3.53]->[8.54,4.14,35.66]
+densify @iter 6000/10000: gaussians 51998 -> 57669 (kept=49569 pruned=2429 split=7446 cloned=654 cap_hit=true grad_p50=0.0000 grad_p90=0.0332)
+iter 6001/10000 start  view=00020.jpg  gaussians=57669  res=490x273
+iter 6001/10000 done   train_loss=0.193890  forward=175.74ms backward=112.47ms step=3.05ms total=296.15ms
+iter 6101/10000 start  view=00050.jpg  gaussians=57669  res=490x273
+iter 6101/10000 done   train_loss=0.269254  forward=183.61ms backward=112.65ms step=3.09ms total=303.04ms
+iter 6201/10000 start  view=00065.jpg  gaussians=57669  res=490x273
+iter 6201/10000 done   train_loss=0.233795  forward=183.30ms backward=116.36ms step=3.08ms total=306.30ms
+iter 6301/10000 start  view=00075.jpg  gaussians=57669  res=490x273
+iter 6301/10000 done   train_loss=0.205014  forward=169.80ms backward=94.29ms step=3.08ms total=270.83ms
+iter 6401/10000 start  view=00024.jpg  gaussians=57669  res=490x273
+iter 6401/10000 done   train_loss=0.394040  forward=128.54ms backward=58.93ms step=3.06ms total=193.68ms
+iter 6500/10000  train_loss=0.230720  test_psnr=13.46 dB  bg=(-0.037,0.019,-0.013)  center=(-2.05,-0.15,-0.08)  bounds=[-27.40,-9.60,-3.53]->[8.54,4.14,35.66]
+densify @iter 6500/10000: gaussians 57669 -> 64584 (kept=54636 pruned=3033 split=9261 cloned=687 cap_hit=true grad_p50=0.0000 grad_p90=0.0373)
+iter 6501/10000 start  view=00067.jpg  gaussians=64584  res=490x273
+iter 6501/10000 done   train_loss=0.243610  forward=183.44ms backward=115.32ms step=4.48ms total=311.02ms
+iter 6601/10000 start  view=00075.jpg  gaussians=64584  res=490x273
+iter 6601/10000 done   train_loss=0.214471  forward=176.71ms backward=109.02ms step=3.44ms total=292.78ms
+iter 6701/10000 start  view=00074.jpg  gaussians=64584  res=490x273
+iter 6701/10000 done   train_loss=0.218103  forward=181.46ms backward=106.87ms step=3.45ms total=295.45ms
+iter 6801/10000 start  view=00016.jpg  gaussians=64584  res=490x273
+iter 6801/10000 done   train_loss=0.202205  forward=191.71ms backward=127.09ms step=3.41ms total=325.95ms
+iter 6901/10000 start  view=00002.jpg  gaussians=64584  res=490x273
+iter 6901/10000 done   train_loss=0.242450  forward=195.99ms backward=138.59ms step=3.42ms total=342.19ms
+iter 7000/10000  train_loss=0.289758  test_psnr=13.22 dB  bg=(-0.047,0.024,-0.023)  center=(-1.98,-0.15,-0.06)  bounds=[-27.40,-9.60,-3.53]->[8.54,4.14,35.66]
+densify @iter 7000/10000: gaussians 64584 -> 72227 (kept=60463 pruned=4121 split=11141 cloned=623 cap_hit=true grad_p50=0.0000 grad_p90=0.0630)
+iter 7001/10000 start  view=00001.jpg  gaussians=72227  res=490x273
+iter 7001/10000 done   train_loss=0.248248  forward=204.63ms backward=143.71ms step=5.65ms total=361.55ms
+iter 7101/10000 start  view=00015.jpg  gaussians=72227  res=490x273
+iter 7101/10000 done   train_loss=0.250738  forward=201.75ms backward=140.92ms step=3.85ms total=351.49ms
+iter 7201/10000 start  view=00010.jpg  gaussians=72227  res=490x273
+iter 7201/10000 done   train_loss=0.284799  forward=205.06ms backward=135.10ms step=3.81ms total=349.63ms
+iter 7301/10000 start  view=00037.jpg  gaussians=72227  res=490x273
+iter 7301/10000 done   train_loss=0.273042  forward=189.43ms backward=118.31ms step=3.81ms total=316.75ms
+iter 7401/10000 start  view=00019.jpg  gaussians=72227  res=490x273
+iter 7401/10000 done   train_loss=0.190601  forward=201.55ms backward=134.49ms step=3.81ms total=344.92ms
+iter 7500/10000  train_loss=0.269718  test_psnr=12.78 dB  bg=(-0.063,0.019,-0.036)  center=(-1.89,-0.15,-0.06)  bounds=[-27.40,-9.60,-3.53]->[8.54,4.14,35.66]
+densify @iter 7500/10000: gaussians 72227 -> 79728 (kept=66827 pruned=5400 split=12288 cloned=613 cap_hit=true grad_p50=0.0000 grad_p90=0.0498)
+iter 7501/10000 start  view=00010.jpg  gaussians=79728  res=490x273
+iter 7501/10000 done   train_loss=0.277824  forward=218.87ms backward=159.41ms step=6.27ms total=392.92ms
+iter 7601/10000 start  view=00002.jpg  gaussians=79728  res=490x273
+iter 7601/10000 done   train_loss=0.248888  forward=223.26ms backward=159.47ms step=4.26ms total=391.49ms
+iter 7701/10000 start  view=00046.jpg  gaussians=79728  res=490x273
+iter 7701/10000 done   train_loss=0.296741  forward=224.13ms backward=162.78ms step=4.24ms total=396.71ms
+iter 7801/10000 start  view=00068.jpg  gaussians=79728  res=490x273
+iter 7801/10000 done   train_loss=0.268966  forward=188.14ms backward=134.50ms step=4.24ms total=331.40ms
+iter 7901/10000 start  view=00011.jpg  gaussians=79728  res=490x273
+iter 7901/10000 done   train_loss=0.310190  forward=220.65ms backward=152.95ms step=4.26ms total=383.24ms
+iter 8000/10000  train_loss=0.336011  test_psnr=12.38 dB  bg=(-0.085,0.007,-0.054)  center=(-1.78,-0.13,-0.11)  bounds=[-27.40,-9.60,-3.53]->[8.54,4.14,35.66]
+densify @iter 8000/10000: gaussians 79728 -> 87347 (kept=73139 pruned=6589 split=13555 cloned=653 cap_hit=true grad_p50=0.0000 grad_p90=0.0365)
+iter 8001/10000 start  view=00063.jpg  gaussians=87347  res=490x273
+iter 8001/10000 done   train_loss=0.251225  forward=233.22ms backward=175.32ms step=6.93ms total=424.59ms
+iter 8101/10000 start  view=00036.jpg  gaussians=87347  res=490x273
+iter 8101/10000 done   train_loss=0.294972  forward=211.02ms backward=150.75ms step=4.63ms total=373.34ms
+iter 8201/10000 start  view=00006.jpg  gaussians=87347  res=490x273
+iter 8201/10000 done   train_loss=0.268619  forward=229.64ms backward=160.36ms step=4.65ms total=400.55ms
+iter 8301/10000 start  view=00068.jpg  gaussians=87347  res=490x273
+iter 8301/10000 done   train_loss=0.275839  forward=200.57ms backward=141.72ms step=4.61ms total=352.84ms
+iter 8401/10000 start  view=00032.jpg  gaussians=87347  res=490x273
+iter 8401/10000 done   train_loss=0.263807  forward=207.13ms backward=129.33ms step=4.62ms total=347.04ms
+iter 8500/10000  train_loss=0.270985  test_psnr=12.45 dB  bg=(-0.118,-0.017,-0.076)  center=(-1.71,-0.12,-0.09)  bounds=[-27.40,-9.60,-3.53]->[8.54,4.14,35.66]
+densify @iter 8500/10000: gaussians 87347 -> 95962 (kept=80405 pruned=6942 split=14588 cloned=969 cap_hit=true grad_p50=0.0000 grad_p90=0.0283)
+iter 8501/10000 start  view=00037.jpg  gaussians=95962  res=490x273
+iter 8501/10000 done   train_loss=0.289988  forward=220.18ms backward=159.03ms step=7.27ms total=395.50ms
+iter 8601/10000 start  view=00032.jpg  gaussians=95962  res=490x273
+iter 8601/10000 done   train_loss=0.263591  forward=217.24ms backward=146.06ms step=5.11ms total=374.92ms
+iter 8701/10000 start  view=00010.jpg  gaussians=95962  res=490x273
+iter 8701/10000 done   train_loss=0.287938  forward=235.37ms backward=176.03ms step=5.07ms total=422.85ms
+iter 8801/10000 start  view=00041.jpg  gaussians=95962  res=490x273
+iter 8801/10000 done   train_loss=0.305327  forward=246.09ms backward=168.40ms step=5.43ms total=427.19ms
+iter 8901/10000 start  view=00014.jpg  gaussians=95962  res=490x273
+iter 8901/10000 done   train_loss=0.303333  forward=222.39ms backward=158.31ms step=5.08ms total=392.30ms
+iter 9000/10000  train_loss=0.319905  test_psnr=12.46 dB  bg=(-0.157,-0.048,-0.103)  center=(-1.69,-0.12,0.00)  bounds=[-27.40,-9.60,-3.53]->[8.54,4.14,35.66]
+densify @iter 9000/10000: gaussians 95962 -> 103691 (kept=87165 pruned=8797 split=15483 cloned=1043 cap_hit=true grad_p50=0.0000 grad_p90=0.0207)
+iter 9001/10000 start  view=00057.jpg  gaussians=103691  res=490x273
+iter 9001/10000 done   train_loss=0.294083  forward=255.40ms backward=192.66ms step=8.82ms total=467.57ms
+iter 9101/10000 start  view=00061.jpg  gaussians=103691  res=490x273
+iter 9101/10000 done   train_loss=0.269509  forward=262.93ms backward=195.55ms step=5.50ms total=470.87ms
+iter 9201/10000 start  view=00005.jpg  gaussians=103691  res=490x273
+iter 9201/10000 done   train_loss=0.287115  forward=251.88ms backward=182.26ms step=5.79ms total=447.41ms
+iter 9301/10000 start  view=00034.jpg  gaussians=103691  res=490x273
+iter 9301/10000 done   train_loss=0.309922  forward=239.81ms backward=171.17ms step=5.48ms total=423.46ms
+iter 9401/10000 start  view=00065.jpg  gaussians=103691  res=490x273
+iter 9401/10000 done   train_loss=0.260450  forward=248.11ms backward=184.94ms step=5.77ms total=446.18ms
+iter 9500/10000  train_loss=0.335222  test_psnr=12.29 dB  bg=(-0.192,-0.078,-0.130)  center=(-1.64,-0.12,0.02)  bounds=[-27.39,-9.60,-3.53]->[8.54,4.14,35.66]
+densify @iter 9500/10000: gaussians 103691 -> 111664 (kept=94177 pruned=9514 split=16380 cloned=1107 cap_hit=true grad_p50=0.0000 grad_p90=0.0173)
+iter 9501/10000 start  view=00038.jpg  gaussians=111664  res=490x273
+iter 9501/10000 done   train_loss=0.281921  forward=230.86ms backward=167.37ms step=6.00ms total=414.87ms
+iter 9601/10000 start  view=00061.jpg  gaussians=111664  res=490x273
+iter 9601/10000 done   train_loss=0.273576  forward=275.22ms backward=212.44ms step=5.99ms total=501.11ms
+iter 9701/10000 start  view=00057.jpg  gaussians=111664  res=490x273
+iter 9701/10000 done   train_loss=0.299076  forward=266.90ms backward=206.73ms step=5.99ms total=488.01ms
+iter 9801/10000 start  view=00033.jpg  gaussians=111664  res=490x273
+iter 9801/10000 done   train_loss=0.309386  forward=249.60ms backward=191.39ms step=5.97ms total=454.56ms
+iter 9901/10000 start  view=00034.jpg  gaussians=111664  res=490x273
+iter 9901/10000 done   train_loss=0.310015  forward=242.01ms backward=179.84ms step=5.98ms total=436.17ms
+iter 10000/10000 start  view=00026.jpg  gaussians=111664  res=490x273
+iter 10000/10000  train_loss=0.356261  test_psnr=12.14 dB  bg=(-0.223,-0.106,-0.152)  center=(-1.58,-0.12,0.05)  bounds=[-27.39,-9.60,-3.53]->[8.54,4.14,35.66]
+
+✅ Multi-view training complete!
+Initial test PSNR: 12.73 dB
+Final test PSNR:   12.13 dB
+Improvement:       -0.60 dB
+M8 metrics: initial_psnr=12.73dB final_psnr=12.13dB train_loss=0.356261 gaussians=25000->111664 densify_events=19
+Saved `runs/20251220_0948_onehour/m8_test_view_rendered.png`
+Saved `runs/20251220_0948_onehour/m8_test_view_target.png`
+Saved model to `runs/20251220_0948_onehour/model.gs`

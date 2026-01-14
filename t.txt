@@ -1,0 +1,47 @@
+
+⚠️  WARNING: COLMAP distortion parameters ignored
+   Detected non-pinhole camera models (RADIAL, OPENCV, or FISHEYE).
+   This implementation assumes images are already undistorted.
+
+   If using raw distorted images, projections will be systematically wrong.
+   To fix: Use COLMAP's image_undistorter to preprocess your dataset:
+     colmap image_undistorter \
+       --image_path /path/to/images \
+       --input_path /path/to/sparse/0 \
+       --output_path /path/to/undistorted
+
+GPU: Apple M2 Max (Metal)
+GPU max storage buffer binding size: 4095 MB
+Warning: Failed to open image: No such file or directory (os error 2)
+Using default downsample factor: 0.4
+
+⚠️  WARNING: COLMAP distortion parameters ignored
+   Detected non-pinhole camera models (RADIAL, OPENCV, or FISHEYE).
+   This implementation assumes images are already undistorted.
+
+   If using raw distorted images, projections will be systematically wrong.
+   To fix: Use COLMAP's image_undistorter to preprocess your dataset:
+     colmap image_undistorter \
+       --image_path /path/to/images \
+       --input_path /path/to/sparse/0 \
+       --output_path /path/to/undistorted
+
+Multi-view training: 3 train views, 1 test views
+
+thread 'main' panicked at src/bin/train.rs:639:14:
+Multi-view training failed: Failed to load image with color conversion: Failed to open image: No such file or directory (os error 2)
+
+Stack backtrace:
+   0: std::backtrace::Backtrace::capture
+   1: anyhow::error::<impl anyhow::Error>::msg
+   2: sugar_rs::optim::trainer::load_target_image
+   3: sugar_rs::optim::trainer::train_multiview_color_only
+   4: sugar_train::main
+   5: std::sys::backtrace::__rust_begin_short_backtrace
+   6: _main
+stack backtrace:
+   0: __rustc::rust_begin_unwind
+   1: core::panicking::panic_fmt
+   2: core::result::unwrap_failed
+   3: sugar_train::main
+note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.

@@ -11,3 +11,10 @@ or if the numbers are sequencial without padding:
 
     ffmpeg -framerate 2 -i cam%d_tandt_train.png  -c:v prores_ks -profile:v 3 -pix_fmt yuv422p10le output.mov
     ffmpeg -i output.mov -vf "fps=10,scale=720:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse" output.gif
+
+micro, onehour, full
+
+  time cargo run --release --bin sugar-train --features gpu -- \
+    --preset onehour \
+    --dataset-root datasets/tandt_db/tandt/train \
+    --gpu
