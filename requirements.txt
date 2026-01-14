@@ -1,0 +1,8 @@
+# Python dependencies for verification and evaluation
+scikit-image>=0.26.0
+lpips>=0.1.4
+opencv-python>=4.12.0
+matplotlib>=3.10.0
+numpy>=2.2.0
+torch>=2.9.0
+torchvision>=0.24.0
