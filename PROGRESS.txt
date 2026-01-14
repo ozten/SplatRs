@@ -57,3 +57,38 @@ Continue with Phase 1 verification tasks in priority order:
 1. TC-INP-002: COLMAP Camera Extrinsics Parsing (SplatRs-6wj)
 2. TC-INP-003: Coordinate System Convention (SplatRs-euf)
 3. TC-INP-010: COLMAP Point Cloud Loading (SplatRs-wl8)
+
+## 2026-01-14 17:15 - Completed SplatRs-6wj (TC-INP-002)
+
+### What was done
+- Implemented TC-INP-002: COLMAP Camera Extrinsics Parsing verification test
+- Added test to tests/verification_phase1_input.rs
+- Test validates camera pose (rotation + translation) from COLMAP images.bin:
+  - Quaternions are properly normalized (unit quaternions within 1e-6)
+  - Rotation matrices are orthonormal: R^T * R = I within 1e-6
+  - Rotation determinants are +1 (proper rotations, not reflections)
+  - Precision is maintained through f64 -> f32 conversion
+  - Translation values maintain fractional precision
+- Test passes successfully on garden dataset:
+  - All 185 camera images validated
+  - Quaternion norms all within 1e-6 of 1.0
+  - Rotation matrices all orthonormal to 1e-6 precision
+  - All rotation matrices have determinant = 1 (proper rotations)
+
+### Key decisions made
+- Validated rotation quaternions from ImageInfo (stored in images.bin)
+- Verified rotation matrices derived from quaternions are orthonormal
+- Added comprehensive reference implementation with:
+  - verify_rotation_orthonormal() - checks R^T * R = I
+  - rotation_error_degrees() - computes angle between rotation matrices
+  - verify_extrinsics_precision() - validates against ground truth values
+- Test structure mirrors TC-INP-001 for consistency
+- Focused on mathematical properties (orthonormality) rather than ground truth comparison
+
+### Suggestions for next tasks
+Continue with Phase 1 verification tasks in priority order:
+1. TC-INP-003: Coordinate System Convention (SplatRs-euf)
+2. TC-INP-010: COLMAP Point Cloud Loading (SplatRs-wl8)
+3. TC-COV-001: Covariance matrix construction (SplatRs-7qt)
+4. TC-SH-001: SH degree 0 testing (SplatRs-baz)
+5. TC-SH-003: SH coefficient count verification (SplatRs-wh3)
