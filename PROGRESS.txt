@@ -28,3 +28,32 @@ All Phase 1 verification tasks are now unblocked. Recommended order:
 5. TC-COV-001: Covariance matrix construction
 6. TC-SH-001: SH degree 0 testing
 7. TC-SH-003: SH coefficient count verification
+
+## 2026-01-14 16:30 - Completed SplatRs-e1a (TC-INP-001)
+
+### What was done
+- Implemented TC-INP-001: COLMAP Camera Intrinsics Parsing verification test
+- Created new test file: tests/verification_phase1_input.rs
+- Test validates:
+  - Focal length values (fx, fy) are positive and in reasonable range (0.1x to 10x image dimension)
+  - Principal point (cx, cy) is within image bounds
+  - Precision is maintained through f64 -> f32 conversion (values not truncated to integers)
+  - All intrinsic parameters loaded correctly from COLMAP cameras.bin
+- Test passes successfully on garden dataset:
+  - Camera: 5187x3361 pixels
+  - fx=3844.9, fy=3852.4, cx=2593.5, cy=1680.5
+  - Values have proper fractional components, confirming precision
+
+### Key decisions made
+- Created comprehensive validation test rather than ground truth comparison
+  - Validates reasonable value ranges and precision
+  - Works with any COLMAP dataset without requiring manual ground truth setup
+  - Includes infrastructure for future ground truth testing (tc_inp_001_extended_ground_truth)
+- Test checks fractional precision to ensure f64->f32 conversion is correct
+- Validates against COLMAP format specification for camera models 0-5
+
+### Suggestions for next tasks
+Continue with Phase 1 verification tasks in priority order:
+1. TC-INP-002: COLMAP Camera Extrinsics Parsing (SplatRs-6wj)
+2. TC-INP-003: Coordinate System Convention (SplatRs-euf)
+3. TC-INP-010: COLMAP Point Cloud Loading (SplatRs-wl8)
