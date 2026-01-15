@@ -816,3 +816,43 @@ Then proceed to Phase 3 optimization verification tasks:
 1. TC-OPT-001: L1 Loss Correctness (SplatRs-wyc)
 2. TC-OPT-002: L2 (MSE) Loss Correctness (SplatRs-gew)
 3. TC-OPT-003: SSIM Loss Correctness (SplatRs-fqa)
+## 2026-01-14 23:45 - Completed SplatRs-n3b (TC-SH-002)
+
+### What was done
+- Implemented TC-SH-002: Higher Degree SH Basis Functions verification test
+- Added comprehensive test to tests/verification_phase1_input.rs (370 lines)
+- Test validates spherical harmonics basis functions for degrees 1, 2, and 3
+- Four comprehensive test scenarios implemented:
+  1. Direction along +Z axis (0, 0, 1) - tests vertical symmetry
+  2. Direction along +X axis (1, 0, 0) - tests horizontal symmetry
+  3. Direction along +Y axis (0, 1, 0) - tests lateral symmetry
+  4. General direction (1,1,1)/sqrt(3) - tests arbitrary normalized direction
+- Each test validates all 16 basis functions (degrees 0-3) against reference values
+- Reference values computed using standard real spherical harmonics formulas
+- All tests pass successfully with maximum error well within 1e-5 tolerance
+
+### Key decisions made
+- Used Wikipedia's real spherical harmonics formulas as reference
+  - Degree 0: Y_0^0 = C0 (constant)
+  - Degree 1: Y_1^m for m ∈ {-1, 0, 1}
+  - Degree 2: Y_2^m for m ∈ {-2, -1, 0, 1, 2}
+  - Degree 3: Y_3^m for m ∈ {-3, -2, -1, 0, 1, 2, 3}
+- Tested canonical directions (+X, +Y, +Z) where many basis functions are zero
+  - Simplifies verification and debugging
+  - Tests each degree independently
+- Added general direction test to verify all basis functions simultaneously
+  - (1,1,1)/sqrt(3) activates all 16 basis functions
+  - Confirms implementation works for arbitrary directions
+- Test structure follows existing Phase 1 verification pattern for consistency
+- Fixed format string errors by escaping braces in negative subscripts (Y_1^{{-1}})
+
+### Suggestions for next tasks
+Continue with additional Phase 1/2 verification tests in priority order:
+1. TC-RAS-010: 3D to 2D Covariance Projection (SplatRs-8vu)
+2. TC-RAS-011: Anisotropic Gaussian Projection (SplatRs-l77)
+
+Then proceed to Phase 3 optimization verification tasks:
+1. TC-OPT-001: L1 Loss Correctness (SplatRs-wyc)
+2. TC-OPT-002: L2 (MSE) Loss Correctness (SplatRs-gew)
+3. TC-OPT-003: SSIM Loss Correctness (SplatRs-fqa)
+
