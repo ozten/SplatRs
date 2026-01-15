@@ -887,6 +887,103 @@ fn verify_positive_semidefinite(matrix: &Matrix3<f32>, test_name: &str) {
     }
 }
 
+/// TC-SH-001: Verify SH degree 0 produces view-independent color.
+///
+/// Pass Criteria:
+/// - Maximum color deviation across all views < 1e-6
+/// - RGB values match expected DC color
+#[test]
+fn tc_sh_001_degree_0_view_independence() {
+    use sugar_rs::core::{evaluate_sh, SH_C0};
+    use nalgebra::Vector3;
+
+    const TOLERANCE: f32 = 1e-6;
+
+    println!("\n=== TC-SH-001: SH Degree 0 (DC) View Independence ===\n");
+
+    // Test with several different DC coefficient values
+    let test_cases = vec![
+        ([1.0, 0.5, 0.2], "bright red-orange"),
+        ([0.0, 0.0, 0.0], "mid gray (zero coeffs)"),
+        ([-1.0, -1.0, -1.0], "dark (negative coeffs)"),
+        ([0.5, 1.0, -0.3], "greenish"),
+    ];
+
+    for (dc_coeffs, description) in test_cases {
+        println!("Test case: {}", description);
+        println!("  DC coefficients: ({:.3}, {:.3}, {:.3})", dc_coeffs[0], dc_coeffs[1], dc_coeffs[2]);
+
+        // Create SH coefficient array with only degree 0 (DC) set
+        let mut sh_coeffs = [[0.0f32; 3]; 16];
+        sh_coeffs[0] = dc_coeffs;
+
+        // Expected color from DC component only
+        // Formula: color = sh_coeffs[0] * SH_C0
+        // (The 0.5 offset is only in evaluate_sh_dc_only, not in evaluate_sh)
+        let expected_color = Vector3::new(
+            (dc_coeffs[0] * SH_C0).clamp(0.0, 1.0),
+            (dc_coeffs[1] * SH_C0).clamp(0.0, 1.0),
+            (dc_coeffs[2] * SH_C0).clamp(0.0, 1.0),
+        );
+
+        println!("  Expected color: ({:.6}, {:.6}, {:.6})",
+            expected_color.x, expected_color.y, expected_color.z);
+
+        // Test from multiple viewing directions
+        let test_directions = vec![
+            Vector3::new(1.0, 0.0, 0.0),    // +X
+            Vector3::new(-1.0, 0.0, 0.0),   // -X
+            Vector3::new(0.0, 1.0, 0.0),    // +Y
+            Vector3::new(0.0, -1.0, 0.0),   // -Y
+            Vector3::new(0.0, 0.0, 1.0),    // +Z
+            Vector3::new(0.0, 0.0, -1.0),   // -Z
+            Vector3::new(1.0, 1.0, 1.0).normalize(),     // Diagonal
+            Vector3::new(0.5, -0.3, 0.8).normalize(),    // Random 1
+            Vector3::new(-0.7, 0.6, -0.4).normalize(),   // Random 2
+        ];
+
+        let mut max_deviation = 0.0f32;
+        let mut max_deviation_dir = Vector3::zeros();
+
+        for direction in &test_directions {
+            let color = evaluate_sh(&sh_coeffs, direction);
+
+            // Compute deviation from expected color
+            let deviation = (color - expected_color).norm();
+
+            if deviation > max_deviation {
+                max_deviation = deviation;
+                max_deviation_dir = *direction;
+            }
+
+            // Verify each channel matches within tolerance
+            assert!((color.x - expected_color.x).abs() < TOLERANCE,
+                "Red channel varies with view direction: {} vs {} (dir: {:?})",
+                color.x, expected_color.x, direction);
+            assert!((color.y - expected_color.y).abs() < TOLERANCE,
+                "Green channel varies with view direction: {} vs {} (dir: {:?})",
+                color.y, expected_color.y, direction);
+            assert!((color.z - expected_color.z).abs() < TOLERANCE,
+                "Blue channel varies with view direction: {} vs {} (dir: {:?})",
+                color.z, expected_color.z, direction);
+        }
+
+        println!("  Maximum deviation across {} views: {:.6} (requirement: < 1e-6)",
+            test_directions.len(), max_deviation);
+        println!("  Maximum deviation occurred at direction: ({:.3}, {:.3}, {:.3})",
+            max_deviation_dir.x, max_deviation_dir.y, max_deviation_dir.z);
+
+        assert!(max_deviation < TOLERANCE,
+            "Color deviation too large: {} (max allowed: {})", max_deviation, TOLERANCE);
+
+        println!("  ✓ View-independent color verified\n");
+    }
+
+    println!("✅ TC-SH-001: SH degree 0 view independence verified");
+    println!("   All test cases produced constant color across all viewing directions");
+    println!("   Maximum deviation: < 1e-6 per channel");
+}
+
 #[cfg(test)]
 mod reference_implementation {
     //! Reference implementation for validating COLMAP intrinsics parsing
