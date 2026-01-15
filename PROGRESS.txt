@@ -1593,3 +1593,126 @@ High priority tests (require long training or manual inspection):
 4. TC-E2E-012: View-Dependent Effects (SplatRs-ouw) - requires manual inspection
 5. TC-E2E-013: Temporal Stability (SplatRs-w4r) - requires manual inspection
 
+
+
+## 2026-01-14 22:30 - Completed SplatRs-v79 (TC-ADC-003)
+
+### What was done
+- Implemented TC-ADC-003: Densification Interval verification test
+- Created comprehensive test in tests/verification_phase3_optimization.rs
+- Test validates densification timing logic matches trainer.rs:2128-2131
+- Three comprehensive verification scenarios implemented:
+  1. Densification occurs ONLY at specified interval iterations
+     - With densify_interval=10, verified densification at iterations 10, 20, 30, 40, 50
+     - Tracked Gaussian count changes at each iteration
+     - Confirmed all 5 expected densification events occurred correctly
+  2. No densification between interval iterations
+     - Verified count remained stable between densification events
+     - No unexpected cloning or splitting operations
+  3. No densification on last iteration
+     - Verified no densification at iteration 55 (last iteration)
+     - Ensures new Gaussians get at least one update step
+- All test cases pass successfully
+- Test execution time: ~0.21s (fast, suitable for CI)
+
+### Key decisions made
+- Test structure follows existing verification test patterns
+  - Consistent with TC-ADC-002, TC-ADC-010, TC-ADC-011
+  - Uses same import patterns and helper functions (sh_constant_color, l2_loss)
+  - Clear documentation of pass criteria
+- Simple 2-Gaussian test scene
+  - Small enough for fast execution
+  - Generates sufficient gradients to trigger cloning
+  - Predictable densification behavior (doubles each interval)
+- Comprehensive iteration tracking
+  - Records Gaussian count before and after each iteration
+  - Creates detailed history table showing all densification events
+  - Validates both presence and absence of densifications
+- Test validates exact trainer.rs logic
+  - Matches conditions: densify_interval > 0 && grad_window_iters > 0
+  - Matches modulo check: (iter + 1) % densify_interval == 0
+  - Matches last iteration check: (iter + 1) < total_iters
+  - Simulates gradient accumulation and window tracking
+- Clear, detailed test output
+  - Shows initial setup and parameters
+  - Prints each densification event with before/after counts
+  - Displays iteration history table with expected vs actual
+  - Provides pass/fail indicators for each constraint
+
+### Suggestions for next tasks
+This completes TC-ADC-003 verification test implementation.
+Continue with other verification tests from ready queue:
+
+Lower priority verification tests:
+1. TC-ADC-012: Gaussian Count Stability (SplatRs-7qb) - verify count stabilizes
+2. SETUP: Document Reference Implementations (SplatRs-5or) - update documentation
+
+Higher priority tests (require long training or manual inspection):
+1. TC-E2E-001: Mip-NeRF 360 Benchmark (SplatRs-7ib) - very long training required
+2. TC-E2E-010: Floater Detection (SplatRs-8h6) - requires manual inspection
+3. TC-E2E-011: Edge Sharpness (SplatRs-nia) - requires manual inspection
+4. TC-E2E-012: View-Dependent Effects (SplatRs-ouw) - requires manual inspection
+5. TC-E2E-013: Temporal Stability (SplatRs-w4r) - requires manual inspection
+
+
+## 2026-01-14 23:00 - Completed SplatRs-7qb (TC-ADC-012)
+
+### What was done
+- Implemented TC-ADC-012: Gaussian Count Stability verification test
+- Created comprehensive test in tests/verification_phase3_optimization.rs
+- Test validates that Gaussian count stabilizes after sufficient training
+- Three comprehensive verification scenarios implemented:
+  1. Count stabilizes after densification window ends (no variation > 5%)
+     - Training runs 1000 iterations (scaled from 30k for test performance)
+     - Densification window: iterations 100-700 (70% of training)
+     - Stability window: iterations 700-1000 (last 30%)
+  2. Final count is reasonable for scene complexity
+     - Validates count between 4 and max_gaussians (with 20% tolerance)
+     - Ensures count grew from initial (shows densification worked)
+  3. Densification and pruning behavior is tracked
+     - Records all densification events with clone/prune counts
+     - Displays detailed history table for debugging
+- All test cases pass successfully
+- Test execution time: ~7s (reasonable for CI)
+
+### Key decisions made
+- Test structure follows existing verification test patterns
+  - Consistent with TC-ADC-003, TC-OPT-010, TC-RAS-* tests
+  - Uses same import patterns and helper functions (sh_constant_color, l2_loss)
+  - Clear documentation of pass criteria
+- Scaled-down training (1000 iterations vs 30k from spec)
+  - Keeps test execution time reasonable (~7s)
+  - Still observes stability behavior (densification stops at 70%)
+  - Stability window validation in last 30% of training
+- Comprehensive densification/pruning simulation
+  - Implements gradient accumulation with windowing
+  - Clone Gaussians with high position gradients (> threshold)
+  - Prune Gaussians with low opacity (< 0.01)
+  - Respects max_gaussians cap (with 20% tolerance for batch overshoot)
+- Test validates both presence and absence of changes
+  - Densification occurs during growth window (iterations 100-700)
+  - No densification during stability window (iterations 700-1000)
+  - Count remains stable after densification stops
+- Realistic 4-Gaussian test scene
+  - Four colored Gaussians at different positions (quadrant layout)
+  - Target image has larger, brighter Gaussians to drive gradients
+  - Generates sufficient gradients to trigger multiple densification events
+- Improved validation logic
+  - Checks stability even when no densification events in window
+  - Validates final count is reasonable (not growing unbounded)
+  - Allows 20% overshoot beyond max_gaussians (batch cloning artifact)
+  - Three separate pass criteria with clear pass/fail indicators
+
+### Suggestions for next tasks
+This completes TC-ADC-012 verification test implementation.
+Continue with other verification tests from ready queue:
+
+Lower priority verification tests:
+1. SETUP: Document Reference Implementations (SplatRs-5or) - update documentation
+
+Higher priority tests (require long training or manual inspection):
+1. TC-E2E-001: Mip-NeRF 360 Benchmark (SplatRs-7ib) - very long training required
+2. TC-E2E-010: Floater Detection (SplatRs-8h6) - requires manual inspection
+3. TC-E2E-011: Edge Sharpness (SplatRs-nia) - requires manual inspection
+4. TC-E2E-012: View-Dependent Effects (SplatRs-ouw) - requires manual inspection
+5. TC-E2E-013: Temporal Stability (SplatRs-w4r) - requires manual inspection
