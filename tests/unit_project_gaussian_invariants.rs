@@ -64,7 +64,7 @@ fn test_project_gaussian_matches_expected_off_center_value() {
     );
 
     let bg = Vector3::zeros();
-    let rendered = render_full_linear(&[gaussian.clone()], &camera, &bg);
+    let rendered = render_full_linear(&[gaussian.clone()], &camera, &bg, false);
 
     // Compute expected mean and Σ₂d.
     let mean_cam = camera.world_to_camera(&gaussian.position);

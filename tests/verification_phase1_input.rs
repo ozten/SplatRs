@@ -446,6 +446,131 @@ fn tc_inp_003_coordinate_system_convention() {
     println!("   All analytical projections match within {}", TOLERANCE);
 }
 
+/// TC-INP-010: Verify 3D points correctly loaded from COLMAP sparse reconstruction.
+///
+/// Pass Criteria:
+/// - Point count matches source file
+/// - Point positions within 1e-5 of source values
+/// - Visual alignment with input images (manual check)
+#[test]
+fn tc_inp_010_colmap_point_cloud_loading() {
+    use byteorder::{LittleEndian, ReadBytesExt};
+    use std::fs::File;
+    use std::io::BufReader;
+
+    // Use a known dataset
+    let dataset_path = PathBuf::from("datasets/garden/sparse/0");
+
+    if !dataset_path.exists() {
+        eprintln!("Skipping test - dataset not found at {:?}", dataset_path);
+        eprintln!("Run setup to download datasets first");
+        return;
+    }
+
+    // Load the scene using our implementation
+    let scene = load_colmap_scene(&dataset_path)
+        .expect("Failed to load COLMAP scene");
+
+    println!("Loaded {} 3D points from COLMAP scene", scene.points.len());
+
+    // Read the points3D.bin file directly for ground truth comparison
+    let points_path = dataset_path.join("points3D.bin");
+    let file = File::open(&points_path).expect("Failed to open points3D.bin");
+    let mut reader = BufReader::new(file);
+
+    // Read number of points from binary file
+    let num_points = reader.read_u64::<LittleEndian>().expect("Failed to read num_points");
+
+    println!("Ground truth file contains {} points", num_points);
+
+    // Verify point count matches
+    assert_eq!(
+        scene.points.len(),
+        num_points as usize,
+        "Point count mismatch: loaded {} points, but file contains {}",
+        scene.points.len(),
+        num_points
+    );
+
+    // Verify precision of point positions by comparing against ground truth
+    let mut max_position_error = 0.0_f32;
+    let mut max_color_diff = 0_u8;
+    let mut num_precision_checks = 0;
+
+    for i in 0..num_points as usize {
+        // Read ground truth from binary file
+        let gt_point_id = reader.read_u64::<LittleEndian>().expect("Failed to read point_id");
+        let gt_x = reader.read_f64::<LittleEndian>().expect("Failed to read x") as f32;
+        let gt_y = reader.read_f64::<LittleEndian>().expect("Failed to read y") as f32;
+        let gt_z = reader.read_f64::<LittleEndian>().expect("Failed to read z") as f32;
+        let gt_r = reader.read_u8().expect("Failed to read r");
+        let gt_g = reader.read_u8().expect("Failed to read g");
+        let gt_b = reader.read_u8().expect("Failed to read b");
+        let gt_error = reader.read_f64::<LittleEndian>().expect("Failed to read error") as f32;
+
+        // Skip track data
+        let track_length = reader.read_u64::<LittleEndian>().expect("Failed to read track_length");
+        for _ in 0..track_length {
+            reader.read_u32::<LittleEndian>().expect("Failed to skip image_id");
+            reader.read_u32::<LittleEndian>().expect("Failed to skip point2d_idx");
+        }
+
+        // Find corresponding point in loaded scene (by ID)
+        let loaded_point = scene.points.iter()
+            .find(|p| p.id == gt_point_id)
+            .expect(&format!("Point ID {} not found in loaded scene", gt_point_id));
+
+        // Check position precision
+        let pos_error_x = (loaded_point.position.x - gt_x).abs();
+        let pos_error_y = (loaded_point.position.y - gt_y).abs();
+        let pos_error_z = (loaded_point.position.z - gt_z).abs();
+        let pos_error = pos_error_x.max(pos_error_y).max(pos_error_z);
+
+        max_position_error = max_position_error.max(pos_error);
+
+        // Check color matches exactly
+        let color_diff_r = (loaded_point.color[0] as i16 - gt_r as i16).abs() as u8;
+        let color_diff_g = (loaded_point.color[1] as i16 - gt_g as i16).abs() as u8;
+        let color_diff_b = (loaded_point.color[2] as i16 - gt_b as i16).abs() as u8;
+        max_color_diff = max_color_diff.max(color_diff_r).max(color_diff_g).max(color_diff_b);
+
+        // Check reprojection error precision
+        let error_diff = (loaded_point.error - gt_error).abs();
+
+        // Print details for first few points
+        if i < 3 {
+            println!("\nPoint {} (ID {}):", i, gt_point_id);
+            println!("  Position GT:     ({:.6}, {:.6}, {:.6})", gt_x, gt_y, gt_z);
+            println!("  Position Loaded: ({:.6}, {:.6}, {:.6})",
+                loaded_point.position.x, loaded_point.position.y, loaded_point.position.z);
+            println!("  Position Error:  ({:.6}, {:.6}, {:.6})", pos_error_x, pos_error_y, pos_error_z);
+            println!("  Color GT:        ({}, {}, {})", gt_r, gt_g, gt_b);
+            println!("  Color Loaded:    ({}, {}, {})",
+                loaded_point.color[0], loaded_point.color[1], loaded_point.color[2]);
+            println!("  Reproj Error GT: {:.6}", gt_error);
+            println!("  Reproj Error Loaded: {:.6}", loaded_point.error);
+            println!("  Reproj Error Diff: {:.6}", error_diff);
+        }
+
+        // Verify precision requirements
+        assert!(pos_error < 1e-5,
+            "Point {} position error too large: {} (max allowed: 1e-5)",
+            gt_point_id, pos_error);
+
+        assert_eq!(loaded_point.color, [gt_r, gt_g, gt_b],
+            "Point {} color mismatch", gt_point_id);
+
+        num_precision_checks += 1;
+    }
+
+    println!("\n✅ TC-INP-010: COLMAP point cloud loading validated");
+    println!("   {} points loaded and verified", num_precision_checks);
+    println!("   Maximum position error: {:.6} (requirement: < 1e-5)", max_position_error);
+    println!("   Maximum color difference: {} (requirement: 0)", max_color_diff);
+    println!("   All point positions match within 1e-5");
+    println!("   All colors match exactly");
+}
+
 #[cfg(test)]
 mod reference_implementation {
     //! Reference implementation for validating COLMAP intrinsics parsing

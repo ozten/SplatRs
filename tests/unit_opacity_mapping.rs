@@ -34,7 +34,7 @@ fn test_opacity_logit_maps_to_center_pixel_intensity() {
         sh_constant_white(),
     );
 
-    let out = render_full_linear(&[g], &camera, &Vector3::zeros());
+    let out = render_full_linear(&[g], &camera, &Vector3::zeros(), false);
     let center = out[(3 * camera.width + 3) as usize];
 
     let expected = sigmoid(0.0);
@@ -64,7 +64,7 @@ fn test_opacity_is_clamped_below_one() {
         sh_constant_white(),
     );
 
-    let out = render_full_linear(&[g], &camera, &Vector3::zeros());
+    let out = render_full_linear(&[g], &camera, &Vector3::zeros(), false);
     let center = out[(3 * camera.width + 3) as usize];
 
     assert!(center.x < 0.999, "alpha clamp expected (<1.0)");

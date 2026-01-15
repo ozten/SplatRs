@@ -51,9 +51,9 @@ fn test_single_step_reduces_loss() {
     );
 
     let bg = Vector3::zeros();
-    let target = render_full_linear(&[target_gaussian], &camera, &bg);
+    let target = render_full_linear(&[target_gaussian], &camera, &bg, false);
 
-    let rendered = render_full_linear(&[gaussian.clone()], &camera, &bg);
+    let rendered = render_full_linear(&[gaussian.clone()], &camera, &bg, false);
     let loss_before = l2_loss(&rendered, &target);
 
     let d_pixels: Vec<Vector3<f32>> = rendered
@@ -63,7 +63,7 @@ fn test_single_step_reduces_loss() {
         .collect();
 
     let (_img, d_colors, _d_opacity, _d_pos, _d_scale, _d_rot, _d_bg) =
-        render_full_color_grads(&[gaussian.clone()], &camera, &d_pixels, &bg);
+        render_full_color_grads(&[gaussian.clone()], &camera, &d_pixels, &bg, false);
 
     let lr = 0.5;
     let d_color = d_colors[0];
@@ -71,7 +71,7 @@ fn test_single_step_reduces_loss() {
     gaussian.sh_coeffs[0][1] -= lr * d_color.y * SH_C0;
     gaussian.sh_coeffs[0][2] -= lr * d_color.z * SH_C0;
 
-    let rendered_after = render_full_linear(&[gaussian], &camera, &bg);
+    let rendered_after = render_full_linear(&[gaussian], &camera, &bg, false);
     let loss_after = l2_loss(&rendered_after, &target);
 
     assert!(loss_after < loss_before, "loss did not decrease");

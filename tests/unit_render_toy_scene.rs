@@ -38,7 +38,7 @@ fn test_toy_scene_single_gaussian_invariants() {
     );
 
     let bg = Vector3::zeros();
-    let out = render_full_linear(&[gaussian], &camera, &bg);
+    let out = render_full_linear(&[gaussian], &camera, &bg, false);
 
     let center = pixel(&out, camera.width, 3, 3).x;
     let right = pixel(&out, camera.width, 4, 3).x;

@@ -41,7 +41,7 @@ fn test_near_gaussian_dominates_center_pixel() {
         sh_constant_color(Vector3::new(1.0, 0.0, 0.0)),
     );
 
-    let out = render_full_linear(&[far, near], &camera, &Vector3::zeros());
+    let out = render_full_linear(&[far, near], &camera, &Vector3::zeros(), false);
     let center = out[(3 * camera.width + 3) as usize];
 
     assert!(center.y > center.x, "near green should dominate red");
