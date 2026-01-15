@@ -222,3 +222,35 @@ Continue with Phase 1 verification tasks:
 1. TC-SH-003: SH coefficient count verification (SplatRs-wh3)
 
 Then proceed to Phase 2 rasterization and gradient tests.
+## 2026-01-14 22:00 - Completed SplatRs-wh3 (TC-SH-003)
+
+### What was done
+- Implemented TC-SH-003: SH Coefficient Count verification test
+- Added comprehensive test to tests/verification_phase1_input.rs
+- Test validates spherical harmonics coefficient counts using the formula: (degree + 1)²
+- Three levels of validation implemented:
+  1. Total coefficient count for degree 3 (16 coefficients)
+  2. Cumulative coefficient counts for each degree (1, 4, 9, 16)
+  3. Individual degree coefficient counts and index layout:
+     - Degree 0: 1 coefficient (index 0)
+     - Degree 1: 3 coefficients (indices 1-3)
+     - Degree 2: 5 coefficients (indices 4-8)
+     - Degree 3: 7 coefficients (indices 9-15)
+- Verified SH coefficient array structure: [[f32; 3]; 16] for RGB × 16 basis functions
+- Test passes successfully with all validations
+
+### Key decisions made
+- Test validates both the formula and the actual implementation structure
+- Verified that sh_basis() returns exactly 16 coefficients
+- Validated the coefficient layout matches the expected ordering from SH theory
+- Ensured the test is self-contained and doesn't require external datasets
+- Test structure follows existing Phase 1 verification pattern for consistency
+
+### Suggestions for next tasks
+All Phase 1 verification tasks are now complete! Proceed to Phase 2:
+1. TC-RAS-001: Front-to-Back Depth Ordering (SplatRs-6xz)
+2. TC-RAS-002: Alpha Blending Accumulation (SplatRs-kis)
+3. TC-GRAD-001: Position Gradient Finite Difference Check (SplatRs-zuc)
+4. TC-GRAD-002: Scale Gradient Finite Difference Check (SplatRs-0a5)
+5. TC-GRAD-003: Rotation Gradient Finite Difference Check (SplatRs-aba)
+
