@@ -2352,3 +2352,69 @@ Continue with TC-E2E-010 floater detection subtasks:
 
 The orbit rendering script infrastructure is complete. The next critical step is extending
 sugar-render to support custom camera poses (needed by all manual inspection tests).
+
+## [2026-01-15 15:45] Completed SplatRs-zp1: TC-E2E-010-2: Add depth map output to sugar-render
+
+### What was done
+- Extended rendering pipeline to accumulate depth values alongside RGB colors
+- Added new function `render_full_linear_with_depth()` that returns both RGB and depth
+  - Depth computed using same front-to-back alpha compositing as color
+  - Formula: depth_out = Σ(T_i * alpha_i * depth_i) where depth_i is camera space Z
+  - Backward-compatible: original `render_full_linear()` wraps new function
+- Created `depth_to_grayscale_img()` for depth visualization:
+  - Auto-normalizes depth to [0,1] range (finds scene min/max)
+  - Inverts depth mapping: closer surfaces = brighter, farther = darker
+  - Background pixels (depth=0) render as black
+  - Uses proper sRGB encoding for consistent visualization
+- Added `--depth-out PATH` flag to sugar-render CLI
+  - Optional argument, allows rendering depth maps alongside RGB
+  - Updated help text with usage examples
+  - Works with both --camera-id and --camera-json modes
+
+### Key decisions made
+- Depth accumulation uses same blending as color (front-to-back alpha compositing)
+  - Ensures depth is weighted by opacity and transmittance
+  - Matches how colors are composited in the rendering equation
+  - More accurate than simply taking frontmost/backmost depth
+- Auto-normalization for visualization
+  - Computes min/max depth across scene (excluding background)
+  - Provides optimal contrast regardless of scene scale
+  - Better than fixed depth range which would require manual tuning
+- Inverted depth mapping (closer=brighter)
+  - Standard convention for depth visualization
+  - Makes depth discontinuities more visible (important for floater detection)
+  - Easier to visually identify depth structure
+- Backward compatibility maintained
+  - Existing code using `render_full_linear()` unchanged
+  - New function returns tuple for callers needing depth
+  - No performance regression for RGB-only rendering
+
+### Verification
+- All existing tests pass (39 passed, 0 failed, 3 ignored)
+- Manual testing with multiple models:
+  - Small model (2K Gaussians, 245×136 resolution): renders correctly
+  - Large model (114K Gaussians, 714×535 resolution): renders correctly
+  - Depth maps show proper normalization and structure
+- No compilation errors or warnings introduced
+- CLI help text correctly documents new flag
+
+### Suggestions for next tasks
+Continue with TC-E2E-010 floater detection subtasks:
+
+1. **SplatRs-sae: TC-E2E-010-3**: Create depth map orbit rendering script
+   - Extend orbit rendering script to output depth maps instead of RGB
+   - Reuse camera path generation from SplatRs-2cg
+   - Use `sugar-render --depth-out` to render depth map sequence
+   - Visualize depth discontinuities for floater detection
+   - Generate side-by-side RGB+depth video for comparison
+
+2. **SplatRs-bm6: TC-E2E-010-4**: Floater detection integration test and docs
+   - Create end-to-end workflow documentation
+   - Add test that verifies both scripts work together
+   - Document severity assessment criteria for floaters
+   - Provide examples of common floater patterns in depth maps
+   - Create user guide for manual floater inspection workflow
+
+The depth map rendering capability is complete and ready for use in floater detection workflows.
+With both RGB and depth output available, we can now create comprehensive visual inspection
+tools that show both color accuracy and geometric artifacts (floaters).
