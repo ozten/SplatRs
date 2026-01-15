@@ -210,7 +210,7 @@ fn tc_inp_002_camera_extrinsics_parsing() {
 #[test]
 fn tc_inp_003_coordinate_system_convention() {
     const TOLERANCE: f32 = 1e-4; // Tolerance for floating-point comparisons
-    use nalgebra::{Matrix3, Quaternion, UnitQuaternion, Vector3};
+    use nalgebra::{Quaternion, UnitQuaternion, Vector3};
     use sugar_rs::core::Camera;
 
     println!("\n=== TC-INP-003: Coordinate System Convention Verification ===\n");
@@ -1446,6 +1446,236 @@ mod reference_implementation {
 
         true
     }
+}
+
+/// TC-COV-002: Verify implementation handles unnormalized quaternions correctly.
+///
+/// Pass Criteria:
+/// - Output identical to normalized quaternion, OR
+/// - Implementation explicitly normalizes, OR
+/// - Raises error/warning for unnormalized input
+///
+/// This test verifies that the implementation is robust to unnormalized quaternion inputs.
+/// Since we use nalgebra's UnitQuaternion type, it should automatically normalize on construction.
+#[test]
+fn tc_cov_002_quaternion_normalization_handling() {
+    use nalgebra::{Matrix3, Quaternion, UnitQuaternion, Vector3};
+    use sugar_rs::core::Gaussian;
+
+    const TOLERANCE: f32 = 1e-6;
+
+    println!("\n=== TC-COV-002: Quaternion Normalization Handling ===\n");
+
+    // Test Case 1: Verify UnitQuaternion automatically normalizes
+    {
+        println!("Test 1 - UnitQuaternion auto-normalization:");
+
+        // Create an unnormalized quaternion (w=1, x=1, y=1, z=1)
+        // Norm = sqrt(1² + 1² + 1² + 1²) = 2.0 (not unit)
+        let unnormalized = Quaternion::new(1.0f32, 1.0, 1.0, 1.0);
+        let norm: f32 = (unnormalized.w * unnormalized.w +
+                    unnormalized.i * unnormalized.i +
+                    unnormalized.j * unnormalized.j +
+                    unnormalized.k * unnormalized.k).sqrt();
+
+        println!("  Unnormalized quaternion: w={}, x={}, y={}, z={}",
+            unnormalized.w, unnormalized.i, unnormalized.j, unnormalized.k);
+        println!("  Norm: {}", norm);
+        assert!((norm - 2.0).abs() < 0.01, "Unnormalized quaternion should have norm ~2.0");
+
+        // Convert to UnitQuaternion (should auto-normalize)
+        let unit_quat = UnitQuaternion::from_quaternion(unnormalized);
+
+        let q = unit_quat.quaternion();
+        let unit_norm: f32 = (q.w * q.w + q.i * q.i + q.j * q.j + q.k * q.k).sqrt();
+
+        println!("  UnitQuaternion: w={:.6}, x={:.6}, y={:.6}, z={:.6}",
+            q.w, q.i, q.j, q.k);
+        println!("  Norm: {:.6}", unit_norm);
+
+        // Verify normalization
+        assert!((unit_norm - 1.0).abs() < TOLERANCE,
+            "UnitQuaternion should be normalized: norm={}", unit_norm);
+
+        println!("  ✓ UnitQuaternion automatically normalizes on construction\n");
+    }
+
+    // Test Case 2: Verify covariance matrix is identical for unnormalized vs normalized input
+    {
+        println!("Test 2 - Covariance matrix with unnormalized input:");
+
+        // Create unnormalized quaternion (w=2, x=1, y=0.5, z=0.3)
+        let unnormalized = Quaternion::new(2.0f32, 1.0, 0.5, 0.3);
+        let norm: f32 = (unnormalized.w * unnormalized.w +
+                    unnormalized.i * unnormalized.i +
+                    unnormalized.j * unnormalized.j +
+                    unnormalized.k * unnormalized.k).sqrt();
+        println!("  Unnormalized quaternion norm: {}", norm);
+
+        // Manually normalize it
+        let normalized = Quaternion::new(
+            unnormalized.w / norm,
+            unnormalized.i / norm,
+            unnormalized.j / norm,
+            unnormalized.k / norm,
+        );
+
+        // Create UnitQuaternions both ways
+        let unit_from_unnormalized = UnitQuaternion::from_quaternion(unnormalized);
+        let unit_from_normalized = UnitQuaternion::from_quaternion(normalized);
+
+        // Create Gaussians with same parameters except rotation
+        let scale = Vector3::new(-1.0, -0.5, -0.8);
+        let position = Vector3::zeros();
+        let opacity = 0.0;
+        let sh_coeffs = [[0.0; 3]; 16];
+
+        let gaussian_unnorm = Gaussian::new(
+            position,
+            scale,
+            unit_from_unnormalized,
+            opacity,
+            sh_coeffs,
+        );
+
+        let gaussian_norm = Gaussian::new(
+            position,
+            scale,
+            unit_from_normalized,
+            opacity,
+            sh_coeffs,
+        );
+
+        // Compute covariance matrices
+        let cov_unnorm = gaussian_unnorm.covariance_matrix();
+        let cov_norm = gaussian_norm.covariance_matrix();
+
+        println!("  Covariance from unnormalized input:");
+        println!("{}", cov_unnorm);
+        println!("  Covariance from normalized input:");
+        println!("{}", cov_norm);
+
+        // Verify they are identical
+        for i in 0..3 {
+            for j in 0..3 {
+                let diff = (cov_unnorm[(i, j)] - cov_norm[(i, j)]).abs();
+                assert!(diff < TOLERANCE,
+                    "Covariance matrices should be identical at ({},{}): {} vs {} (diff: {})",
+                    i, j, cov_unnorm[(i, j)], cov_norm[(i, j)], diff);
+            }
+        }
+
+        println!("  ✓ Covariance matrices are identical (max diff < {})\n", TOLERANCE);
+    }
+
+    // Test Case 3: Verify behavior with very small quaternions
+    {
+        println!("Test 3 - Near-zero quaternion:");
+
+        // Create a very small quaternion (norm = 0.001)
+        let tiny = Quaternion::new(0.0005f32, 0.0003, 0.0004, 0.0006);
+        let norm: f32 = (tiny.w * tiny.w + tiny.i * tiny.i + tiny.j * tiny.j + tiny.k * tiny.k).sqrt();
+        println!("  Tiny quaternion norm: {:.6}", norm);
+
+        // Convert to UnitQuaternion (should normalize)
+        let unit_quat = UnitQuaternion::from_quaternion(tiny);
+        let q2 = unit_quat.quaternion();
+        let unit_norm: f32 = (q2.w * q2.w + q2.i * q2.i + q2.j * q2.j + q2.k * q2.k).sqrt();
+
+        println!("  Normalized quaternion: w={:.6}, x={:.6}, y={:.6}, z={:.6}",
+            q2.w, q2.i, q2.j, q2.k);
+        println!("  Norm: {:.6}", unit_norm);
+
+        assert!((unit_norm - 1.0).abs() < TOLERANCE,
+            "Even tiny quaternions should normalize correctly");
+
+        println!("  ✓ Near-zero quaternions normalize correctly\n");
+    }
+
+    // Test Case 4: Verify rotation matrices from unnormalized inputs are orthonormal
+    {
+        println!("Test 4 - Rotation matrix orthonormality:");
+
+        // Create unnormalized quaternion
+        let unnormalized = Quaternion::new(3.0f32, 2.0, 1.0, 0.5);
+        let unit_quat = UnitQuaternion::from_quaternion(unnormalized);
+
+        // Create Gaussian and get rotation matrix
+        let gaussian = Gaussian::new(
+            Vector3::zeros(),
+            Vector3::new(0.0, 0.0, 0.0),
+            unit_quat,
+            0.0,
+            [[0.0; 3]; 16],
+        );
+
+        let cov = gaussian.covariance_matrix();
+
+        // For identity scale, covariance should equal R * R^T = I
+        // This verifies the rotation matrix is orthonormal
+        let identity: Matrix3<f32> = Matrix3::identity();
+
+        for i in 0..3 {
+            for j in 0..3 {
+                let diff: f32 = (cov[(i, j)] - identity[(i, j)]).abs();
+                assert!(diff < TOLERANCE,
+                    "With identity scale, covariance should be identity (rotation is orthonormal): ({},{}) {} vs {}",
+                    i, j, cov[(i, j)], identity[(i, j)]);
+            }
+        }
+
+        println!("  ✓ Rotation matrix from unnormalized input is orthonormal\n");
+    }
+
+    // Test Case 5: Verify different unnormalized representations of same rotation give same result
+    {
+        println!("Test 5 - Equivalent unnormalized quaternions:");
+
+        // Two quaternions that represent the same rotation but with different norms
+        let q1 = Quaternion::new(1.0f32, 0.0, 0.0, 0.0);  // Norm = 1.0 (already normalized)
+        let q2 = Quaternion::new(2.0f32, 0.0, 0.0, 0.0);  // Norm = 2.0 (scaled version)
+        let q3 = Quaternion::new(5.0f32, 0.0, 0.0, 0.0);  // Norm = 5.0 (scaled version)
+
+        let unit1 = UnitQuaternion::from_quaternion(q1);
+        let unit2 = UnitQuaternion::from_quaternion(q2);
+        let unit3 = UnitQuaternion::from_quaternion(q3);
+
+        // All should give identity rotation
+        let scale = Vector3::new(-0.5, -0.5, -0.5);
+
+        let g1 = Gaussian::new(Vector3::zeros(), scale, unit1, 0.0, [[0.0; 3]; 16]);
+        let g2 = Gaussian::new(Vector3::zeros(), scale, unit2, 0.0, [[0.0; 3]; 16]);
+        let g3 = Gaussian::new(Vector3::zeros(), scale, unit3, 0.0, [[0.0; 3]; 16]);
+
+        let cov1 = g1.covariance_matrix();
+        let cov2 = g2.covariance_matrix();
+        let cov3 = g3.covariance_matrix();
+
+        println!("  Covariance from q1 (norm=1.0):");
+        println!("{}", cov1);
+        println!("  Covariance from q2 (norm=2.0):");
+        println!("{}", cov2);
+        println!("  Covariance from q3 (norm=5.0):");
+        println!("{}", cov3);
+
+        // Verify all are identical
+        for i in 0..3 {
+            for j in 0..3 {
+                let diff12 = (cov1[(i, j)] - cov2[(i, j)]).abs();
+                let diff13 = (cov1[(i, j)] - cov3[(i, j)]).abs();
+                assert!(diff12 < TOLERANCE && diff13 < TOLERANCE,
+                    "Equivalent rotations should produce identical covariances at ({},{})", i, j);
+            }
+        }
+
+        println!("  ✓ Different unnormalized representations give identical results\n");
+    }
+
+    println!("✅ TC-COV-002: Quaternion normalization handling verified");
+    println!("   Implementation uses nalgebra's UnitQuaternion type");
+    println!("   UnitQuaternion automatically normalizes on construction");
+    println!("   Unnormalized inputs are handled correctly");
+    println!("   All covariance matrices computed correctly regardless of input norm");
 }
 
 /// TC-INP-011: Verify initial Gaussian parameters are within valid ranges.
