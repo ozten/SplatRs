@@ -288,3 +288,38 @@ Continue with Phase 2 verification tasks in priority order:
 3. TC-GRAD-002: Scale Gradient Finite Difference Check (SplatRs-0a5)
 4. TC-GRAD-003: Rotation Gradient Finite Difference Check (SplatRs-aba)
 
+## 2026-01-14 23:30 - Completed SplatRs-kis (TC-RAS-002)
+
+### What was done
+- Implemented TC-RAS-002: Alpha Blending Accumulation verification test
+- Added comprehensive test to tests/verification_phase2_rasterization.rs
+- Test validates correct alpha accumulation formula: C_out = Σ (c_i * α_i * Π_{j<i}(1 - α_j))
+- Four comprehensive test scenarios implemented:
+  1. Two Gaussians with explicit alpha values - verifies basic accumulation
+  2. Three Gaussians verifying precise accumulation - tests multi-layer compositing
+  3. Exact accumulation formula verification - validates transmittance reduction
+  4. Alpha saturation with many layers - tests with 5 overlapping Gaussians
+- All tests pass successfully with RGB values within 1/255 tolerance
+- Test validates that transmittance correctly reduces back layer contributions
+
+### Key decisions made
+- Created helper functions for alpha blending calculations:
+  - compute_expected_blend() - reference implementation of accumulation formula
+  - sigmoid() - converts logit-space opacity to actual alpha values
+- Test structure follows existing Phase 2 verification pattern for consistency
+- Tested with various alpha values and color combinations to ensure robustness
+- Validated both the mathematical formula and the practical rendering behavior
+- Used different Gaussian configurations to test edge cases:
+  - High opacity (alpha ~0.73)
+  - Medium opacity (alpha ~0.5-0.62)
+  - Multiple layers (5 overlapping Gaussians)
+- Tests are self-contained with synthetic Gaussians, no external datasets required
+
+### Suggestions for next tasks
+Continue with Phase 2 gradient verification tasks in priority order:
+1. TC-GRAD-001: Position Gradient Finite Difference Check (SplatRs-zuc)
+2. TC-GRAD-002: Scale Gradient Finite Difference Check (SplatRs-0a5)
+3. TC-GRAD-003: Rotation Gradient Finite Difference Check (SplatRs-aba)
+4. TC-GRAD-004: Spherical Harmonics Gradient Check (SplatRs-w6t)
+5. TC-GRAD-005: Opacity Gradient Finite Difference Check (SplatRs-tmb)
+
