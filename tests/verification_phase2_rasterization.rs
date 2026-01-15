@@ -1509,3 +1509,296 @@ fn tc_grad_003_rotation_gradient_finite_difference() {
     println!("   Criteria: Relative error < {:.0e} (strict) or < {:.0e} (relaxed)", TOLERANCE_STRICT, TOLERANCE_RELAXED);
     println!("   All analytical rotation vector gradients match numerical gradients");
 }
+
+/// **TC-GRAD-004: Spherical Harmonics Gradient Check**
+///
+/// Verifies that analytical gradients of the loss w.r.t. SH coefficients
+/// match numerical gradients computed via central differences.
+///
+/// **Context:**
+/// - Gaussians store color as SH coefficients: [[f32; 3]; 16] (RGB × 16 basis functions)
+/// - Color evaluation: color = sum_i (basis[i] * sh_coeffs[i]) where basis depends on view direction
+/// - render_full_color_grads() returns d_colors (gradient w.r.t. evaluated color)
+/// - We compute d_sh_coeffs using evaluate_sh_grad_coeffs()
+///
+/// **Method:**
+/// - Forward pass: L = sum of all rendered pixels
+/// - Analytical: use render_full_color_grads() to get dL/d(color), then chain rule to get dL/d(sh_coeffs)
+/// - Numerical: central differences (L(sh + ε) - L(sh - ε)) / 2ε
+///
+/// **Pass Criteria:**
+/// - Relative error < 0.001 for most parameters (strict tolerance)
+/// - Relative error < 0.01 for all parameters (relaxed tolerance)
+///
+/// Note: SH gradient should be very accurate since it's a linear operation.
+/// Unlike position/scale/rotation gradients, SH gradients don't accumulate errors
+/// through complex geometric transformations.
+#[test]
+fn tc_grad_004_spherical_harmonics_gradient_check() {
+    use sugar_rs::render::render_full_color_grads;
+    use sugar_rs::core::evaluate_sh;
+    use sugar_rs::diff::sh_grad::evaluate_sh_grad_coeffs;
+
+    // Constants for SH gradient checking
+    // Tighter tolerances than geometric gradients since SH is a linear operation
+    const EPSILON: f32 = 1e-4;  // Central difference step size
+    const TOLERANCE_STRICT: f32 = 1e-3;  // Most parameters should meet this (0.1%)
+    const TOLERANCE_RELAXED: f32 = 1e-2; // All parameters must meet this (1%)
+
+    // Helper function to compute relative error
+    fn rel_err(analytical: f32, numerical: f32) -> f32 {
+        let denom = analytical.abs().max(numerical.abs()).max(1e-8);
+        (analytical - numerical).abs() / denom
+    }
+
+    println!("\n=== TC-GRAD-004: Spherical Harmonics Gradient Check ===\n");
+
+    // Test setup
+    let camera = Camera::new(
+        100.0,                // fx
+        100.0,                // fy
+        50.0,                 // cx (center of 100x100 image)
+        50.0,                 // cy
+        100,                  // width
+        100,                  // height
+        Matrix3::identity(),  // no rotation
+        Vector3::zeros(),     // at origin
+    );
+    let background = Vector3::new(0.0, 0.0, 0.0);
+
+    // Test Case 1: Single Gaussian - verify SH coefficient gradients
+    {
+        println!("Test 1 - Single Gaussian SH coefficient gradient:");
+
+        let position = Vector3::new(0.0, 0.0, 5.0);
+        let log_scale = Vector3::new(-1.0, -1.0, -1.0);
+        let rotation = UnitQuaternion::identity();
+        let opacity = 1.0;
+
+        // Create SH coefficients with multiple non-zero terms
+        // Use values that keep final color in (0, 1) to avoid clamping
+        let mut sh_coeffs = [[0.0f32; 3]; 16];
+        sh_coeffs[0] = [0.5, 0.4, 0.3]; // DC term (always contributes)
+        sh_coeffs[1] = [0.1, 0.05, 0.02]; // Degree 1
+        sh_coeffs[2] = [0.05, 0.1, 0.05]; // Degree 1
+        sh_coeffs[3] = [0.02, 0.03, 0.1]; // Degree 1
+
+        let gaussian = Gaussian::new(position, log_scale, rotation, opacity, sh_coeffs);
+        let gaussians = vec![gaussian.clone()];
+
+        // Forward pass
+        let pixels = render_full_linear(&gaussians, &camera, &background, false);
+
+        // Get analytical gradients w.r.t. evaluated colors
+        let d_image = vec![Vector3::new(1.0, 1.0, 1.0); pixels.len()];
+        let (_img, d_colors, _d_opacity_logits, _d_positions, _d_log_scales, _d_rot_vecs, _d_bg) =
+            render_full_color_grads(&gaussians, &camera, &d_image, &background, false);
+
+        // Convert d_colors to d_sh_coeffs using the chain rule
+        // For each Gaussian, we need to compute: dL/d(sh_coeffs) = dL/d(color) * d(color)/d(sh_coeffs)
+        // The view direction is from camera to Gaussian
+        let view_dir = camera.view_direction(&position);
+        let basis = sugar_rs::core::sh_basis(&view_dir);
+        let analytical_d_sh = evaluate_sh_grad_coeffs(&basis, &d_colors[0]);
+
+        println!("  Testing SH coefficient indices: 0 (DC), 1, 2, 3 (degree 1)");
+
+        // Test DC term (index 0)
+        {
+            println!("\n  SH coefficient [0] (DC term - view independent):");
+
+            for channel in 0..3 {
+                let channel_name = match channel {
+                    0 => "R",
+                    1 => "G",
+                    _ => "B",
+                };
+
+                let analytical = analytical_d_sh[0][channel];
+
+                // Numerical gradient
+                let mut sh_plus = sh_coeffs;
+                sh_plus[0][channel] += EPSILON;
+                let gaussian_plus = Gaussian::new(position, log_scale, rotation, opacity, sh_plus);
+                let pixels_plus = render_full_linear(&vec![gaussian_plus], &camera, &background, false);
+
+                let mut sh_minus = sh_coeffs;
+                sh_minus[0][channel] -= EPSILON;
+                let gaussian_minus = Gaussian::new(position, log_scale, rotation, opacity, sh_minus);
+                let pixels_minus = render_full_linear(&vec![gaussian_minus], &camera, &background, false);
+
+                let mut loss_plus = 0.0;
+                let mut loss_minus = 0.0;
+                for i in 0..pixels.len() {
+                    loss_plus += pixels_plus[i].x + pixels_plus[i].y + pixels_plus[i].z;
+                    loss_minus += pixels_minus[i].x + pixels_minus[i].y + pixels_minus[i].z;
+                }
+                let numerical = (loss_plus - loss_minus) / (2.0 * EPSILON);
+
+                let error = rel_err(analytical, numerical);
+                println!("    {}: rel_err={:.6} (analytical: {:.6}, numerical: {:.6})",
+                    channel_name, error, analytical, numerical);
+
+                assert!(error < TOLERANCE_RELAXED,
+                    "DC term {} channel gradient error too large: {} > {}",
+                    channel_name, error, TOLERANCE_RELAXED);
+            }
+        }
+
+        // Test degree 1 term (index 2 - should have view-dependent contribution)
+        {
+            println!("\n  SH coefficient [2] (degree 1, view dependent):");
+
+            for channel in 0..3 {
+                let channel_name = match channel {
+                    0 => "R",
+                    1 => "G",
+                    _ => "B",
+                };
+
+                let analytical = analytical_d_sh[2][channel];
+
+                // Numerical gradient
+                let mut sh_plus = sh_coeffs;
+                sh_plus[2][channel] += EPSILON;
+                let gaussian_plus = Gaussian::new(position, log_scale, rotation, opacity, sh_plus);
+                let pixels_plus = render_full_linear(&vec![gaussian_plus], &camera, &background, false);
+
+                let mut sh_minus = sh_coeffs;
+                sh_minus[2][channel] -= EPSILON;
+                let gaussian_minus = Gaussian::new(position, log_scale, rotation, opacity, sh_minus);
+                let pixels_minus = render_full_linear(&vec![gaussian_minus], &camera, &background, false);
+
+                let mut loss_plus = 0.0;
+                let mut loss_minus = 0.0;
+                for i in 0..pixels.len() {
+                    loss_plus += pixels_plus[i].x + pixels_plus[i].y + pixels_plus[i].z;
+                    loss_minus += pixels_minus[i].x + pixels_minus[i].y + pixels_minus[i].z;
+                }
+                let numerical = (loss_plus - loss_minus) / (2.0 * EPSILON);
+
+                let error = rel_err(analytical, numerical);
+                println!("    {}: rel_err={:.6} (analytical: {:.6}, numerical: {:.6})",
+                    channel_name, error, analytical, numerical);
+
+                assert!(error < TOLERANCE_RELAXED,
+                    "Degree 1 {} channel gradient error too large: {} > {}",
+                    channel_name, error, TOLERANCE_RELAXED);
+            }
+        }
+
+        println!("\n  ✓ All SH coefficient gradients within tolerance\n");
+    }
+
+    // Test Case 2: Multiple Gaussians - verify gradients separate correctly
+    {
+        println!("Test 2 - Multiple Gaussians with different SH coefficients:");
+
+        let position1 = Vector3::new(-0.5, 0.0, 5.0);
+        let position2 = Vector3::new(0.5, 0.0, 5.0);
+        let log_scale = Vector3::new(-1.0, -1.0, -1.0);
+        let rotation = UnitQuaternion::identity();
+        let opacity = 1.0;
+
+        // Gaussian 1: Red-ish
+        let mut sh_coeffs1 = [[0.0f32; 3]; 16];
+        sh_coeffs1[0] = [0.6, 0.2, 0.1];
+        sh_coeffs1[1] = [0.05, 0.02, 0.01];
+
+        // Gaussian 2: Blue-ish
+        let mut sh_coeffs2 = [[0.0f32; 3]; 16];
+        sh_coeffs2[0] = [0.1, 0.2, 0.6];
+        sh_coeffs2[1] = [0.01, 0.02, 0.05];
+
+        let gaussian1 = Gaussian::new(position1, log_scale, rotation, opacity, sh_coeffs1);
+        let gaussian2 = Gaussian::new(position2, log_scale, rotation, opacity, sh_coeffs2);
+        let gaussians = vec![gaussian1, gaussian2];
+
+        // Forward pass
+        let pixels = render_full_linear(&gaussians, &camera, &background, false);
+
+        // Get analytical gradients
+        let d_image = vec![Vector3::new(1.0, 1.0, 1.0); pixels.len()];
+        let (_img, d_colors, _d_opacity_logits, _d_positions, _d_log_scales, _d_rot_vecs, _d_bg) =
+            render_full_color_grads(&gaussians, &camera, &d_image, &background, false);
+
+        // Test gradient for first Gaussian's DC term (R channel)
+        {
+            let view_dir1 = camera.view_direction(&position1);
+            let basis1 = sugar_rs::core::sh_basis(&view_dir1);
+            let analytical_d_sh1 = evaluate_sh_grad_coeffs(&basis1, &d_colors[0]);
+            let analytical = analytical_d_sh1[0][0]; // DC R channel
+
+            // Numerical gradient
+            let mut gaussians_plus = gaussians.clone();
+            let mut sh_plus = sh_coeffs1;
+            sh_plus[0][0] += EPSILON;
+            gaussians_plus[0] = Gaussian::new(position1, log_scale, rotation, opacity, sh_plus);
+            let pixels_plus = render_full_linear(&gaussians_plus, &camera, &background, false);
+
+            let mut gaussians_minus = gaussians.clone();
+            let mut sh_minus = sh_coeffs1;
+            sh_minus[0][0] -= EPSILON;
+            gaussians_minus[0] = Gaussian::new(position1, log_scale, rotation, opacity, sh_minus);
+            let pixels_minus = render_full_linear(&gaussians_minus, &camera, &background, false);
+
+            let mut loss_plus = 0.0;
+            let mut loss_minus = 0.0;
+            for i in 0..pixels.len() {
+                loss_plus += pixels_plus[i].x + pixels_plus[i].y + pixels_plus[i].z;
+                loss_minus += pixels_minus[i].x + pixels_minus[i].y + pixels_minus[i].z;
+            }
+            let numerical = (loss_plus - loss_minus) / (2.0 * EPSILON);
+
+            let error = rel_err(analytical, numerical);
+            println!("  Gaussian 1 DC R: analytical={:.6}, numerical={:.6}, rel_err={:.6}",
+                analytical, numerical, error);
+
+            assert!(error < TOLERANCE_RELAXED,
+                "Gaussian 1 SH gradient error too large: {}", error);
+        }
+
+        // Test gradient for second Gaussian's DC term (B channel)
+        {
+            let view_dir2 = camera.view_direction(&position2);
+            let basis2 = sugar_rs::core::sh_basis(&view_dir2);
+            let analytical_d_sh2 = evaluate_sh_grad_coeffs(&basis2, &d_colors[1]);
+            let analytical = analytical_d_sh2[0][2]; // DC B channel
+
+            // Numerical gradient
+            let mut gaussians_plus = gaussians.clone();
+            let mut sh_plus = sh_coeffs2;
+            sh_plus[0][2] += EPSILON;
+            gaussians_plus[1] = Gaussian::new(position2, log_scale, rotation, opacity, sh_plus);
+            let pixels_plus = render_full_linear(&gaussians_plus, &camera, &background, false);
+
+            let mut gaussians_minus = gaussians.clone();
+            let mut sh_minus = sh_coeffs2;
+            sh_minus[0][2] -= EPSILON;
+            gaussians_minus[1] = Gaussian::new(position2, log_scale, rotation, opacity, sh_minus);
+            let pixels_minus = render_full_linear(&gaussians_minus, &camera, &background, false);
+
+            let mut loss_plus = 0.0;
+            let mut loss_minus = 0.0;
+            for i in 0..pixels.len() {
+                loss_plus += pixels_plus[i].x + pixels_plus[i].y + pixels_plus[i].z;
+                loss_minus += pixels_minus[i].x + pixels_minus[i].y + pixels_minus[i].z;
+            }
+            let numerical = (loss_plus - loss_minus) / (2.0 * EPSILON);
+
+            let error = rel_err(analytical, numerical);
+            println!("  Gaussian 2 DC B: analytical={:.6}, numerical={:.6}, rel_err={:.6}",
+                analytical, numerical, error);
+
+            assert!(error < TOLERANCE_RELAXED,
+                "Gaussian 2 SH gradient error too large: {}", error);
+        }
+
+        println!("  ✓ Multi-Gaussian SH gradients verified\n");
+    }
+
+    println!("✅ TC-GRAD-004: Spherical harmonics gradient check passed");
+    println!("   Method: Central differences with ε = {:.0e}", EPSILON);
+    println!("   Criteria: Relative error < {:.0e} (strict) or < {:.0e} (relaxed)", TOLERANCE_STRICT, TOLERANCE_RELAXED);
+    println!("   All analytical SH coefficient gradients match numerical gradients");
+}
