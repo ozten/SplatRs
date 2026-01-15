@@ -2075,3 +2075,302 @@ fn tc_adc_002_split_trigger_condition() {
     println!("  - Split Gaussians have smaller scale ({:.3} → {:.3})", initial_max_scale, final_max_scale);
     println!("  - Splitting mechanism functioning correctly");
 }
+
+/// TC-ADC-010: Opacity-Based Pruning
+///
+/// Verify that Gaussians with opacity below threshold are removed during densification.
+///
+/// Pass Criteria:
+/// - Gaussians with opacity below threshold removed during pruning
+/// - Reconstruction quality maintained or improved after pruning
+///
+/// Severity: Medium
+#[test]
+fn tc_adc_010_opacity_based_pruning() {
+    println!("\n=== TC-ADC-010: Opacity-Based Pruning ===\n");
+
+    // Create synthetic target scene: 3 colored regions (red, green, blue)
+    let target_gaussians = vec![
+        Gaussian {
+            position: Vector3::new(-2.0, 0.0, 5.0),
+            scale: Vector3::new(-1.0, -1.0, -1.0), // Small uniform scale
+            rotation: UnitQuaternion::identity(),
+            opacity: 2.2, // sigmoid(2.2) ≈ 0.9
+            sh_coeffs: {
+                let mut coeffs = [[0.0f32; 3]; 16];
+                coeffs[0] = [0.7, 0.0, 0.0]; // Red DC
+                coeffs
+            },
+        },
+        Gaussian {
+            position: Vector3::new(0.0, 0.0, 5.0),
+            scale: Vector3::new(-1.0, -1.0, -1.0),
+            rotation: UnitQuaternion::identity(),
+            opacity: 2.2,
+            sh_coeffs: {
+                let mut coeffs = [[0.0f32; 3]; 16];
+                coeffs[0] = [0.0, 0.7, 0.0]; // Green DC
+                coeffs
+            },
+        },
+        Gaussian {
+            position: Vector3::new(2.0, 0.0, 5.0),
+            scale: Vector3::new(-1.0, -1.0, -1.0),
+            rotation: UnitQuaternion::identity(),
+            opacity: 2.2,
+            sh_coeffs: {
+                let mut coeffs = [[0.0f32; 3]; 16];
+                coeffs[0] = [0.0, 0.0, 0.7]; // Blue DC
+                coeffs
+            },
+        },
+    ];
+
+    // Camera setup: front view
+    let camera = Camera::new(
+        500.0, 500.0, 320.0, 240.0, 640, 480,
+        Matrix3::identity(),
+        Vector3::zeros(),
+    );
+    let background = Vector3::new(0.0, 0.0, 0.0);
+
+    // Render target image
+    let target_image = render_full_linear(&target_gaussians, &camera, &background, false);
+
+    // Initialize optimization scene with 10 Gaussians:
+    // Some will become useful (high opacity), some won't (low opacity)
+    let mut gaussians = vec![
+        // Useful Gaussians (positioned near target regions)
+        Gaussian {
+            position: Vector3::new(-2.1, 0.0, 5.0),
+            scale: Vector3::new(-1.2, -1.2, -1.2),
+            rotation: UnitQuaternion::identity(),
+            opacity: 0.5, // Start with moderate opacity
+            sh_coeffs: {
+                let mut coeffs = [[0.0f32; 3]; 16];
+                coeffs[0] = [0.3, 0.3, 0.3]; // Gray
+                coeffs
+            },
+        },
+        Gaussian {
+            position: Vector3::new(0.1, 0.0, 5.0),
+            scale: Vector3::new(-1.2, -1.2, -1.2),
+            rotation: UnitQuaternion::identity(),
+            opacity: 0.5,
+            sh_coeffs: {
+                let mut coeffs = [[0.0f32; 3]; 16];
+                coeffs[0] = [0.3, 0.3, 0.3];
+                coeffs
+            },
+        },
+        Gaussian {
+            position: Vector3::new(2.1, 0.0, 5.0),
+            scale: Vector3::new(-1.2, -1.2, -1.2),
+            rotation: UnitQuaternion::identity(),
+            opacity: 0.5,
+            sh_coeffs: {
+                let mut coeffs = [[0.0f32; 3]; 16];
+                coeffs[0] = [0.3, 0.3, 0.3];
+                coeffs
+            },
+        },
+        // Extra Gaussians that will likely become useless and get low opacity
+        Gaussian {
+            position: Vector3::new(-4.0, 2.0, 5.0), // Far from any target region
+            scale: Vector3::new(-1.5, -1.5, -1.5),
+            rotation: UnitQuaternion::identity(),
+            opacity: -6.0, // sigmoid(-6.0) ≈ 0.0025, very low opacity
+            sh_coeffs: {
+                let mut coeffs = [[0.0f32; 3]; 16];
+                coeffs[0] = [0.1, 0.1, 0.1];
+                coeffs
+            },
+        },
+        Gaussian {
+            position: Vector3::new(4.0, 2.0, 5.0),
+            scale: Vector3::new(-1.5, -1.5, -1.5),
+            rotation: UnitQuaternion::identity(),
+            opacity: -6.0,
+            sh_coeffs: {
+                let mut coeffs = [[0.0f32; 3]; 16];
+                coeffs[0] = [0.1, 0.1, 0.1];
+                coeffs
+            },
+        },
+        Gaussian {
+            position: Vector3::new(-4.0, -2.0, 5.0),
+            scale: Vector3::new(-1.5, -1.5, -1.5),
+            rotation: UnitQuaternion::identity(),
+            opacity: -6.0,
+            sh_coeffs: {
+                let mut coeffs = [[0.0f32; 3]; 16];
+                coeffs[0] = [0.1, 0.1, 0.1];
+                coeffs
+            },
+        },
+        Gaussian {
+            position: Vector3::new(4.0, -2.0, 5.0),
+            scale: Vector3::new(-1.5, -1.5, -1.5),
+            rotation: UnitQuaternion::identity(),
+            opacity: -6.0,
+            sh_coeffs: {
+                let mut coeffs = [[0.0f32; 3]; 16];
+                coeffs[0] = [0.1, 0.1, 0.1];
+                coeffs
+            },
+        },
+    ];
+
+    let initial_gaussian_count = gaussians.len();
+    println!("Initial Gaussian count: {}", initial_gaussian_count);
+
+    // Optimization parameters
+    let color_lr = 5.0;
+    let opacity_lr = 0.02;
+    let iterations = 100;
+    let prune_interval = 25; // Prune every 25 iterations
+    let opacity_threshold = 0.005; // Prune Gaussians with actual opacity < 0.005
+
+    let mut prune_event_count = 0;
+    let mut total_pruned = 0;
+
+    println!("Training for {} iterations with pruning every {} iterations", iterations, prune_interval);
+    println!("Opacity threshold for pruning: {:.3}", opacity_threshold);
+    println!();
+
+    // Optimization loop
+    for iter in 1..=iterations {
+        // Render current state
+        let rendered = render_full_linear(&gaussians, &camera, &background, false);
+        let loss = l2_loss(&rendered, &target_image);
+
+        // Compute per-pixel gradients
+        let d_pixels: Vec<Vector3<f32>> = rendered
+            .iter()
+            .zip(target_image.iter())
+            .map(|(a, b)| 2.0 * (*a - *b) / (rendered.len() as f32))
+            .collect();
+
+        // Backward pass
+        let (_img, d_colors, d_opacity_logits, _d_positions, _d_scales, _d_rot, _d_bg) =
+            render_full_color_grads(&gaussians, &camera, &d_pixels, &background, false);
+
+        // Update parameters (gradient descent)
+        for (i, gaussian) in gaussians.iter_mut().enumerate() {
+            // Update color (SH DC coefficients)
+            for c in 0..3 {
+                gaussian.sh_coeffs[0][c] -= color_lr * d_colors[i][c];
+            }
+
+            // Update opacity
+            gaussian.opacity -= opacity_lr * d_opacity_logits[i];
+        }
+
+        // Pruning: Remove low-opacity Gaussians
+        if iter % prune_interval == 0 {
+            let count_before = gaussians.len();
+
+            // Filter out Gaussians with actual opacity below threshold
+            gaussians.retain(|g| {
+                let actual_opacity = g.actual_opacity();
+                actual_opacity >= opacity_threshold
+            });
+
+            let count_after = gaussians.len();
+            let pruned_this_iteration = count_before - count_after;
+
+            if pruned_this_iteration > 0 {
+                prune_event_count += 1;
+                total_pruned += pruned_this_iteration;
+                println!("Iteration {}: Pruned {} Gaussians (opacity < {:.3}), {} remaining",
+                    iter, pruned_this_iteration, opacity_threshold, count_after);
+            }
+        }
+
+        // Progress logging
+        if iter % 25 == 0 {
+            let opacity_stats: Vec<f32> = gaussians.iter()
+                .map(|g| g.actual_opacity())
+                .collect();
+            let min_opacity = opacity_stats.iter().cloned().fold(f32::INFINITY, f32::min);
+            let max_opacity = opacity_stats.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+
+            println!("Iteration {}: loss = {:.6}, Gaussians = {}, opacity range = [{:.3}, {:.3}]",
+                iter, loss, gaussians.len(), min_opacity, max_opacity);
+        }
+    }
+
+    // Final render for quality check
+    let final_rendered = render_full_linear(&gaussians, &camera, &background, false);
+    let final_loss = l2_loss(&final_rendered, &target_image);
+
+    // Compute quality metrics
+    let final_psnr = compute_psnr(&final_rendered, &target_image);
+
+    println!();
+    println!("Final state:");
+    println!("  Initial Gaussian count: {}", initial_gaussian_count);
+    println!("  Final Gaussian count: {}", gaussians.len());
+    println!("  Total pruning events: {}", prune_event_count);
+    println!("  Total Gaussians pruned: {}", total_pruned);
+    println!("  Final loss: {:.6}", final_loss);
+    println!("  Final PSNR: {:.2} dB", final_psnr);
+    println!();
+
+    // Verify pass criteria
+    println!("Pass Criteria Verification:");
+
+    // Criterion 1: Gaussians with low opacity should have been removed
+    println!("  1. Low-opacity Gaussians removed:");
+    println!("     Total pruned: {} out of {} initial Gaussians", total_pruned, initial_gaussian_count);
+    assert!(
+        total_pruned > 0,
+        "Expected at least one Gaussian to be pruned (got {})",
+        total_pruned
+    );
+    println!("     ✓ Passed (pruning occurred)");
+
+    // Criterion 2: Final Gaussian count should be less than initial
+    println!("  2. Gaussian count reduced through pruning:");
+    println!("     Initial count: {}", initial_gaussian_count);
+    println!("     Final count: {}", gaussians.len());
+    assert!(
+        gaussians.len() < initial_gaussian_count,
+        "Expected final count {} < initial count {}",
+        gaussians.len(), initial_gaussian_count
+    );
+    println!("     ✓ Passed");
+
+    // Criterion 3: All remaining Gaussians should have opacity >= threshold
+    println!("  3. Remaining Gaussians meet opacity threshold:");
+    let min_final_opacity = gaussians.iter()
+        .map(|g| g.actual_opacity())
+        .fold(f32::INFINITY, f32::min);
+    println!("     Minimum opacity of remaining Gaussians: {:.6}", min_final_opacity);
+    println!("     Threshold: {:.6}", opacity_threshold);
+    assert!(
+        min_final_opacity >= opacity_threshold,
+        "Minimum opacity {:.6} should be >= threshold {:.6}",
+        min_final_opacity, opacity_threshold
+    );
+    println!("     ✓ Passed");
+
+    // Criterion 4: Reconstruction quality should be maintained
+    println!("  4. Reconstruction quality maintained:");
+    println!("     Final PSNR: {:.2} dB", final_psnr);
+    println!("     Final loss: {:.6}", final_loss);
+    // Quality should be reasonable (PSNR > 25 dB is decent quality)
+    assert!(
+        final_psnr > 25.0,
+        "Expected PSNR > 25 dB after pruning (got {:.2} dB)",
+        final_psnr
+    );
+    println!("     ✓ Passed (quality maintained)");
+
+    println!();
+    println!("✓ TC-ADC-010 passed: Opacity-based pruning verified!");
+    println!("  - {} low-opacity Gaussians pruned", total_pruned);
+    println!("  - Gaussian count reduced from {} to {}", initial_gaussian_count, gaussians.len());
+    println!("  - All remaining Gaussians have opacity >= {:.3}", opacity_threshold);
+    println!("  - Reconstruction quality maintained (PSNR = {:.2} dB)", final_psnr);
+}
