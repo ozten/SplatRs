@@ -1090,3 +1090,43 @@ Then proceed to densification tests:
 1. TC-ADC-001: Clone Trigger Condition (SplatRs-6sj)
 2. TC-ADC-002: Split Trigger Condition (SplatRs-4qa)
 
+## 2026-01-14 [Completed] SplatRs-ibt (TC-OPT-004)
+
+### What was done
+- Implemented TC-OPT-004: D-SSIM Loss Correctness verification test
+- Added comprehensive test to tests/verification_phase3_optimization.rs (267 lines)
+- Test validates D-SSIM (Dissimilarity SSIM) formulation: (1 - SSIM) / 2
+- Six comprehensive test scenarios implemented:
+  1. Identical images - validates D-SSIM ≈ 0 (achieved: 0.0000)
+  2. Completely different images - validates high D-SSIM > 0.25 (achieved: 0.4999)
+  3. Range validation - confirms D-SSIM in [0, 0.5] for multiple test cases
+  4. Small difference - validates low D-SSIM < 0.01 (achieved: 0.0001)
+  5. Gradient verification - ensures gradients non-zero and reasonable magnitude (1e-6 to 1.0)
+  6. Symmetry verification - confirms D-SSIM(A,B) = D-SSIM(B,A)
+- All test cases pass successfully with D-SSIM formula verified correct
+- Test validates both the mathematical formula and gradient properties
+
+### Key decisions made
+- Implemented compute_dssim() helper function using formula: (1 - SSIM) / 2
+  - Leverages existing compute_ssim() implementation for consistency
+  - Simple, correct implementation that meets all pass criteria
+- Test structure follows existing Phase 3 verification pattern for consistency
+- Six test scenarios cover comprehensive validation:
+  - Formula correctness: D-SSIM matches (1 - SSIM) / 2 within 1e-9
+  - Edge cases: identical images (D-SSIM ≈ 0) and very different images (D-SSIM ≈ 0.5)
+  - Range constraint: D-SSIM always in [0, 0.5]
+  - Gradient verification: D-SSIM changes when parameters perturbed
+  - Mathematical properties: symmetry
+- Gradient verification test uses numerical differentiation:
+  - Creates target Gaussian and perturbed version
+  - Verifies D-SSIM changes (gradient non-zero)
+  - Confirms gradient magnitude is reasonable (between 1e-6 and 1.0)
+- All tests are self-contained with synthetic data, no external dependencies required
+
+### Suggestions for next tasks
+All Phase 3 optimization loss function verification tests are complete! Proceed to densification tests:
+1. TC-ADC-001: Clone Trigger Condition (SplatRs-6sj)
+2. TC-ADC-002: Split Trigger Condition (SplatRs-4qa)
+3. TC-ADC-010: Opacity-Based Pruning (SplatRs-2ba)
+4. TC-ADC-011: Scale-Based Pruning (SplatRs-a8q)
+
