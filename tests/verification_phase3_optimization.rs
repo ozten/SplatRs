@@ -600,3 +600,194 @@ fn tc_opt_011_multi_gaussian_scene_fitting() {
 
     println!("✓ TC-OPT-011 passed: Multi-Gaussian scene successfully fitted to target!");
 }
+
+/// TC-OPT-001: L1 Loss Correctness
+///
+/// Verify L1 loss computation matches reference implementation.
+///
+/// Reference: torch.nn.L1Loss or numpy.abs(a - b).mean()
+///
+/// Pass Criteria:
+/// - Difference < 1e-6
+///
+/// This test verifies that our L1 loss implementation matches the standard
+/// definition: mean absolute error across all pixels and channels.
+#[test]
+fn tc_opt_001_l1_loss_correctness() {
+    println!("\n=== TC-OPT-001: L1 Loss Correctness ===\n");
+
+    // Test case 1: Identical images (zero loss)
+    {
+        println!("Test 1: Identical images");
+        let img_a = vec![
+            Vector3::new(0.5, 0.5, 0.5),
+            Vector3::new(0.8, 0.2, 0.3),
+            Vector3::new(0.1, 0.9, 0.4),
+        ];
+        let img_b = img_a.clone();
+
+        let loss = l1_loss(&img_a, &img_b);
+        let expected = 0.0;
+
+        println!("  Our L1 loss: {:.10}", loss);
+        println!("  Expected: {:.10}", expected);
+        println!("  Difference: {:.10}", (loss - expected).abs());
+
+        assert!(
+            (loss - expected).abs() < 1e-6,
+            "L1 loss difference {} exceeds threshold 1e-6 for identical images",
+            (loss - expected).abs()
+        );
+        println!("  ✓ Passed\n");
+    }
+
+    // Test case 2: Simple difference
+    {
+        println!("Test 2: Simple uniform difference");
+        let img_a = vec![
+            Vector3::new(0.5, 0.5, 0.5),
+            Vector3::new(0.5, 0.5, 0.5),
+            Vector3::new(0.5, 0.5, 0.5),
+        ];
+        let img_b = vec![
+            Vector3::new(0.6, 0.6, 0.6),
+            Vector3::new(0.6, 0.6, 0.6),
+            Vector3::new(0.6, 0.6, 0.6),
+        ];
+
+        let loss = l1_loss(&img_a, &img_b);
+
+        // Reference calculation: L1 loss is mean of vector norms
+        // Each pixel: ||[0.6, 0.6, 0.6] - [0.5, 0.5, 0.5]|| = ||[0.1, 0.1, 0.1]||
+        // = sqrt(0.01 + 0.01 + 0.01) = sqrt(0.03) ≈ 0.1732050807568877
+        // Mean over 3 pixels: 0.1732050807568877
+        let expected = 0.1732050807568877_f32;
+
+        println!("  Our L1 loss: {:.10}", loss);
+        println!("  Expected: {:.10}", expected);
+        println!("  Difference: {:.10}", (loss - expected).abs());
+
+        assert!(
+            (loss - expected).abs() < 1e-6,
+            "L1 loss difference {} exceeds threshold 1e-6 for uniform difference",
+            (loss - expected).abs()
+        );
+        println!("  ✓ Passed\n");
+    }
+
+    // Test case 3: Mixed differences
+    {
+        println!("Test 3: Mixed differences");
+        let img_a = vec![
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.5, 0.5, 0.5),
+            Vector3::new(1.0, 1.0, 1.0),
+        ];
+        let img_b = vec![
+            Vector3::new(0.1, 0.0, 0.0),  // diff = [0.1, 0, 0], norm = 0.1
+            Vector3::new(0.5, 0.6, 0.5),  // diff = [0, 0.1, 0], norm = 0.1
+            Vector3::new(1.0, 1.0, 0.9),  // diff = [0, 0, 0.1], norm = 0.1
+        ];
+
+        let loss = l1_loss(&img_a, &img_b);
+
+        // Reference calculation:
+        // Pixel 0: ||[0.1, 0, 0]|| = 0.1
+        // Pixel 1: ||[0, 0.1, 0]|| = 0.1
+        // Pixel 2: ||[0, 0, 0.1]|| = 0.1
+        // Mean: 0.1
+        let expected = 0.1_f32;
+
+        println!("  Our L1 loss: {:.10}", loss);
+        println!("  Expected: {:.10}", expected);
+        println!("  Difference: {:.10}", (loss - expected).abs());
+
+        assert!(
+            (loss - expected).abs() < 1e-6,
+            "L1 loss difference {} exceeds threshold 1e-6 for mixed differences",
+            (loss - expected).abs()
+        );
+        println!("  ✓ Passed\n");
+    }
+
+    // Test case 4: Larger image with varied values
+    {
+        println!("Test 4: Larger image (10 pixels)");
+        let img_a = vec![
+            Vector3::new(0.1, 0.2, 0.3),
+            Vector3::new(0.4, 0.5, 0.6),
+            Vector3::new(0.7, 0.8, 0.9),
+            Vector3::new(0.0, 0.1, 0.2),
+            Vector3::new(0.3, 0.4, 0.5),
+            Vector3::new(0.6, 0.7, 0.8),
+            Vector3::new(0.9, 0.0, 0.1),
+            Vector3::new(0.2, 0.3, 0.4),
+            Vector3::new(0.5, 0.6, 0.7),
+            Vector3::new(0.8, 0.9, 1.0),
+        ];
+        let img_b = vec![
+            Vector3::new(0.2, 0.2, 0.3),  // diff = [0.1, 0, 0]
+            Vector3::new(0.4, 0.6, 0.6),  // diff = [0, 0.1, 0]
+            Vector3::new(0.7, 0.8, 1.0),  // diff = [0, 0, 0.1]
+            Vector3::new(0.1, 0.1, 0.2),  // diff = [0.1, 0, 0]
+            Vector3::new(0.3, 0.5, 0.5),  // diff = [0, 0.1, 0]
+            Vector3::new(0.6, 0.7, 0.9),  // diff = [0, 0, 0.1]
+            Vector3::new(1.0, 0.0, 0.1),  // diff = [0.1, 0, 0]
+            Vector3::new(0.2, 0.4, 0.4),  // diff = [0, 0.1, 0]
+            Vector3::new(0.5, 0.6, 0.8),  // diff = [0, 0, 0.1]
+            Vector3::new(0.9, 0.9, 1.0),  // diff = [0.1, 0, 0]
+        ];
+
+        let loss = l1_loss(&img_a, &img_b);
+
+        // Reference calculation:
+        // All pixels have norm 0.1
+        // Mean: 0.1
+        let expected = 0.1_f32;
+
+        println!("  Our L1 loss: {:.10}", loss);
+        println!("  Expected: {:.10}", expected);
+        println!("  Difference: {:.10}", (loss - expected).abs());
+
+        assert!(
+            (loss - expected).abs() < 1e-6,
+            "L1 loss difference {} exceeds threshold 1e-6 for larger image",
+            (loss - expected).abs()
+        );
+        println!("  ✓ Passed\n");
+    }
+
+    // Test case 5: Negative differences (to test absolute value)
+    {
+        println!("Test 5: Negative differences");
+        let img_a = vec![
+            Vector3::new(0.8, 0.7, 0.6),
+            Vector3::new(0.5, 0.4, 0.3),
+        ];
+        let img_b = vec![
+            Vector3::new(0.5, 0.4, 0.3),  // diff = [-0.3, -0.3, -0.3], norm = 0.51961524...
+            Vector3::new(0.8, 0.7, 0.6),  // diff = [0.3, 0.3, 0.3], norm = 0.51961524...
+        ];
+
+        let loss = l1_loss(&img_a, &img_b);
+
+        // Reference calculation:
+        // Pixel 0: ||[-0.3, -0.3, -0.3]|| = sqrt(0.27) = 0.5196152422706632
+        // Pixel 1: ||[0.3, 0.3, 0.3]|| = sqrt(0.27) = 0.5196152422706632
+        // Mean: 0.5196152422706632
+        let expected = 0.5196152422706632_f32;
+
+        println!("  Our L1 loss: {:.10}", loss);
+        println!("  Expected: {:.10}", expected);
+        println!("  Difference: {:.10}", (loss - expected).abs());
+
+        assert!(
+            (loss - expected).abs() < 1e-6,
+            "L1 loss difference {} exceeds threshold 1e-6 for negative differences",
+            (loss - expected).abs()
+        );
+        println!("  ✓ Passed\n");
+    }
+
+    println!("✓ TC-OPT-001 passed: L1 loss computation matches reference implementation!");
+}
