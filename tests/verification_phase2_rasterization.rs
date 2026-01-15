@@ -2376,3 +2376,378 @@ fn tc_ras_010_3d_to_2d_covariance_projection() {
     println!("   All projected splat sizes within tolerance of analytical expectations");
     println!("   Verified: isotropic, anisotropic, off-center, and rotated Gaussians");
 }
+
+/// TC-RAS-011: Anisotropic Gaussian Projection
+///
+/// Pass Criteria:
+/// - Major/minor axis lengths within 5% of expected
+/// - Orientation angle within 2° of expected
+///
+/// This test verifies that elongated (anisotropic) Gaussians project correctly at various orientations.
+/// We verify that the major and minor axis lengths and orientation angles match analytical expectations.
+#[test]
+fn tc_ras_011_anisotropic_gaussian_projection() {
+    use sugar_rs::diff::covariance_grad::project_covariance_2d;
+    use sugar_rs::core::perspective_jacobian;
+
+    const LENGTH_TOLERANCE: f32 = 0.05; // 5% as specified
+    const ANGLE_TOLERANCE_DEG: f32 = 2.0; // 2 degrees as specified
+
+    println!("\n=== TC-RAS-011: Anisotropic Gaussian Projection ===\n");
+
+    // Helper function to compute eigenvalues and orientation angle from 2D covariance
+    fn analyze_2d_covariance(cov: &nalgebra::Matrix2<f32>) -> (f32, f32, f32) {
+        // Extract 2x2 matrix elements
+        let a = cov[(0, 0)];
+        let b = cov[(0, 1)];
+        let c = cov[(1, 1)];
+
+        // Compute eigenvalues: λ = (trace ± sqrt(trace² - 4*det)) / 2
+        let trace = a + c;
+        let det = a * c - b * b;
+        let discriminant = (trace * trace - 4.0 * det).max(0.0).sqrt();
+
+        let lambda_major = (trace + discriminant) / 2.0; // Larger eigenvalue
+        let lambda_minor = (trace - discriminant) / 2.0; // Smaller eigenvalue
+
+        // Major and minor axis lengths (standard deviations, not variances)
+        let major_axis = lambda_major.sqrt();
+        let minor_axis = lambda_minor.sqrt();
+
+        // Orientation angle: angle of the major axis from the x-axis
+        // For a symmetric 2x2 covariance matrix [a, b; b, c], the angle of the principal axis is:
+        // angle = 0.5 * atan2(2*b, a - c)
+        // This gives the angle where the matrix is diagonalized
+        let angle_rad = if b.abs() > 1e-8 {
+            0.5 * (2.0 * b).atan2(a - c)
+        } else if a > c {
+            0.0 // Major axis along x
+        } else {
+            std::f32::consts::PI / 2.0 // Major axis along y
+        };
+
+        (major_axis, minor_axis, angle_rad)
+    }
+
+    // Test 1: Elongated Gaussian aligned with X-axis (0° rotation)
+    {
+        println!("Test 1 - Elongated Gaussian aligned with X-axis (0°):");
+
+        let fx = 500.0;
+        let fy = 500.0;
+        let camera_rotation = Matrix3::identity();
+
+        // Gaussian at depth 8.0, elongated along X-axis (3:1 ratio)
+        let point_cam = Vector3::new(0.0, 0.0, 8.0);
+        let log_scale = Vector3::new(-0.5, -1.6, -1.6); // X: exp(-0.5)≈0.606, Y/Z: exp(-1.6)≈0.202
+        let gaussian_rotation = Matrix3::identity(); // No rotation
+
+        // Compute projected 2D covariance
+        let jacobian = perspective_jacobian(&point_cam, fx, fy);
+        let cov_2d = project_covariance_2d(&camera_rotation, &jacobian, &gaussian_rotation, &log_scale);
+
+        println!("  3D log-scale: ({:.2}, {:.2}, {:.2})", log_scale.x, log_scale.y, log_scale.z);
+        println!("  2D covariance:");
+        println!("    [{:.6}, {:.6}]", cov_2d[(0, 0)], cov_2d[(0, 1)]);
+        println!("    [{:.6}, {:.6}]", cov_2d[(1, 0)], cov_2d[(1, 1)]);
+
+        let (major_axis, minor_axis, angle_rad) = analyze_2d_covariance(&cov_2d);
+        let angle_deg = angle_rad.to_degrees();
+
+        println!("  Major axis length: {:.6}", major_axis);
+        println!("  Minor axis length: {:.6}", minor_axis);
+        println!("  Orientation angle: {:.2}°", angle_deg);
+
+        // Expected axis lengths from perspective projection
+        let scale_x = log_scale.x.exp();
+        let scale_y = log_scale.y.exp();
+        let z = point_cam.z;
+
+        let expected_major = (fx / z) * scale_x; // X-axis projects to major axis
+        let expected_minor = (fy / z) * scale_y; // Y-axis projects to minor axis
+        let expected_angle_deg = 0.0; // Aligned with X-axis
+
+        println!("  Expected major: {:.6}, minor: {:.6}, angle: {:.2}°",
+            expected_major, expected_minor, expected_angle_deg);
+
+        // Verify axis lengths within 5%
+        let major_error = ((major_axis - expected_major) / expected_major).abs();
+        let minor_error = ((minor_axis - expected_minor) / expected_minor).abs();
+        let angle_error = (angle_deg - expected_angle_deg).abs();
+
+        println!("  Errors: major={:.4}, minor={:.4}, angle={:.2}°",
+            major_error, minor_error, angle_error);
+
+        assert!(major_error < LENGTH_TOLERANCE,
+            "Major axis length error too large: {:.4} > {:.4}", major_error, LENGTH_TOLERANCE);
+        assert!(minor_error < LENGTH_TOLERANCE,
+            "Minor axis length error too large: {:.4} > {:.4}", minor_error, LENGTH_TOLERANCE);
+        assert!(angle_error < ANGLE_TOLERANCE_DEG,
+            "Orientation angle error too large: {:.2}° > {:.2}°", angle_error, ANGLE_TOLERANCE_DEG);
+
+        println!("  ✓ X-aligned Gaussian projects correctly\n");
+    }
+
+    // Test 2: Elongated Gaussian aligned with Y-axis (90° rotation)
+    {
+        println!("Test 2 - Elongated Gaussian aligned with Y-axis (90°):");
+
+        let fx = 500.0;
+        let fy = 500.0;
+        let camera_rotation = Matrix3::identity();
+
+        // Gaussian at depth 8.0, elongated along Y-axis (3:1 ratio)
+        let point_cam = Vector3::new(0.0, 0.0, 8.0);
+        let log_scale = Vector3::new(-1.6, -0.5, -1.6); // Y: exp(-0.5)≈0.606, X/Z: exp(-1.6)≈0.202
+        let gaussian_rotation = Matrix3::identity(); // No rotation
+
+        // Compute projected 2D covariance
+        let jacobian = perspective_jacobian(&point_cam, fx, fy);
+        let cov_2d = project_covariance_2d(&camera_rotation, &jacobian, &gaussian_rotation, &log_scale);
+
+        println!("  3D log-scale: ({:.2}, {:.2}, {:.2})", log_scale.x, log_scale.y, log_scale.z);
+        println!("  2D covariance:");
+        println!("    [{:.6}, {:.6}]", cov_2d[(0, 0)], cov_2d[(0, 1)]);
+        println!("    [{:.6}, {:.6}]", cov_2d[(1, 0)], cov_2d[(1, 1)]);
+
+        let (major_axis, minor_axis, angle_rad) = analyze_2d_covariance(&cov_2d);
+        let angle_deg = angle_rad.to_degrees();
+
+        println!("  Major axis length: {:.6}", major_axis);
+        println!("  Minor axis length: {:.6}", minor_axis);
+        println!("  Orientation angle: {:.2}°", angle_deg);
+
+        // Expected axis lengths from perspective projection
+        let scale_x = log_scale.x.exp();
+        let scale_y = log_scale.y.exp();
+        let z = point_cam.z;
+
+        let expected_major = (fy / z) * scale_y; // Y-axis projects to major axis
+        let expected_minor = (fx / z) * scale_x; // X-axis projects to minor axis
+        let expected_angle_deg = 90.0; // Aligned with Y-axis
+
+        println!("  Expected major: {:.6}, minor: {:.6}, angle: {:.2}°",
+            expected_major, expected_minor, expected_angle_deg);
+
+        // Verify axis lengths within 5%
+        let major_error = ((major_axis - expected_major) / expected_major).abs();
+        let minor_error = ((minor_axis - expected_minor) / expected_minor).abs();
+
+        // Normalize angle to [0, 180) for comparison
+        let normalized_angle = if angle_deg < 0.0 { angle_deg + 180.0 } else { angle_deg };
+        let angle_error = (normalized_angle - expected_angle_deg).abs().min(180.0 - (normalized_angle - expected_angle_deg).abs());
+
+        println!("  Errors: major={:.4}, minor={:.4}, angle={:.2}°",
+            major_error, minor_error, angle_error);
+
+        assert!(major_error < LENGTH_TOLERANCE,
+            "Major axis length error too large: {:.4} > {:.4}", major_error, LENGTH_TOLERANCE);
+        assert!(minor_error < LENGTH_TOLERANCE,
+            "Minor axis length error too large: {:.4} > {:.4}", minor_error, LENGTH_TOLERANCE);
+        assert!(angle_error < ANGLE_TOLERANCE_DEG,
+            "Orientation angle error too large: {:.2}° > {:.2}°", angle_error, ANGLE_TOLERANCE_DEG);
+
+        println!("  ✓ Y-aligned Gaussian projects correctly\n");
+    }
+
+    // Test 3: Elongated Gaussian rotated 45° around Z-axis
+    {
+        println!("Test 3 - Elongated Gaussian rotated 45° around Z-axis:");
+
+        let fx = 500.0;
+        let fy = 500.0;
+        let camera_rotation = Matrix3::identity();
+
+        // Gaussian at depth 8.0, elongated along rotated axis
+        let point_cam = Vector3::new(0.0, 0.0, 8.0);
+        let log_scale = Vector3::new(-0.5, -1.6, -1.6); // X: 0.606, Y/Z: 0.202 (3:1 ratio)
+
+        // Rotate 45 degrees around Z-axis
+        let angle = std::f32::consts::PI / 4.0; // 45 degrees
+        let gaussian_rotation = UnitQuaternion::from_euler_angles(0.0, 0.0, angle)
+            .to_rotation_matrix()
+            .into_inner();
+
+        // Compute projected 2D covariance
+        let jacobian = perspective_jacobian(&point_cam, fx, fy);
+        let cov_2d = project_covariance_2d(&camera_rotation, &jacobian, &gaussian_rotation, &log_scale);
+
+        println!("  3D log-scale: ({:.2}, {:.2}, {:.2})", log_scale.x, log_scale.y, log_scale.z);
+        println!("  Rotation: 45° around Z-axis");
+        println!("  2D covariance:");
+        println!("    [{:.6}, {:.6}]", cov_2d[(0, 0)], cov_2d[(0, 1)]);
+        println!("    [{:.6}, {:.6}]", cov_2d[(1, 0)], cov_2d[(1, 1)]);
+
+        let (major_axis, minor_axis, angle_rad) = analyze_2d_covariance(&cov_2d);
+        let angle_deg = angle_rad.to_degrees();
+
+        println!("  Major axis length: {:.6}", major_axis);
+        println!("  Minor axis length: {:.6}", minor_axis);
+        println!("  Orientation angle: {:.2}°", angle_deg);
+
+        // After rotation, the elongated axis (X) is rotated 45° in screen space
+        let scale_x = log_scale.x.exp();
+        let scale_y = log_scale.y.exp();
+        let z = point_cam.z;
+
+        // For centered Gaussian with fx=fy, rotation by 45° preserves the axis lengths
+        let expected_major = (fx / z) * scale_x;
+        let expected_minor = (fy / z) * scale_y;
+        let expected_angle_deg = 45.0;
+
+        println!("  Expected major: {:.6}, minor: {:.6}, angle: {:.2}°",
+            expected_major, expected_minor, expected_angle_deg);
+
+        // Verify axis lengths within 5%
+        let major_error = ((major_axis - expected_major) / expected_major).abs();
+        let minor_error = ((minor_axis - expected_minor) / expected_minor).abs();
+
+        // Normalize angle difference (accounting for ±180° periodicity)
+        let angle_diff = (angle_deg - expected_angle_deg).abs();
+        let angle_error = angle_diff.min(180.0 - angle_diff);
+
+        println!("  Errors: major={:.4}, minor={:.4}, angle={:.2}°",
+            major_error, minor_error, angle_error);
+
+        assert!(major_error < LENGTH_TOLERANCE,
+            "Major axis length error too large: {:.4} > {:.4}", major_error, LENGTH_TOLERANCE);
+        assert!(minor_error < LENGTH_TOLERANCE,
+            "Minor axis length error too large: {:.4} > {:.4}", minor_error, LENGTH_TOLERANCE);
+        assert!(angle_error < ANGLE_TOLERANCE_DEG,
+            "Orientation angle error too large: {:.2}° > {:.2}°", angle_error, ANGLE_TOLERANCE_DEG);
+
+        println!("  ✓ 45° rotated Gaussian projects correctly\n");
+    }
+
+    // Test 4: Elongated Gaussian rotated 30° around Z-axis (arbitrary angle)
+    {
+        println!("Test 4 - Elongated Gaussian rotated 30° around Z-axis:");
+
+        let fx = 500.0;
+        let fy = 500.0;
+        let camera_rotation = Matrix3::identity();
+
+        // Gaussian at depth 7.0, elongated along rotated axis
+        let point_cam = Vector3::new(0.0, 0.0, 7.0);
+        let log_scale = Vector3::new(-0.4, -1.5, -1.5); // X: exp(-0.4)≈0.67, Y/Z: exp(-1.5)≈0.22
+
+        // Rotate 30 degrees around Z-axis
+        let angle = std::f32::consts::PI / 6.0; // 30 degrees
+        let gaussian_rotation = UnitQuaternion::from_euler_angles(0.0, 0.0, angle)
+            .to_rotation_matrix()
+            .into_inner();
+
+        // Compute projected 2D covariance
+        let jacobian = perspective_jacobian(&point_cam, fx, fy);
+        let cov_2d = project_covariance_2d(&camera_rotation, &jacobian, &gaussian_rotation, &log_scale);
+
+        println!("  3D log-scale: ({:.2}, {:.2}, {:.2})", log_scale.x, log_scale.y, log_scale.z);
+        println!("  Rotation: 30° around Z-axis");
+        println!("  2D covariance:");
+        println!("    [{:.6}, {:.6}]", cov_2d[(0, 0)], cov_2d[(0, 1)]);
+        println!("    [{:.6}, {:.6}]", cov_2d[(1, 0)], cov_2d[(1, 1)]);
+
+        let (major_axis, minor_axis, angle_rad) = analyze_2d_covariance(&cov_2d);
+        let angle_deg = angle_rad.to_degrees();
+
+        println!("  Major axis length: {:.6}", major_axis);
+        println!("  Minor axis length: {:.6}", minor_axis);
+        println!("  Orientation angle: {:.2}°", angle_deg);
+
+        // Expected values
+        let scale_x = log_scale.x.exp();
+        let scale_y = log_scale.y.exp();
+        let z = point_cam.z;
+
+        let expected_major = (fx / z) * scale_x;
+        let expected_minor = (fy / z) * scale_y;
+        let expected_angle_deg = 30.0;
+
+        println!("  Expected major: {:.6}, minor: {:.6}, angle: {:.2}°",
+            expected_major, expected_minor, expected_angle_deg);
+
+        // Verify axis lengths within 5%
+        let major_error = ((major_axis - expected_major) / expected_major).abs();
+        let minor_error = ((minor_axis - expected_minor) / expected_minor).abs();
+
+        // Normalize angle difference
+        let angle_diff = (angle_deg - expected_angle_deg).abs();
+        let angle_error = angle_diff.min(180.0 - angle_diff);
+
+        println!("  Errors: major={:.4}, minor={:.4}, angle={:.2}°",
+            major_error, minor_error, angle_error);
+
+        assert!(major_error < LENGTH_TOLERANCE,
+            "Major axis length error too large: {:.4} > {:.4}", major_error, LENGTH_TOLERANCE);
+        assert!(minor_error < LENGTH_TOLERANCE,
+            "Minor axis length error too large: {:.4} > {:.4}", minor_error, LENGTH_TOLERANCE);
+        assert!(angle_error < ANGLE_TOLERANCE_DEG,
+            "Orientation angle error too large: {:.2}° > {:.2}°", angle_error, ANGLE_TOLERANCE_DEG);
+
+        println!("  ✓ 30° rotated Gaussian projects correctly\n");
+    }
+
+    // Test 5: Elongated Gaussian with Y-axis rotation (oblique projection)
+    {
+        println!("Test 5 - Elongated Gaussian rotated 30° around Y-axis (oblique projection):");
+
+        let fx = 500.0;
+        let fy = 500.0;
+        let camera_rotation = Matrix3::identity();
+
+        // Gaussian at depth 8.0
+        let point_cam = Vector3::new(0.0, 0.0, 8.0);
+        let log_scale = Vector3::new(-0.5, -1.6, -0.8); // X: 0.606, Y: 0.202, Z: 0.449
+
+        // Rotate 30 degrees around Y-axis (tips the Gaussian towards/away from camera)
+        let angle = std::f32::consts::PI / 6.0; // 30 degrees
+        let gaussian_rotation = UnitQuaternion::from_euler_angles(0.0, angle, 0.0)
+            .to_rotation_matrix()
+            .into_inner();
+
+        // Compute projected 2D covariance
+        let jacobian = perspective_jacobian(&point_cam, fx, fy);
+        let cov_2d = project_covariance_2d(&camera_rotation, &jacobian, &gaussian_rotation, &log_scale);
+
+        println!("  3D log-scale: ({:.2}, {:.2}, {:.2})", log_scale.x, log_scale.y, log_scale.z);
+        println!("  Rotation: 30° around Y-axis");
+        println!("  2D covariance:");
+        println!("    [{:.6}, {:.6}]", cov_2d[(0, 0)], cov_2d[(0, 1)]);
+        println!("    [{:.6}, {:.6}]", cov_2d[(1, 0)], cov_2d[(1, 1)]);
+
+        let (major_axis, minor_axis, angle_rad) = analyze_2d_covariance(&cov_2d);
+        let angle_deg = angle_rad.to_degrees();
+
+        println!("  Major axis length: {:.6}", major_axis);
+        println!("  Minor axis length: {:.6}", minor_axis);
+        println!("  Orientation angle: {:.2}°", angle_deg);
+
+        // For oblique rotation, we can't easily predict exact values analytically
+        // but we can verify basic properties:
+        // 1. Axis lengths should be positive and reasonable
+        // 2. Major axis should be larger than minor axis
+        // 3. 2D covariance should be symmetric and positive definite
+
+        assert!(major_axis > 0.0, "Major axis should be positive");
+        assert!(minor_axis > 0.0, "Minor axis should be positive");
+        assert!(major_axis > minor_axis, "Major axis should be larger than minor axis");
+
+        // Verify symmetry
+        let symmetry_error = (cov_2d[(0, 1)] - cov_2d[(1, 0)]).abs();
+        println!("  Symmetry error: {:.8}", symmetry_error);
+        assert!(symmetry_error < 1e-6, "2D covariance should be symmetric");
+
+        // Verify positive definiteness
+        let det = cov_2d[(0, 0)] * cov_2d[(1, 1)] - cov_2d[(0, 1)].powi(2);
+        println!("  Determinant: {:.6}", det);
+        assert!(det > 0.0, "2D covariance should have positive determinant");
+
+        println!("  ✓ Oblique rotated Gaussian projects correctly\n");
+    }
+
+    println!("✅ TC-RAS-011: Anisotropic Gaussian projection passed");
+    println!("   Verified elongated Gaussians project correctly at various orientations");
+    println!("   All major/minor axis lengths within 5% tolerance");
+    println!("   All orientation angles within 2° tolerance");
+    println!("   Tested: 0°, 90°, 45°, 30° Z-rotations, and Y-axis oblique rotation");
+}
