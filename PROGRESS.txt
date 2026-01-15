@@ -1344,3 +1344,51 @@ Medium-priority additional verification tests:
 5. TC-E2E-011: Edge Sharpness (SplatRs-nia)
 6. TC-E2E-012: View-Dependent Effects (SplatRs-ouw)
 7. TC-E2E-013: Temporal Stability (SplatRs-w4r)
+
+## 2026-01-14 [Completed] SplatRs-wxv (TC-INP-005)
+
+### What was done
+- Implemented TC-INP-005: Alpha Channel Handling verification test
+- Added comprehensive test to tests/verification_phase1_input.rs (277 lines)
+- Test validates transparency/mask information correctly processed
+- Three comprehensive test scenarios implemented:
+  1. PNG alpha channel preservation - validates exact alpha values (255, 128, 64, 0)
+  2. Masked pixel exclusion from loss - verifies pixels with alpha < threshold excluded
+  3. Gradient zero for masked regions - confirms masked pixels have zero gradients
+- All tests pass successfully with perfect alpha preservation
+- Test validates critical pass criteria:
+  - Alpha values preserved exactly for PNG (lossless format)
+  - Masked pixels (alpha < 32) excluded from loss computation (2/4 pixels masked)
+  - Gradients are zero for masked regions (grad = (0.0, 0.0, 0.0))
+  - Active pixels (alpha >= 32) have non-zero gradients when mismatched
+
+### Key decisions made
+- Used RGBA images with varying alpha levels to test masking behavior
+  - Row 0: Fully opaque (alpha=255)
+  - Row 1: Semi-transparent (alpha=128)
+  - Row 2: Mostly transparent (alpha=64)
+  - Row 3: Fully transparent (alpha=0)
+- Alpha threshold set to 32 for masking tests
+  - Clear separation between active (>=32) and masked (<32) pixels
+  - Matches typical alpha masking thresholds used in practice
+- Test validates both image loading and gradient computation behavior
+  - Image loading: PNG format preserves alpha channel exactly
+  - Loss computation: Masked pixels don't contribute to loss
+  - Gradient computation: Masked pixels have zero gradients
+- Test is self-contained with synthetic RGBA images
+  - No external dependencies or datasets required
+  - Creates temporary test images and cleans up afterward
+- Test structure follows existing Phase 1 verification pattern for consistency
+
+### Suggestions for next tasks
+Continue with medium-priority verification tests:
+1. TC-RAS-003: Tile Boundary Handling (SplatRs-9vd)
+2. TC-E2E-002: LPIPS Perceptual Quality (SplatRs-t2e)
+3. TC-E2E-010: Floater Detection (SplatRs-8h6) - requires manual inspection
+4. TC-E2E-011: Edge Sharpness (SplatRs-nia) - requires manual inspection
+5. TC-E2E-012: View-Dependent Effects (SplatRs-ouw) - requires manual inspection
+6. TC-E2E-013: Temporal Stability (SplatRs-w4r) - requires manual inspection
+
+Or proceed to long-running benchmark tests:
+1. TC-OPT-012: NeRF Synthetic Benchmark (SplatRs-diu) - requires long training
+2. TC-E2E-001: Mip-NeRF 360 Benchmark (SplatRs-7ib) - requires very long training
