@@ -125,3 +125,32 @@ Continue with Phase 1 verification tasks in priority order:
 3. TC-SH-001: SH degree 0 testing (SplatRs-baz)
 4. TC-SH-003: SH coefficient count verification (SplatRs-wh3)
 
+## 2026-01-14 19:30 - Completed SplatRs-wl8 (TC-INP-010)
+
+### What was done
+- Implemented TC-INP-010: COLMAP Point Cloud Loading verification test
+- Added comprehensive test to tests/verification_phase1_input.rs
+- Test validates 3D points from COLMAP sparse reconstruction:
+  - Point count matches source file exactly (138,766 points in garden dataset)
+  - Point positions match within 1e-5 requirement (achieved perfect 0.0 error)
+  - RGB colors match exactly (byte-for-byte comparison)
+  - Reprojection errors preserved from source file
+- Reads points3D.bin directly for ground truth comparison
+- Test passes successfully on garden dataset with all 138,766 points verified
+- Fixed render_full_linear() function calls in several test files to include new enable_timing parameter
+
+### Key decisions made
+- Used direct binary file reading for ground truth comparison
+  - Ensures we validate against the actual source data
+  - No need for external reference implementation
+- Validated both point count and per-point precision
+- Tested with real dataset (garden) containing 138K+ points
+- Comprehensive validation: positions, colors, and reprojection errors
+- Fixed compilation errors in other tests due to API change in render_full_linear()
+
+### Suggestions for next tasks
+Continue with Phase 1 verification tasks in priority order:
+1. TC-COV-001: Covariance matrix construction (SplatRs-7qt)
+2. TC-SH-001: SH degree 0 testing (SplatRs-baz)
+3. TC-SH-003: SH coefficient count verification (SplatRs-wh3)
+
