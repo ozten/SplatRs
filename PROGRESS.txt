@@ -722,3 +722,49 @@ Then proceed to Phase 3 optimization verification tasks:
 2. TC-OPT-002: L2 (MSE) Loss Correctness (SplatRs-gew)
 3. TC-OPT-003: SSIM Loss Correctness (SplatRs-fqa)
 
+## 2026-01-14 [time] - Completed SplatRs-en8 (TC-COV-002)
+
+### What was done
+- Implemented TC-COV-002: Quaternion Normalization Handling verification test
+- Added comprehensive test to tests/verification_phase1_input.rs (190 lines)
+- Test validates that implementation handles unnormalized quaternions correctly
+- Five comprehensive test scenarios implemented:
+  1. UnitQuaternion auto-normalization: verify that nalgebra's UnitQuaternion normalizes on construction
+  2. Covariance matrix with unnormalized input: verify identical output for normalized vs unnormalized input
+  3. Near-zero quaternion: verify handling of very small quaternions (norm ~0.001)
+  4. Rotation matrix orthonormality: verify rotation matrices from unnormalized inputs are orthonormal
+  5. Equivalent unnormalized quaternions: verify different scalar multiples give identical results
+- All tests pass successfully with perfect results:
+  - UnitQuaternion automatically normalizes to norm = 1.0 within 1e-6
+  - Covariance matrices identical for normalized/unnormalized inputs
+  - Near-zero quaternions normalize correctly
+  - Rotation matrices are orthonormal (R^T * R = I)
+  - Equivalent representations produce identical covariances
+
+### Key decisions made
+- Implementation uses nalgebra's UnitQuaternion type
+  - UnitQuaternion::from_quaternion() automatically normalizes on construction
+  - No explicit normalization code needed in covariance_matrix()
+  - Type safety ensures quaternions are always normalized
+- Test validates pass criteria: "Output identical to normalized quaternion"
+  - Unnormalized inputs automatically normalized by UnitQuaternion
+  - No error/warning needed since normalization is guaranteed
+- Comprehensive testing across edge cases:
+  - Standard unnormalized quaternions (norm = 2.0, 2.3)
+  - Near-zero quaternions (norm = 0.001)
+  - Identity rotation with different norms (1.0, 2.0, 5.0)
+  - General rotations with non-identity scales
+- Test structure follows existing Phase 1 verification pattern for consistency
+
+### Suggestions for next tasks
+Continue with additional Phase 1/2 verification tests in priority order:
+1. TC-COV-003: Numerical Stability with Extreme Scales (SplatRs-m2e)
+2. TC-SH-002: Higher Degree SH Basis Functions (SplatRs-n3b)
+3. TC-RAS-010: 3D to 2D Covariance Projection (SplatRs-8vu)
+4. TC-RAS-011: Anisotropic Gaussian Projection (SplatRs-l77)
+
+Then proceed to Phase 3 optimization verification tasks:
+1. TC-OPT-001: L1 Loss Correctness (SplatRs-wyc)
+2. TC-OPT-002: L2 (MSE) Loss Correctness (SplatRs-gew)
+3. TC-OPT-003: SSIM Loss Correctness (SplatRs-fqa)
+
