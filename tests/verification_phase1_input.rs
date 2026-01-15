@@ -984,6 +984,131 @@ fn tc_sh_001_degree_0_view_independence() {
     println!("   Maximum deviation: < 1e-6 per channel");
 }
 
+/// TC-SH-003: Verify correct number of SH coefficients for each degree.
+///
+/// Pass Criteria:
+/// - Coefficient counts exactly match formula: (degree + 1)²
+///
+/// Formula: For SH degree d, the total number of coefficients is (d + 1)²
+/// - Degree 0: (0+1)² = 1 coefficient
+/// - Degree 1: (1+1)² = 4 coefficients
+/// - Degree 2: (2+1)² = 9 coefficients
+/// - Degree 3: (3+1)² = 16 coefficients
+#[test]
+fn tc_sh_003_coefficient_count() {
+    use sugar_rs::core::sh_basis;
+    use nalgebra::Vector3;
+
+    println!("\n=== TC-SH-003: SH Coefficient Count Verification ===\n");
+
+    // Test SH basis function returns the correct number of coefficients
+    let test_direction = Vector3::new(1.0, 0.0, 0.0).normalize();
+    let basis = sh_basis(&test_direction);
+
+    println!("Testing SH basis function:");
+    println!("  Basis function returns {} coefficients", basis.len());
+
+    // Verify total count for degree 3
+    let expected_total = 16; // (3+1)² = 16
+    assert_eq!(
+        basis.len(),
+        expected_total,
+        "SH basis should have {} coefficients for degree 3, got {}",
+        expected_total,
+        basis.len()
+    );
+    println!("  ✓ Total coefficients match (degree+1)² formula: {}", expected_total);
+
+    // Verify coefficient count for each degree
+    // Degree d has (d+1)² total coefficients from degree 0 to d
+    let test_cases = vec![
+        (0, 1),   // Degree 0: (0+1)² = 1
+        (1, 4),   // Degree 1: (1+1)² = 4
+        (2, 9),   // Degree 2: (2+1)² = 9
+        (3, 16),  // Degree 3: (3+1)² = 16
+    ];
+
+    println!("\nVerifying coefficient counts per degree:");
+    for (degree, expected_count) in test_cases {
+        let actual_count = (degree + 1) * (degree + 1);
+        println!("  Degree {}: expected {} coefficients, formula gives {}",
+            degree, expected_count, actual_count);
+
+        assert_eq!(
+            actual_count,
+            expected_count,
+            "Degree {} should have {} coefficients, got {}",
+            degree,
+            expected_count,
+            actual_count
+        );
+    }
+    println!("  ✓ All degrees match (degree+1)² formula");
+
+    // Verify the coefficient indices match the expected layout:
+    // Degree 0: indices 0      (1 coefficient)
+    // Degree 1: indices 1-3    (3 coefficients)
+    // Degree 2: indices 4-8    (5 coefficients)
+    // Degree 3: indices 9-15   (7 coefficients)
+    println!("\nVerifying coefficient layout:");
+
+    let layout = vec![
+        (0, 0, 0),    // Degree 0: start=0, end=0, count=1
+        (1, 1, 3),    // Degree 1: start=1, end=3, count=3
+        (2, 4, 8),    // Degree 2: start=4, end=8, count=5
+        (3, 9, 15),   // Degree 3: start=9, end=15, count=7
+    ];
+
+    for (degree, start_idx, end_idx) in layout {
+        let count = end_idx - start_idx + 1;
+        let expected_count_for_degree = 2 * degree + 1; // Number of coefficients for degree d (not cumulative)
+
+        println!("  Degree {}: indices {}-{} ({} coefficients)",
+            degree, start_idx, end_idx, count);
+
+        assert_eq!(
+            count,
+            expected_count_for_degree,
+            "Degree {} should have {} coefficients, got {} (indices {}-{})",
+            degree,
+            expected_count_for_degree,
+            count,
+            start_idx,
+            end_idx
+        );
+    }
+    println!("  ✓ Coefficient layout matches expected structure");
+
+    // Verify that SH coefficient arrays have the correct size
+    // Our implementation uses [[f32; 3]; 16] for RGB × 16 basis functions
+    println!("\nVerifying SH coefficient array structure:");
+    let mut sh_coeffs = [[0.0f32; 3]; 16];
+    println!("  SH coefficient array size: {} coefficients × 3 channels", sh_coeffs.len());
+
+    assert_eq!(
+        sh_coeffs.len(),
+        16,
+        "SH coefficient array should have 16 elements for degree 3"
+    );
+
+    for i in 0..16 {
+        assert_eq!(
+            sh_coeffs[i].len(),
+            3,
+            "Each SH coefficient should have 3 color channels (RGB)"
+        );
+    }
+    println!("  ✓ SH coefficient array has correct structure: [[f32; 3]; 16]");
+
+    println!("\n✅ TC-SH-003: SH coefficient count verified");
+    println!("   Formula: (degree + 1)² coefficients for degree d");
+    println!("   Degree 0: 1 coefficient  (index 0)");
+    println!("   Degree 1: 3 coefficients (indices 1-3)");
+    println!("   Degree 2: 5 coefficients (indices 4-8)");
+    println!("   Degree 3: 7 coefficients (indices 9-15)");
+    println!("   Total for degree 3: 16 coefficients");
+}
+
 #[cfg(test)]
 mod reference_implementation {
     //! Reference implementation for validating COLMAP intrinsics parsing

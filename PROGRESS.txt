@@ -192,3 +192,33 @@ Continue with Phase 1 verification tasks in priority order:
 2. TC-SH-003: SH coefficient count verification (SplatRs-wh3)
 
 Then proceed to Phase 2 rasterization and gradient tests.
+
+## 2026-01-14 21:30 - Completed SplatRs-baz (TC-SH-001)
+
+### What was done
+- Implemented TC-SH-001: SH Degree 0 (DC) View Independence verification test
+- Added comprehensive test to tests/verification_phase1_input.rs
+- Test validates that SH degree 0 produces view-independent color:
+  - Tested from 9 different viewing directions (cardinal axes + diagonals)
+  - Maximum color deviation across all views: 0.000000 (requirement: < 1e-6)
+  - Verified formula: color = sh_coeffs[0] * SH_C0
+- Four test scenarios implemented:
+  1. Bright red-orange (positive coefficients: [1.0, 0.5, 0.2])
+  2. Mid gray (zero coefficients: [0.0, 0.0, 0.0])
+  3. Dark (negative coefficients: [-1.0, -1.0, -1.0])
+  4. Greenish (mixed coefficients: [0.5, 1.0, -0.3])
+- All test cases pass with perfect color consistency
+
+### Key decisions made
+- Used existing evaluate_sh() function to test view independence
+- Test validates that basis[0] = SH_C0 is constant regardless of direction
+- Tested with diverse coefficient values (positive, zero, negative, mixed)
+- Verified clamping behavior for negative coefficients and out-of-range values
+- Test structure follows existing Phase 1 verification pattern
+- Comprehensive validation: checked each RGB channel independently
+
+### Suggestions for next tasks
+Continue with Phase 1 verification tasks:
+1. TC-SH-003: SH coefficient count verification (SplatRs-wh3)
+
+Then proceed to Phase 2 rasterization and gradient tests.
