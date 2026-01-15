@@ -2000,3 +2000,102 @@ All tests can reuse infrastructure patterns from TC-E2E-010 and TC-E2E-011:
 - Python script generation with COLMAP parsing
 - Manual inspection workflow documentation
 - Clear pass/fail criteria with severity assessment
+
+
+## 2026-01-15 00:53 - Completed SplatRs-ouw (TC-E2E-012: View-Dependent Effects)
+
+### What was done
+- Implemented TC-E2E-012: View-Dependent Effects verification test infrastructure
+- Created comprehensive test file: tests/verification_visual_view_dependent.rs
+- Three test components implemented:
+  1. Dataset verification test (tc_e2e_012_view_dep_dataset_verification)
+     - Validates all 7 Mip-NeRF 360 scenes are available
+     - Identifies scenes with reflective surfaces (indoor scenes recommended)
+     - Provides guidance on recommended scenes for view-dependent testing
+     - **PASSES** - All 7 datasets verified (bicycle, garden, stump, room, counter, kitchen, bonsai)
+  2. View-dependent comparison script generator (tc_e2e_012_view_dep_generate_comparison_script, #[ignore])
+     - Creates Python script for multi-viewpoint rendering
+     - Generates camera positions in arc around scene center (configurable angle and radius)
+     - Default: 8 viewpoints across 180° arc
+     - Implements highlight detection:
+       * Intensity-based detection of bright specular highlights
+       * Morphological operations for cleanup
+       * Binary mask for highlight regions
+     - Creates comprehensive visualizations:
+       * Individual viewpoint renders (viewpoint_*.png)
+       * Side-by-side comparison grid with angle labels (comparison_grid.png)
+       * Highlight tracking overlay with color-coded highlights (highlight_tracking.png)
+     - Automatic scene center computation from COLMAP points3D.bin
+     - Configurable parameters: num-viewpoints, radius, arc-angle
+  3. Comprehensive manual inspection documentation
+     - Step-by-step workflow for view-dependent verification (quick and full)
+     - View-dependent effects to check:
+       * Specular highlights (movement with viewpoint changes)
+       * Reflections (content changes with viewing angle)
+       * Fresnel effects (angle-dependent reflectivity)
+       * Baked-in lighting issues (fixed highlights)
+     - Manual inspection checklist with detailed criteria
+     - Severity assessment (Pass/Marginal/Fail)
+     - Recommended scenes for reflective surfaces testing
+
+### Key decisions made
+- Arc-based camera path (not full 360° orbit)
+  - Specular highlights are best observed by sweeping viewpoint across surface
+  - Arc allows systematic observation of highlight movement
+  - Default 180° arc provides good coverage without redundancy
+  - Configurable for different scene types and testing needs
+- Highlight detection and tracking
+  - Intensity-based detection (threshold = 0.85, configurable to 0.9 for stricter detection)
+  - Simple and effective for identifying bright specular reflections
+  - Color-coded visualization helps track highlight movement across views
+  - Morphological operations clean up noise
+- Multiple visualization outputs
+  - Individual viewpoint renders for detailed inspection
+  - Comparison grid for side-by-side evaluation
+  - Highlight tracking overlay for movement analysis
+  - Each serves different inspection needs
+- Manual inspection approach (consistent with TC-E2E-010 and TC-E2E-011)
+  - View-dependent appearance is complex and scene-specific
+  - Specular behavior depends on material properties and lighting
+  - Quantitative metrics for view-dependence are difficult to define
+  - Manual inspection is standard practice in novel view synthesis
+- Test structure follows existing patterns
+  - Dataset verification as automated test (always runs)
+  - Script generation as optional ignored test (manual execution)
+  - Consistent with TC-E2E-010 and TC-E2E-011 workflows
+  - Clear documentation of manual inspection process
+- Scene recommendations
+  - Indoor scenes (counter, kitchen, room, bonsai) have more reflective surfaces
+  - Outdoor scenes can be tested but may have less obvious view-dependent effects
+  - Counter and kitchen are specifically highlighted as best for specular testing
+
+### Suggestions for next tasks
+This completes TC-E2E-012 view-dependent effects verification test infrastructure.
+Continue with remaining verify-2 task:
+
+Remaining manual inspection test (Priority 3):
+1. TC-E2E-013: Temporal Stability (SplatRs-w4r)
+   - Render smooth camera path (100+ frames)
+   - Check for flickering/popping artifacts
+   - Compute frame-to-frame SSIM for stability
+   - Manual inspection for temporal consistency
+   - Video creation for easy review
+
+Implementation notes for TC-E2E-013:
+- Similar to TC-E2E-010 orbit video but focus on temporal metrics
+- Generate smooth camera path (can reuse orbit generation from TC-E2E-010)
+- Render dense frame sequence (100+ frames for smooth motion)
+- Compute frame-to-frame SSIM (should be > 0.95 for slow camera motion)
+- Manual inspection checklist for popping, flickering, temporal artifacts
+- Video creation workflow (ffmpeg) for easy review
+- Pass criteria: high frame-to-frame SSIM, no visible flickering/popping
+
+All verify-2 manual inspection tests follow similar pattern:
+- Dataset verification (automated test)
+- Script generation for specialized rendering/analysis
+- Manual inspection workflow documentation
+- Clear pass/fail criteria with severity assessment
+- Integration with TC-E2E-001 benchmark results
+
+TC-E2E-012 completes the view-dependent effects verification infrastructure.
+Only TC-E2E-013 (Temporal Stability) remains in the verify-2 queue.
