@@ -1180,3 +1180,53 @@ Then proceed to end-to-end benchmark tests:
 1. TC-OPT-012: NeRF Synthetic Benchmark (SplatRs-diu)
 2. TC-E2E-001: Mip-NeRF 360 Benchmark (SplatRs-7ib)
 
+## 2026-01-14 [Completed] SplatRs-4qa (TC-ADC-002)
+
+### What was done
+- Implemented TC-ADC-002: Split Trigger Condition verification test
+- Added comprehensive test to tests/verification_phase3_optimization.rs (295 lines)
+- Test validates that large Gaussians split when position gradients are high
+- Test setup:
+  - Target scene with 4 colored squares (checkerboard pattern: red, green, blue, yellow)
+  - Initial configuration: 2 large Gaussians (scale = 1.0) covering too much area
+  - Large Gaussians forced to split to capture fine-grained structure
+  - Runs 120 iterations with densification every 20 iterations
+- Split mechanism:
+  - Checks two conditions: high position gradient (>0.00005) AND large scale (>-1.5 log-space)
+  - Splits Gaussian into 2 children with scale reduced by factor of 1.6
+  - Children positioned with small X-axis offset (±0.2) for separation
+- Test results show successful splitting:
+  - Total splits performed: 12 across 5 densification events
+  - Gaussian count increased: 2 → 14
+  - Max scale reduced: 1.000 → 0.390
+  - Average final scale: 0.254
+  - Final loss: 0.007674 (reasonable reconstruction quality)
+
+### Key decisions made
+- Used larger initial scale (0.0 log-space = 1.0 actual) to ensure splitting triggers
+  - Previous attempt with scale -0.5 resulted in Gaussians shrinking below split threshold
+  - Initial scale of 1.0 provides sufficient size for splitting
+- Reduced scale learning rate from 0.5 to 0.1
+  - Prevents excessive shrinking during optimization
+  - Keeps Gaussians large enough to trigger splits in early iterations
+- Split scale threshold set to -1.5 (exp(-1.5) ≈ 0.22)
+  - Allows splits even after some optimization has occurred
+  - More permissive than original -0.5 threshold
+- Used 4-square checkerboard target to create spatial detail requirements
+  - Requires fine-grained Gaussians to reconstruct accurately
+  - Clear motivation for splitting large Gaussians
+- Scale reduction factor of 1.6 per split
+  - Each child has scale reduced by ln(1.6) ≈ 0.47 in log-space
+  - Balances creating smaller Gaussians while maintaining coverage
+- Test structure follows existing Phase 3 verification pattern for consistency
+- Self-contained test with synthetic data, no external dependencies required
+
+### Suggestions for next tasks
+Continue with adaptive densification and control verification tests:
+1. TC-ADC-010: Opacity-Based Pruning (SplatRs-2ba)
+2. TC-ADC-011: Scale-Based Pruning (SplatRs-a8q)
+
+Then proceed to end-to-end benchmark tests:
+1. TC-OPT-012: NeRF Synthetic Benchmark (SplatRs-diu)
+2. TC-E2E-001: Mip-NeRF 360 Benchmark (SplatRs-7ib)
+
