@@ -2418,3 +2418,88 @@ Continue with TC-E2E-010 floater detection subtasks:
 The depth map rendering capability is complete and ready for use in floater detection workflows.
 With both RGB and depth output available, we can now create comprehensive visual inspection
 tools that show both color accuracy and geometric artifacts (floaters).
+
+## [2026-01-15 16:30] Completed SplatRs-sae: TC-E2E-010-3: Create depth map orbit rendering script
+
+### What was done
+- Created `scripts/render_orbit_depth.py` for rendering RGB+depth orbit sequences
+- Script generates 360° orbital camera paths (reuses logic from RGB orbit script)
+- Renders both RGB and depth maps using `sugar-render --depth-out`
+- Reads camera intrinsics from COLMAP cameras.bin for accurate rendering
+- Creates camera JSON files compatible with sugar-render --camera-json
+- Saves camera path metadata for reference and reproducibility
+- Updated test `tc_e2e_010_floater_generate_depth_script` to verify script exists and is executable
+
+### Key features
+- Reuses scene center and radius computation from existing orbit script
+  - Computes median center from COLMAP point cloud
+  - Auto-computes radius as 1.5x 90th percentile distance
+- Supports custom elevation angles (0° = ground level, 90° = top-down)
+- Renders both RGB and depth for each frame (enables side-by-side comparison)
+- Auto-detects camera intrinsics from COLMAP reconstruction
+  - Supports SIMPLE_PINHOLE and PINHOLE camera models
+  - Falls back to sensible defaults if COLMAP data unavailable
+- Provides comprehensive usage instructions and video creation commands
+- Includes floater detection checklist for depth discontinuities
+
+### Implementation details
+- Camera path generation matches `render_orbit_floater_detection.py` exactly
+  - Same orbit algorithm ensures consistent viewpoints between RGB and depth
+  - Uses spherical coordinates with elevation control
+- Rotation matrix conversion follows OpenCV/COLMAP convention
+  - +X right, +Y down, +Z forward
+  - Converts (view_dir, up, right) to 3x3 rotation matrix
+- Handles special cases:
+  - Top-down views (90° elevation): uses special up vector calculation
+  - Missing COLMAP data: provides default camera parameters
+- Cleans up temporary camera JSON files after rendering
+- Progress reporting every 10 frames
+- Robust error handling with timeouts for rendering
+
+### Floater detection workflow
+The script enables three inspection methods:
+
+1. **RGB video**: Visual inspection for floating artifacts
+   - Watch for floating blobs or disconnected structures
+   - Check for semi-transparent artifacts in empty space
+
+2. **Depth video**: Identify isolated depth discontinuities
+   - Look for sudden depth jumps in empty space
+   - Check for 'floating' depth values disconnected from main surfaces
+   - Identify depth noise in regions that should be smooth (sky, walls)
+
+3. **Side-by-side comparison**: Correlate RGB floaters with depth anomalies
+   - Verify depth structure matches visible geometry
+   - Confirm that floaters visible in RGB show up as depth discontinuities
+
+Depth maps reveal floaters through:
+- Sudden depth jumps (depth discontinuities)
+- Isolated depth values disconnected from main surfaces
+- Depth noise in smooth regions (sky, walls, uniform surfaces)
+
+### Verification
+- Test `tc_e2e_010_floater_generate_depth_script` passes
+  - Verifies script exists at expected path
+  - Sets executable permissions if needed (Unix)
+  - Provides comprehensive usage instructions in test output
+- Script is executable and ready for use
+- All existing tests still pass (39 passed, 0 failed, 3 ignored)
+
+### Suggestions for next tasks
+Continue with TC-E2E-010 floater detection subtasks:
+
+1. **SplatRs-bm6: TC-E2E-010-4**: Floater detection integration test and docs
+   - Create end-to-end workflow documentation
+   - Add test that verifies both orbit scripts work together
+   - Document severity assessment criteria for floaters
+   - Provide examples of common floater patterns in RGB and depth
+   - Create user guide for manual floater inspection workflow
+   - Include example commands for rendering and video creation
+   - Document how to interpret depth discontinuities
+
+The depth map orbit rendering infrastructure is complete. Combined with the RGB orbit
+script from SplatRs-2cg and the depth output capability from SplatRs-zp1, we now have
+a complete toolkit for visual floater detection through both RGB and depth inspection.
+
+The next step is to create comprehensive documentation and integration tests that
+demonstrate the complete floater detection workflow from training to inspection.
