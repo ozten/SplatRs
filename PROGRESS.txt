@@ -154,3 +154,41 @@ Continue with Phase 1 verification tasks in priority order:
 2. TC-SH-001: SH degree 0 testing (SplatRs-baz)
 3. TC-SH-003: SH coefficient count verification (SplatRs-wh3)
 
+
+## 2026-01-14 20:30 - Completed SplatRs-7qt (TC-COV-001)
+
+### What was done
+- Implemented TC-COV-001: Scale and Rotation to Covariance Conversion verification test
+- Added comprehensive test to tests/verification_phase1_input.rs
+- Test validates 3D covariance matrix construction from scale and rotation parameters
+- Formula verified: Σ = R * S * S^T * R^T
+- Five comprehensive test scenarios implemented:
+  1. Identity rotation with uniform scale (baseline)
+  2. Identity rotation with non-uniform scale [2, 3, 4]
+  3. 90° Z-rotation with uniform scale (isotropic result validation)
+  4. General 45° Y-rotation with non-uniform scale
+  5. Complex Euler angle rotation (30°, 45°, 60°) with varying scales [0.5, 1.5, 2.5]
+- All test cases validate:
+  - Matrix elements match within 1e-6 tolerance
+  - Matrices are symmetric (Σ = Σ^T)
+  - Matrices are positive semi-definite (all eigenvalues ≥ 0)
+- Helper functions created:
+  - verify_symmetric() - validates matrix symmetry
+  - verify_positive_semidefinite() - computes and validates eigenvalues
+- All tests pass successfully with detailed output showing eigenvalues and matrix comparisons
+
+### Key decisions made
+- Used existing covariance_matrix() implementation in src/core/gaussian.rs
+- Test structure follows existing Phase 1 verification pattern
+- Created helper functions for reusable validation logic
+- Used nalgebra's symmetric_eigen() for eigenvalue computation
+- Tested with both simple and complex rotation scenarios
+- Verified both the formula and mathematical properties of covariance matrices
+- Added explicit type annotations to resolve Rust type inference issues
+
+### Suggestions for next tasks
+Continue with Phase 1 verification tasks in priority order:
+1. TC-SH-001: SH degree 0 testing (SplatRs-baz)
+2. TC-SH-003: SH coefficient count verification (SplatRs-wh3)
+
+Then proceed to Phase 2 rasterization and gradient tests.
