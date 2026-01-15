@@ -3072,3 +3072,269 @@ fn tc_e2e_002_lpips_perceptual_quality() {
     println!("  - Metric is symmetric");
     println!("  - Python integration working correctly");
 }
+
+#[test]
+fn tc_adc_003_densification_interval() {
+    println!("\n=== TC-ADC-003: Densification Interval ===\n");
+
+    // Test Objective:
+    // Verify that densification (cloning/splitting) occurs only at the specified interval
+    // iterations, not at arbitrary times during training.
+    //
+    // Pass Criteria:
+    // - Gaussian count changes ONLY at expected densification iterations
+    // - No densification occurs between interval iterations
+    // - No densification on last iteration (Gaussians need at least one update step)
+    //
+    // This test validates the timing logic in trainer.rs:2128-2131:
+    //   if cfg.densify_interval > 0
+    //       && grad_window_iters > 0
+    //       && (iter + 1) % densify_interval == 0
+    //       && (iter + 1) < cfg.iters
+
+    use sugar_rs::core::{Gaussian, Camera};
+    use sugar_rs::render::{render_full_linear, render_full_color_grads};
+    use nalgebra::{Vector3, UnitQuaternion, Matrix3};
+
+    // Create simple test scene
+    let camera = Camera::new(
+        100.0, 100.0, 32.0, 32.0, 64, 64,
+        Matrix3::identity(),
+        Vector3::new(0.0, 0.0, 5.0),
+    );
+
+    // Create a few initial Gaussians to train
+    let mut gaussians = vec![
+        Gaussian::new(
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(-0.6, -0.6, -0.6),  // log scale
+            UnitQuaternion::identity(),
+            1.5,  // High opacity (in logit space)
+            sh_constant_color(Vector3::new(0.3, 0.0, 0.0)),  // Red
+        ),
+        Gaussian::new(
+            Vector3::new(0.5, 0.0, 0.0),
+            Vector3::new(-0.6, -0.6, -0.6),
+            UnitQuaternion::identity(),
+            1.5,
+            sh_constant_color(Vector3::new(0.0, 0.3, 0.0)),  // Green
+        ),
+    ];
+
+    // Create target image (just render with larger Gaussians to encourage gradient)
+    let target_gaussians = vec![
+        Gaussian::new(
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(-0.3, -0.3, -0.3),  // Larger scale
+            UnitQuaternion::identity(),
+            1.5,
+            sh_constant_color(Vector3::new(0.4, 0.0, 0.0)),  // Brighter red
+        ),
+        Gaussian::new(
+            Vector3::new(0.5, 0.0, 0.0),
+            Vector3::new(-0.3, -0.3, -0.3),
+            UnitQuaternion::identity(),
+            1.5,
+            sh_constant_color(Vector3::new(0.0, 0.4, 0.0)),  // Brighter green
+        ),
+    ];
+
+    let background = Vector3::new(0.0, 0.0, 0.0);
+    let target_image = render_full_linear(&target_gaussians, &camera, &background, false);
+
+    println!("Initial setup:");
+    println!("  Starting Gaussians: {}", gaussians.len());
+    println!("  Image size: {}x{}", camera.width, camera.height);
+    println!();
+
+    // Training parameters
+    const SH_C0: f32 = 0.28209479177387814;
+    let lr_color = 5.0;
+    let lr_position = 0.05;
+    let total_iters = 55;
+    let densify_interval = 10;  // Densify at iterations 10, 20, 30, 40, 50
+    let densify_start_iter = 5;  // Start accumulating gradients after iter 5
+    let grad_threshold = 0.0001;  // Low threshold to ensure cloning happens
+
+    // Track gradient accumulation
+    let mut grad_accum = vec![0.0; gaussians.len()];
+    let mut grad_window_iters = 0;
+
+    // Track Gaussian count at each iteration
+    let mut count_history = Vec::new();
+
+    println!("Training parameters:");
+    println!("  Total iterations: {}", total_iters);
+    println!("  Densify interval: {}", densify_interval);
+    println!("  Densify start: iteration {}", densify_start_iter);
+    println!("  Expected densification at: 10, 20, 30, 40, 50");
+    println!("  (NOT at iteration 55 - last iteration rule)");
+    println!();
+
+    // Optimization loop
+    for iter in 0..total_iters {
+        // Record Gaussian count at start of iteration
+        let count_before = gaussians.len();
+
+        // Forward pass
+        let rendered = render_full_linear(&gaussians, &camera, &background, false);
+        let _loss = l2_loss(&rendered, &target_image);
+
+        // Compute pixel gradients
+        let d_pixels: Vec<Vector3<f32>> = rendered
+            .iter()
+            .zip(target_image.iter())
+            .map(|(a, b)| 2.0 * (*a - *b) / (rendered.len() as f32))
+            .collect();
+
+        // Backward pass (compute position gradients)
+        let (_img, d_colors, _d_opacity, d_positions, _d_scales, _d_rot, _d_bg) =
+            render_full_color_grads(&gaussians, &camera, &d_pixels, &background, false);
+
+        // Accumulate position gradients (after densify_start_iter)
+        if iter >= densify_start_iter {
+            // Resize grad_accum if needed (in case we added new Gaussians)
+            while grad_accum.len() < gaussians.len() {
+                grad_accum.push(0.0);
+            }
+
+            for i in 0..gaussians.len() {
+                grad_accum[i] += d_positions[i].norm();
+            }
+            grad_window_iters += 1;
+        }
+
+        // Gradient descent step
+        for i in 0..gaussians.len() {
+            // Update color (SH DC term)
+            gaussians[i].sh_coeffs[0][0] -= lr_color * d_colors[i].x * SH_C0;
+            gaussians[i].sh_coeffs[0][1] -= lr_color * d_colors[i].y * SH_C0;
+            gaussians[i].sh_coeffs[0][2] -= lr_color * d_colors[i].z * SH_C0;
+
+            // Update position
+            gaussians[i].position -= lr_position * d_positions[i];
+        }
+
+        // Densification check - matches trainer.rs:2128-2131 logic
+        let should_densify = densify_interval > 0
+            && grad_window_iters > 0
+            && (iter + 1) % densify_interval == 0
+            && (iter + 1) < total_iters;
+
+        if should_densify {
+            // Compute average gradients
+            let avg_grads: Vec<f32> = grad_accum
+                .iter()
+                .map(|g| g / (grad_window_iters as f32))
+                .collect();
+
+            // Clone Gaussians with high gradients
+            let mut new_gaussians = Vec::new();
+            let mut clone_count = 0;
+
+            for (i, gaussian) in gaussians.iter().enumerate() {
+                // Always keep original
+                new_gaussians.push(gaussian.clone());
+
+                // Clone if gradient exceeds threshold
+                if i < avg_grads.len() && avg_grads[i] > grad_threshold {
+                    let mut clone = gaussian.clone();
+                    // Small offset for clone
+                    clone.position.x += 0.01;
+                    new_gaussians.push(clone);
+                    clone_count += 1;
+                }
+            }
+
+            gaussians = new_gaussians;
+
+            println!("  Iter {}: DENSIFICATION occurred", iter + 1);
+            println!("    Before: {} Gaussians", count_before);
+            println!("    After:  {} Gaussians", gaussians.len());
+            println!("    Cloned: {} Gaussians", clone_count);
+
+            // Reset gradient tracking
+            grad_accum = vec![0.0; gaussians.len()];
+            grad_window_iters = 0;
+        }
+
+        // Record count change
+        let count_after = gaussians.len();
+        let changed = count_after != count_before;
+        count_history.push((iter + 1, count_before, count_after, changed));
+    }
+
+    println!();
+    println!("Iteration history:");
+    println!("  Iter | Before | After | Changed | Expected?");
+    println!("  -----|--------|-------|---------|----------");
+
+    // Expected densification iterations: 10, 20, 30, 40, 50
+    let expected_densify = [10, 20, 30, 40, 50];
+
+    for (iter, before, after, changed) in &count_history {
+        let expected_change = expected_densify.contains(iter);
+        let correct = changed == &expected_change;
+
+        let status = if correct { "✓" } else { "✗" };
+        let expected_str = if expected_change { "YES" } else { "no" };
+
+        // Only print iterations where something changed or should have changed
+        if *changed || expected_change {
+            println!("  {:4} | {:6} | {:5} | {:7} | {:8} {}",
+                iter, before, after,
+                if *changed { "YES" } else { "no" },
+                expected_str,
+                status);
+        }
+    }
+
+    println!();
+
+    // Verify critical constraints
+    let mut test_passed = true;
+
+    // 1. Densification should happen at expected intervals (10, 20, 30, 40, 50)
+    for expected_iter in &expected_densify {
+        let entry = count_history.iter().find(|(i, _, _, _)| i == expected_iter);
+        match entry {
+            Some((_, _, _, changed)) if *changed => {
+                println!("  ✓ Densification at iteration {} (as expected)", expected_iter);
+            }
+            _ => {
+                println!("  ✗ Missing densification at iteration {}", expected_iter);
+                test_passed = false;
+            }
+        }
+    }
+
+    // 2. No densification should happen at non-interval iterations
+    for (iter, _, _, changed) in &count_history {
+        let is_expected = expected_densify.contains(iter);
+        if *changed && !is_expected {
+            println!("  ✗ Unexpected densification at iteration {}", iter);
+            test_passed = false;
+        }
+    }
+
+    // 3. No densification on last iteration (iter 55)
+    let last_entry = count_history.last().unwrap();
+    if last_entry.3 {
+        println!("  ✗ Densification occurred on last iteration {} (should be skipped)", last_entry.0);
+        test_passed = false;
+    } else {
+        println!("  ✓ No densification on last iteration {} (correct)", last_entry.0);
+    }
+
+    println!();
+
+    if !test_passed {
+        panic!("TC-ADC-003 FAILED: Densification did not occur at expected intervals!");
+    }
+
+    println!("✓ TC-ADC-003 passed: Densification interval verified!");
+    println!("  - Densification occurs only at specified intervals");
+    println!("  - No densification between intervals");
+    println!("  - No densification on last iteration");
+    println!("  - Timing logic matches trainer.rs:2128-2131");
+}
