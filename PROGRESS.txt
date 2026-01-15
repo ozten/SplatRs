@@ -2099,3 +2099,122 @@ All verify-2 manual inspection tests follow similar pattern:
 
 TC-E2E-012 completes the view-dependent effects verification infrastructure.
 Only TC-E2E-013 (Temporal Stability) remains in the verify-2 queue.
+
+
+## 2026-01-15 01:15 - Completed SplatRs-w4r (TC-E2E-013: Temporal Stability)
+
+### What was done
+- Implemented TC-E2E-013: Temporal Stability verification test infrastructure
+- Created comprehensive test file: tests/verification_visual_temporal_stability.rs
+- Three test components implemented:
+  1. Dataset verification test (tc_e2e_013_temporal_dataset_verification)
+     - Validates all 7 Mip-NeRF 360 scenes are available
+     - Checks for required COLMAP structure and images
+     - **PASSES** - All 7 datasets verified (bicycle, garden, stump, room, counter, kitchen, bonsai)
+  2. Temporal stability script generator (tc_e2e_013_temporal_generate_stability_script, #[ignore])
+     - Creates Python script for smooth camera path rendering and temporal analysis
+     - Supports multiple camera motion patterns:
+       * smooth-orbit: Full 360° orbit (tests general temporal stability)
+       * dolly: Forward/backward motion (tests depth stability)
+       * pan: Horizontal sweep (tests horizontal stability)
+     - Implements frame-to-frame SSIM computation:
+       * Structural similarity between consecutive frames
+       * Detects flickering and popping artifacts
+       * Pass criteria: SSIM > 0.95 for slow motion, > 0.90 for moderate motion
+     - Generates quantitative temporal metrics:
+       * Mean SSIM across entire sequence
+       * Min/Max SSIM (identifies worst frame transitions)
+       * SSIM standard deviation (measures consistency)
+       * Temporal stability score (0-100)
+     - Creates visualizations:
+       * temporal_metrics.json with detailed metrics
+       * temporal_ssim_plot.png showing frame-to-frame SSIM over time
+       * Threshold lines for good (0.95) and acceptable (0.90) stability
+       * Highlights worst frame transitions
+     - Automatic scene center computation from COLMAP points3D.bin
+     - Configurable parameters: frames, motion type, radius, arc-angle
+  3. Comprehensive manual inspection documentation
+     - Step-by-step workflow for temporal stability verification (quick and full)
+     - Temporal artifacts to check:
+       * Flickering (rapid brightness/color changes)
+       * Popping artifacts (sudden appearance/disappearance)
+       * Temporal aliasing (moiré patterns, strobing)
+       * Depth instability (surfaces "swimming")
+     - Manual inspection checklist with detailed criteria:
+       * Quantitative metrics (SSIM thresholds)
+       * Visual quality checks for static surfaces and motion
+       * Occlusion handling
+       * Fine detail stability
+     - Severity assessment (Pass/Marginal/Fail)
+     - Video creation workflow (ffmpeg) for easy review
+
+### Key decisions made
+- Multiple camera motion patterns
+  - smooth-orbit: Best for general temporal stability testing
+  - dolly: Tests depth-specific stability (near-far transitions)
+  - pan: Tests horizontal stability and motion blur
+  - Each motion type reveals different temporal artifacts
+- Frame-to-frame SSIM as primary metric
+  - Standard metric for temporal consistency
+  - SSIM > 0.95 for slow motion (high quality threshold)
+  - SSIM > 0.90 for moderate motion (acceptable threshold)
+  - Detects both flickering (high-frequency noise) and popping (discontinuities)
+  - More robust than pixel-wise metrics
+- Dense frame sampling (120 frames default)
+  - Smooth camera motion requires dense sampling
+  - 120 frames at 30fps = 4 second video
+  - Sufficient for detecting temporal artifacts
+  - Configurable based on scene complexity
+- SSIM plot visualization
+  - Shows temporal stability over entire sequence
+  - Threshold lines for quick assessment
+  - Highlights worst frame transitions
+  - Easy to identify patterns (consistent vs sporadic issues)
+- Manual inspection approach (consistent with TC-E2E-010, TC-E2E-011, TC-E2E-012)
+  - Temporal artifacts are subjective and context-dependent
+  - SSIM threshold depends on motion speed and scene complexity
+  - Video compression can introduce additional artifacts
+  - Human perception is best judge of "watchable" quality
+  - Quantitative metrics guide but don't replace manual inspection
+- Test structure follows existing patterns
+  - Dataset verification as automated test (always runs)
+  - Script generation as optional ignored test (manual execution)
+  - Consistent with TC-E2E-010, TC-E2E-011, TC-E2E-012 workflows
+  - Clear documentation of manual inspection process
+- All scenes suitable for temporal stability testing
+  - Unlike view-dependent testing (prefers indoor scenes)
+  - Temporal stability is important for all scene types
+  - Both indoor and outdoor scenes can exhibit flickering/popping
+  - Camera motion pattern more important than scene type
+
+### Suggestions for next tasks
+This completes TC-E2E-013 temporal stability verification test infrastructure.
+All verify-2 tasks are now complete.
+
+verify-2 completion summary:
+1. TC-E2E-010: Floater Detection (SplatRs-kup) ✓
+2. TC-E2E-011: Edge Sharpness (SplatRs-nia) ✓
+3. TC-E2E-012: View-Dependent Effects (SplatRs-ouw) ✓
+4. TC-E2E-013: Temporal Stability (SplatRs-w4r) ✓
+
+All manual inspection tests follow consistent pattern:
+- Dataset verification (automated test)
+- Script generation for specialized rendering/analysis
+- Manual inspection workflow documentation
+- Clear pass/fail criteria with severity assessment
+- Integration with TC-E2E-001 benchmark results
+
+Implementation notes for future work:
+- All Python scripts contain placeholder rendering logic
+- Implementation depends on sugar-render supporting custom camera poses
+- Required Python packages: pillow, opencv-python, scikit-image, matplotlib
+- Scripts are ready to use once sugar-render API is extended
+
+Next phase tasks should focus on:
+- Extending sugar-render to support custom camera poses
+- Implementing actual rendering in placeholder scripts
+- Running manual inspection workflows on trained models
+- Documenting visual quality assessment results
+
+TC-E2E-013 completes the temporal stability verification infrastructure.
+The verify-2 phase is now complete with all 4 manual inspection tests implemented.
