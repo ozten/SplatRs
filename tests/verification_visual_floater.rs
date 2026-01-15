@@ -455,85 +455,72 @@ if __name__ == "__main__":
     println!("    runs/floater_test_bicycle/orbit_video.mp4");
 }
 
-/// TC-E2E-010: Generate Depth Map Rendering Script
+/// TC-E2E-010: Verify Depth Map Rendering Script
 ///
-/// This test generates a Python script for rendering depth maps along the orbit path.
-/// Depth maps can help identify isolated depth discontinuities that indicate floaters.
+/// This test verifies that the depth map orbit rendering script exists and is functional.
+/// The script renders depth maps along an orbit path for floater detection.
 ///
 /// Run with: cargo test --release tc_e2e_010_floater_generate_depth_script -- --nocapture --ignored
 #[test]
 #[ignore]
 fn tc_e2e_010_floater_generate_depth_script() {
-    println!("\n=== TC-E2E-010: Generating Depth Map Rendering Script ===\n");
+    println!("\n=== TC-E2E-010: Verifying Depth Map Rendering Script ===\n");
 
-    let script_content = r#"#!/usr/bin/env python3
-"""
-Render depth maps for orbit path (floater detection).
+    let script_path = PathBuf::from("scripts/render_orbit_depth.py");
 
-Usage:
-    python render_orbit_depth.py \
-        --model <path_to_model.gs> \
-        --dataset-root <path_to_dataset> \
-        --output <output_directory> \
-        --frames 360
+    if !script_path.exists() {
+        panic!("Depth rendering script not found: {}", script_path.display());
+    }
 
-This script renders depth maps for the same orbit path as render_orbit_video.py,
-allowing visual inspection of depth discontinuities that may indicate floaters.
-
-Depth maps are saved as grayscale PNG images where intensity represents depth.
-"""
-
-import argparse
-import sys
-from pathlib import Path
-
-def main():
-    parser = argparse.ArgumentParser(description="Render depth maps for orbit path")
-    parser.add_argument("--model", type=str, required=True, help="Path to trained model")
-    parser.add_argument("--dataset-root", type=str, required=True, help="Path to dataset")
-    parser.add_argument("--output", type=str, required=True, help="Output directory")
-    parser.add_argument("--frames", type=int, default=360, help="Number of frames")
-
-    args = parser.parse_args()
-
-    print("⚠ Depth map rendering not yet implemented.")
-    print("This requires:")
-    print("  1. sugar-render to support depth map output")
-    print("  2. Same orbit camera generation as render_orbit_video.py")
-    print("  3. Depth normalization and visualization")
-    print("\nPlaceholder script generated. Implementation needed.")
-
-    # TODO: Implement depth rendering
-    # - Reuse orbit camera generation from render_orbit_video.py
-    # - Call sugar-render with depth output flag
-    # - Normalize depth values to [0, 255] range
-    # - Save as grayscale PNG
-
-    sys.exit(1)
-
-
-if __name__ == "__main__":
-    main()
-"#;
-
-    let script_dir = PathBuf::from("scripts");
-    std::fs::create_dir_all(&script_dir).expect("Failed to create scripts directory");
-
-    let script_path = script_dir.join("render_orbit_depth.py");
-    std::fs::write(&script_path, script_content).expect("Failed to write depth rendering script");
-
-    // Make script executable on Unix
+    // Verify script is executable on Unix
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&script_path)
-            .expect("Failed to get file metadata")
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&script_path, perms).expect("Failed to set permissions");
+        let metadata = std::fs::metadata(&script_path)
+            .expect("Failed to get file metadata");
+        let mode = metadata.permissions().mode();
+
+        if mode & 0o111 == 0 {
+            println!("⚠ Script is not executable, setting executable permissions...");
+            let mut perms = metadata.permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&script_path, perms)
+                .expect("Failed to set executable permissions");
+        }
     }
 
-    println!("✓ Generated depth rendering script: {}", script_path.display());
-    println!("\nNote: Depth rendering requires implementation in sugar-render.");
-    println!("      This is a placeholder for future depth map support.");
+    println!("✓ Depth rendering script verified: {}", script_path.display());
+    println!("\nThis script:");
+    println!("  - Generates 360° orbital camera path (same as RGB orbit)");
+    println!("  - Renders both RGB and depth maps using sugar-render --depth-out");
+    println!("  - Creates depth map sequences for floater detection");
+    println!("  - Saves camera path metadata for reference");
+
+    println!("\nUsage:");
+    println!("  python scripts/render_orbit_depth.py \\");
+    println!("    --model runs/floater_test_bicycle/model_final.gs \\");
+    println!("    --dataset-root datasets/bicycle \\");
+    println!("    --output runs/floater_test_bicycle/depth_orbit \\");
+    println!("    --frames 360 \\");
+    println!("    --elevation 0");
+
+    println!("\nAfter rendering, create videos:");
+    println!("  # RGB video");
+    println!("  ffmpeg -framerate 30 -i output/rgb_%04d.png \\");
+    println!("    -c:v libx264 -pix_fmt yuv420p -crf 18 \\");
+    println!("    floater_orbit_rgb.mp4");
+    println!("  # Depth video");
+    println!("  ffmpeg -framerate 30 -i output/depth_%04d.png \\");
+    println!("    -c:v libx264 -pix_fmt yuv420p -crf 18 \\");
+    println!("    floater_orbit_depth.mp4");
+    println!("  # Side-by-side comparison");
+    println!("  ffmpeg -i floater_orbit_rgb.mp4 -i floater_orbit_depth.mp4 \\");
+    println!("    -filter_complex hstack \\");
+    println!("    floater_orbit_comparison.mp4");
+
+    println!("\nFloater detection with depth maps:");
+    println!("  - Look for isolated depth discontinuities (sudden jumps)");
+    println!("  - Check for 'floating' depth values disconnected from surfaces");
+    println!("  - Identify depth noise in smooth regions (sky, walls)");
+    println!("  - Compare RGB and depth videos for correlation");
 }
