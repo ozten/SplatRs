@@ -1002,3 +1002,47 @@ Then proceed to densification tests:
 1. TC-ADC-001: Clone Trigger Condition (SplatRs-6sj)
 2. TC-ADC-002: Split Trigger Condition (SplatRs-4qa)
 
+## 2026-01-14 [Completed] SplatRs-gew (TC-OPT-002)
+
+### What was done
+- Implemented TC-OPT-002: L2 (MSE) Loss Correctness verification test
+- Added comprehensive test to tests/verification_phase3_optimization.rs (217 lines)
+- Test validates that L2 loss computation matches reference implementation
+- Formula verified: L2_loss = mean(||a - b||²) where ||·||² is the squared L2 norm of the RGB difference vector
+- Six comprehensive test scenarios implemented:
+  1. Identical images - validates zero loss
+  2. Simple uniform difference - tests basic computation with known values (diff = [0.1, 0.1, 0.1])
+  3. Mixed differences - tests with varying per-channel differences (0.01, 0.04, 0.09)
+  4. Larger image (10 pixels) - validates averaging across more pixels
+  5. Negative differences - verifies squaring behavior (negative becomes positive)
+  6. Single pixel with all channels different - tests [0.3, 0.4, 0.5] pattern
+- All tests pass successfully with maximum error: 2.98e-8 (well within 1e-6 threshold)
+- Test validates against analytical reference calculations for each test case
+
+### Key decisions made
+- Leveraged existing l2_loss() helper function from verification_phase3_optimization.rs
+  - Implementation: mean of squared vector norms (not per-channel squared differences)
+  - Formula: mean(||RGB_diff||²) which is the standard for image-based L2/MSE loss
+- Test structure validates both edge cases and typical usage:
+  - Zero loss case (identical images)
+  - Uniform and mixed pixel differences
+  - Negative differences to verify squaring behavior
+  - Larger images to test averaging correctness
+  - Single-pixel edge case
+- All reference values computed analytically using exact floating-point arithmetic
+  - Ensures test is self-contained and reproducible
+  - No dependency on external libraries (NumPy, PyTorch)
+- Test achieves precision well beyond requirement:
+  - Required: < 1e-6 difference
+  - Achieved: < 3e-8 difference (30x better than requirement)
+- Test structure follows existing Phase 3 verification pattern for consistency
+
+### Suggestions for next tasks
+Continue with Phase 3 optimization loss function verification:
+1. TC-OPT-003: SSIM Loss Correctness (SplatRs-fqa)
+2. TC-OPT-004: D-SSIM Loss Correctness (SplatRs-ibt)
+
+Then proceed to densification tests:
+1. TC-ADC-001: Clone Trigger Condition (SplatRs-6sj)
+2. TC-ADC-002: Split Trigger Condition (SplatRs-4qa)
+

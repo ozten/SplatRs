@@ -1007,3 +1007,280 @@ fn tc_opt_002_l2_loss_correctness() {
 
     println!("✓ TC-OPT-002 passed: L2 (MSE) loss computation matches reference implementation!");
 }
+
+/// TC-OPT-003: SSIM Loss Correctness
+///
+/// Verify SSIM computation matches reference implementation.
+///
+/// Reference: skimage.metrics.structural_similarity
+///
+/// Pass Criteria:
+/// - SSIM values within 0.001 of reference
+/// - Identical images produce SSIM > 0.9999
+///
+/// This test verifies that our SSIM (Structural Similarity Index) implementation
+/// matches expected behavior. Note: Our implementation uses a simplified luminance-based
+/// approach suitable for optimization tasks.
+#[test]
+fn tc_opt_003_ssim_loss_correctness() {
+    println!("\n=== TC-OPT-003: SSIM Loss Correctness ===\n");
+
+    // Test case 1: Identical images (SSIM = 1.0)
+    {
+        println!("Test 1: Identical images");
+        let img_a = vec![
+            Vector3::new(0.5, 0.5, 0.5),
+            Vector3::new(0.8, 0.2, 0.3),
+            Vector3::new(0.1, 0.9, 0.4),
+            Vector3::new(0.6, 0.3, 0.7),
+            Vector3::new(0.2, 0.8, 0.5),
+        ];
+        let img_b = img_a.clone();
+
+        let ssim = compute_ssim(&img_a, &img_b);
+        let expected = 1.0;
+
+        println!("  Our SSIM: {:.10}", ssim);
+        println!("  Expected: {:.10}", expected);
+        println!("  Difference: {:.10}", (ssim - expected).abs());
+
+        assert!(
+            ssim > 0.9999,
+            "SSIM for identical images {} should be > 0.9999",
+            ssim
+        );
+        assert!(
+            (ssim - expected).abs() < 0.001,
+            "SSIM difference {} exceeds threshold 0.001 for identical images",
+            (ssim - expected).abs()
+        );
+        println!("  ✓ Passed\n");
+    }
+
+    // Test case 2: Constant images with same value (SSIM = 1.0)
+    {
+        println!("Test 2: Constant images (same value)");
+        let img_a = vec![
+            Vector3::new(0.7, 0.7, 0.7),
+            Vector3::new(0.7, 0.7, 0.7),
+            Vector3::new(0.7, 0.7, 0.7),
+            Vector3::new(0.7, 0.7, 0.7),
+            Vector3::new(0.7, 0.7, 0.7),
+        ];
+        let img_b = img_a.clone();
+
+        let ssim = compute_ssim(&img_a, &img_b);
+        let expected = 1.0;
+
+        println!("  Our SSIM: {:.10}", ssim);
+        println!("  Expected: {:.10}", expected);
+        println!("  Difference: {:.10}", (ssim - expected).abs());
+
+        assert!(
+            ssim > 0.9999,
+            "SSIM for identical constant images {} should be > 0.9999",
+            ssim
+        );
+        assert!(
+            (ssim - expected).abs() < 0.001,
+            "SSIM difference {} exceeds threshold 0.001 for constant images",
+            (ssim - expected).abs()
+        );
+        println!("  ✓ Passed\n");
+    }
+
+    // Test case 3: Small difference (high SSIM)
+    {
+        println!("Test 3: Small uniform difference");
+        let img_a = vec![
+            Vector3::new(0.5, 0.5, 0.5),
+            Vector3::new(0.5, 0.5, 0.5),
+            Vector3::new(0.5, 0.5, 0.5),
+            Vector3::new(0.5, 0.5, 0.5),
+            Vector3::new(0.5, 0.5, 0.5),
+        ];
+        let img_b = vec![
+            Vector3::new(0.51, 0.51, 0.51),
+            Vector3::new(0.51, 0.51, 0.51),
+            Vector3::new(0.51, 0.51, 0.51),
+            Vector3::new(0.51, 0.51, 0.51),
+            Vector3::new(0.51, 0.51, 0.51),
+        ];
+
+        let ssim = compute_ssim(&img_a, &img_b);
+
+        println!("  Our SSIM: {:.10}", ssim);
+
+        // Small uniform differences should give high SSIM (> 0.99)
+        // The exact value depends on the SSIM constants
+        assert!(
+            ssim > 0.99,
+            "SSIM for small uniform difference {} should be > 0.99",
+            ssim
+        );
+        println!("  ✓ Passed (SSIM > 0.99)\n");
+    }
+
+    // Test case 4: Large difference (low SSIM)
+    {
+        println!("Test 4: Large difference");
+        let img_a = vec![
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.0, 0.0, 0.0),
+        ];
+        let img_b = vec![
+            Vector3::new(1.0, 1.0, 1.0),
+            Vector3::new(1.0, 1.0, 1.0),
+            Vector3::new(1.0, 1.0, 1.0),
+            Vector3::new(1.0, 1.0, 1.0),
+            Vector3::new(1.0, 1.0, 1.0),
+        ];
+
+        let ssim = compute_ssim(&img_a, &img_b);
+
+        println!("  Our SSIM: {:.10}", ssim);
+
+        // Large differences should give low SSIM (< 0.5)
+        assert!(
+            ssim < 0.5,
+            "SSIM for large difference {} should be < 0.5",
+            ssim
+        );
+        println!("  ✓ Passed (SSIM < 0.5)\n");
+    }
+
+    // Test case 5: Mixed values with structure
+    {
+        println!("Test 5: Mixed values with similar structure");
+        let img_a = vec![
+            Vector3::new(0.1, 0.1, 0.1),
+            Vector3::new(0.3, 0.3, 0.3),
+            Vector3::new(0.5, 0.5, 0.5),
+            Vector3::new(0.7, 0.7, 0.7),
+            Vector3::new(0.9, 0.9, 0.9),
+        ];
+        let img_b = vec![
+            Vector3::new(0.15, 0.15, 0.15),
+            Vector3::new(0.35, 0.35, 0.35),
+            Vector3::new(0.55, 0.55, 0.55),
+            Vector3::new(0.75, 0.75, 0.75),
+            Vector3::new(0.95, 0.95, 0.95),
+        ];
+
+        let ssim = compute_ssim(&img_a, &img_b);
+
+        println!("  Our SSIM: {:.10}", ssim);
+
+        // Similar structure should give high SSIM (> 0.95)
+        assert!(
+            ssim > 0.95,
+            "SSIM for similar structure {} should be > 0.95",
+            ssim
+        );
+        println!("  ✓ Passed (SSIM > 0.95)\n");
+    }
+
+    // Test case 6: SSIM is symmetric
+    {
+        println!("Test 6: SSIM symmetry");
+        let img_a = vec![
+            Vector3::new(0.2, 0.4, 0.6),
+            Vector3::new(0.8, 0.1, 0.3),
+            Vector3::new(0.5, 0.7, 0.9),
+        ];
+        let img_b = vec![
+            Vector3::new(0.3, 0.5, 0.7),
+            Vector3::new(0.9, 0.2, 0.4),
+            Vector3::new(0.6, 0.8, 1.0),
+        ];
+
+        let ssim_ab = compute_ssim(&img_a, &img_b);
+        let ssim_ba = compute_ssim(&img_b, &img_a);
+
+        println!("  SSIM(A, B): {:.10}", ssim_ab);
+        println!("  SSIM(B, A): {:.10}", ssim_ba);
+        println!("  Difference: {:.10}", (ssim_ab - ssim_ba).abs());
+
+        assert!(
+            (ssim_ab - ssim_ba).abs() < 1e-6,
+            "SSIM should be symmetric: SSIM(A,B) = SSIM(B,A)"
+        );
+        println!("  ✓ Passed (symmetric)\n");
+    }
+
+    // Test case 7: SSIM range check (0 to 1)
+    {
+        println!("Test 7: SSIM range validation");
+        let test_cases = vec![
+            (
+                vec![Vector3::new(0.0, 0.0, 0.0); 10],
+                vec![Vector3::new(0.5, 0.5, 0.5); 10],
+            ),
+            (
+                vec![Vector3::new(0.5, 0.5, 0.5); 10],
+                vec![Vector3::new(1.0, 1.0, 1.0); 10],
+            ),
+            (
+                vec![Vector3::new(0.2, 0.3, 0.4); 10],
+                vec![Vector3::new(0.6, 0.7, 0.8); 10],
+            ),
+        ];
+
+        for (i, (img_a, img_b)) in test_cases.iter().enumerate() {
+            let ssim = compute_ssim(img_a, img_b);
+            println!("  Case {}: SSIM = {:.6}", i + 1, ssim);
+            assert!(
+                ssim >= 0.0 && ssim <= 1.0,
+                "SSIM {} should be in range [0, 1]",
+                ssim
+            );
+        }
+        println!("  ✓ Passed (all in range [0, 1])\n");
+    }
+
+    // Test case 8: Reference calculation verification
+    {
+        println!("Test 8: Reference calculation verification");
+        // Simple case where we can manually calculate SSIM
+        // Using uniform images to simplify calculation
+        let img_a = vec![
+            Vector3::new(0.3, 0.3, 0.3),
+            Vector3::new(0.3, 0.3, 0.3),
+            Vector3::new(0.3, 0.3, 0.3),
+        ];
+        let img_b = vec![
+            Vector3::new(0.6, 0.6, 0.6),
+            Vector3::new(0.6, 0.6, 0.6),
+            Vector3::new(0.6, 0.6, 0.6),
+        ];
+
+        let ssim = compute_ssim(&img_a, &img_b);
+
+        // Manual calculation (simplified SSIM formula):
+        // c1 = 0.01^2 = 0.0001, c2 = 0.03^2 = 0.0009
+        // mu_x = 0.3, mu_y = 0.6
+        // var_x = 0 (constant), var_y = 0 (constant), cov_xy = 0
+        // SSIM = (2*mu_x*mu_y + c1)(2*cov_xy + c2) / ((mu_x^2 + mu_y^2 + c1)(var_x + var_y + c2))
+        // = (2*0.3*0.6 + 0.0001)(0 + 0.0009) / ((0.09 + 0.36 + 0.0001)(0 + 0.0009))
+        // = (0.36 + 0.0001)(0.0009) / (0.4501)(0.0009)
+        // = 0.3601 * 0.0009 / (0.4501 * 0.0009)
+        // = 0.3601 / 0.4501 = 0.8
+        let expected_approx = 0.8;
+
+        println!("  Our SSIM: {:.10}", ssim);
+        println!("  Expected (approx): {:.10}", expected_approx);
+        println!("  Difference: {:.10}", (ssim - expected_approx).abs());
+
+        assert!(
+            (ssim - expected_approx).abs() < 0.001,
+            "SSIM difference {} exceeds threshold 0.001 for reference calculation",
+            (ssim - expected_approx).abs()
+        );
+        println!("  ✓ Passed\n");
+    }
+
+    println!("✓ TC-OPT-003 passed: SSIM loss computation matches expected behavior!");
+}
