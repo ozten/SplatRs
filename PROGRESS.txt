@@ -1280,3 +1280,67 @@ Then proceed to end-to-end benchmark tests:
 1. TC-OPT-012: NeRF Synthetic Benchmark (SplatRs-diu)
 2. TC-E2E-001: Mip-NeRF 360 Benchmark (SplatRs-7ib)
 
+
+## 2026-01-14 [Completed] SplatRs-a8q (TC-ADC-011)
+
+### What was done
+- Implemented TC-ADC-011: Scale-Based Pruning verification test
+- Added comprehensive test to tests/verification_phase3_optimization.rs (354 lines)
+- Test validates that excessively large Gaussians are removed during pruning
+- Test setup:
+  - Target scene with 3 small colored regions (red, green, blue) at exp(-2) ≈ 0.135 scale
+  - Initial configuration: 10 Gaussians (3 useful with moderate scale, 7 excessively large)
+  - Large Gaussians start with scale = 1.5 log-space (exp(1.5) ≈ 4.48 actual)
+  - Useful Gaussians start with scale = -1.5 log-space (exp(-1.5) ≈ 0.22 actual)
+  - Runs 100 iterations with pruning every 25 iterations
+- Pruning mechanism:
+  - Checks max log-scale across X, Y, Z components
+  - Removes Gaussians with max log-scale > 0.5 (actual scale > exp(0.5) ≈ 1.65)
+  - Filters using retain() closure for clean implementation
+- Test results show successful pruning:
+  - Total Gaussians pruned: 7 out of 10 initial (first pruning at iteration 25)
+  - Gaussian count reduced: 10 → 3
+  - Final max log-scale: -1.5 (well below 0.5 threshold)
+  - Final PSNR: 41.01 dB (excellent reconstruction quality maintained)
+  - Final loss: 0.000079
+- All pass criteria met:
+  1. Large-scale Gaussians removed (7 pruned ✓)
+  2. Gaussian count reduced (10 → 3 ✓)
+  3. Remaining Gaussians meet threshold (max -1.5 <= 0.5 ✓)
+  4. Quality maintained (PSNR 41.01 dB > 20 dB ✓)
+
+### Key decisions made
+- Used scale threshold of 0.5 log-space (exp(0.5) ≈ 1.65)
+  - Large enough to catch truly oversized Gaussians
+  - Reasonable threshold for scene-scale objects
+- Initial large Gaussians set to 1.5 log-space (exp(1.5) ≈ 4.48)
+  - Clearly exceeds threshold (1.5 > 0.5)
+  - Ensures pruning will definitely trigger
+- Useful Gaussians set to -1.5 log-space (exp(-1.5) ≈ 0.22)
+  - Well below threshold, won't be pruned
+  - Appropriate scale for small target features
+- Small scale learning rate (0.05) to prevent rapid changes
+  - Prevents useful Gaussians from growing too large
+  - Maintains stability during optimization
+- Lower PSNR threshold (20 dB) compared to opacity pruning (25 dB)
+  - Scale pruning can be more aggressive without hurting quality
+  - Test demonstrates quality actually improves (41 dB achieved)
+- Positioned large Gaussians far from target regions
+  - Ensures they contribute minimally to reconstruction
+  - Optimization won't make them useful
+- Test structure follows existing Phase 3 verification pattern for consistency
+- Tracks both log-space and actual scale values in output for clarity
+
+### Suggestions for next tasks
+All Phase 3 adaptive densification and control tests complete! Proceed to end-to-end benchmarks:
+1. TC-OPT-012: NeRF Synthetic Benchmark (SplatRs-diu) - requires long training
+2. TC-E2E-001: Mip-NeRF 360 Benchmark (SplatRs-7ib) - requires very long training
+
+Medium-priority additional verification tests:
+1. TC-INP-005: Alpha Channel Handling (SplatRs-wxv)
+2. TC-RAS-003: Tile Boundary Handling (SplatRs-9vd)
+3. TC-E2E-002: LPIPS Perceptual Quality (SplatRs-t2e)
+4. TC-E2E-010: Floater Detection (SplatRs-8h6)
+5. TC-E2E-011: Edge Sharpness (SplatRs-nia)
+6. TC-E2E-012: View-Dependent Effects (SplatRs-ouw)
+7. TC-E2E-013: Temporal Stability (SplatRs-w4r)
