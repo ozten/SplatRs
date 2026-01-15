@@ -5,6 +5,7 @@
 
 use sugar_rs::io::load_colmap_scene;
 use std::path::PathBuf;
+use nalgebra::Matrix3;
 
 /// TC-INP-001: Verify camera intrinsic parameters are correctly parsed from COLMAP.
 ///
@@ -569,6 +570,321 @@ fn tc_inp_010_colmap_point_cloud_loading() {
     println!("   Maximum color difference: {} (requirement: 0)", max_color_diff);
     println!("   All point positions match within 1e-5");
     println!("   All colors match exactly");
+}
+
+/// TC-COV-001: Verify 3D covariance matrix correctly constructed from scale and rotation.
+///
+/// Pass Criteria:
+/// - Covariance matrix elements match within 1e-6
+/// - Matrix is symmetric (Σ = Σ^T)
+/// - Matrix is positive semi-definite (all eigenvalues ≥ 0)
+///
+/// Formula: Σ = R * S * S^T * R^T
+#[test]
+fn tc_cov_001_scale_rotation_to_covariance() {
+    use nalgebra::{Matrix3, Vector3, UnitQuaternion};
+    use sugar_rs::core::Gaussian;
+
+    const TOLERANCE: f32 = 1e-6;
+
+    println!("\n=== TC-COV-001: Scale and Rotation to Covariance Conversion ===\n");
+
+    // Test Case 1: Identity rotation with uniform scale
+    {
+        println!("Test 1 - Identity rotation, uniform scale:");
+
+        // Scale in log-space: exp([0, 0, 0]) = [1, 1, 1]
+        let log_scale = Vector3::new(0.0, 0.0, 0.0);
+        let rotation = UnitQuaternion::identity();
+
+        let gaussian = Gaussian::new(
+            Vector3::zeros(),
+            log_scale,
+            rotation,
+            0.0,
+            [[0.0; 3]; 16],
+        );
+
+        let covariance = gaussian.covariance_matrix();
+
+        // Expected: Identity matrix (since R=I, S=I)
+        let expected = Matrix3::identity();
+
+        println!("  Log scale: ({}, {}, {})", log_scale.x, log_scale.y, log_scale.z);
+        println!("  Actual scale: (1, 1, 1)");
+        println!("  Expected covariance:\n{}", expected);
+        println!("  Computed covariance:\n{}", covariance);
+
+        // Verify elements match
+        for i in 0..3 {
+            for j in 0..3 {
+                let cov_val: f32 = covariance[(i, j)];
+                let exp_val: f32 = expected[(i, j)];
+                let error: f32 = (cov_val - exp_val).abs();
+                assert!(error < TOLERANCE,
+                    "Covariance[{},{}] error too large: {} vs {} (error: {})",
+                    i, j, cov_val, exp_val, error);
+            }
+        }
+
+        // Verify symmetry
+        verify_symmetric(&covariance, TOLERANCE, "Test 1");
+
+        // Verify positive semi-definite
+        verify_positive_semidefinite(&covariance, "Test 1");
+
+        println!("  ✓ Identity rotation with uniform scale correct\n");
+    }
+
+    // Test Case 2: Identity rotation with non-uniform scale
+    {
+        println!("Test 2 - Identity rotation, non-uniform scale:");
+
+        // Scale in log-space: log([2, 3, 4])
+        let sx = 2.0f32;
+        let sy = 3.0f32;
+        let sz = 4.0f32;
+        let log_scale = Vector3::new(sx.ln(), sy.ln(), sz.ln());
+        let rotation = UnitQuaternion::identity();
+
+        let gaussian = Gaussian::new(
+            Vector3::zeros(),
+            log_scale,
+            rotation,
+            0.0,
+            [[0.0; 3]; 16],
+        );
+
+        let covariance = gaussian.covariance_matrix();
+
+        // Expected: diag([sx^2, sy^2, sz^2]) = diag([4, 9, 16])
+        let expected = Matrix3::from_diagonal(&Vector3::new(sx * sx, sy * sy, sz * sz));
+
+        println!("  Log scale: ({:.4}, {:.4}, {:.4})", log_scale.x, log_scale.y, log_scale.z);
+        println!("  Actual scale: ({}, {}, {})", sx, sy, sz);
+        println!("  Expected covariance:\n{}", expected);
+        println!("  Computed covariance:\n{}", covariance);
+
+        // Verify elements match
+        for i in 0..3 {
+            for j in 0..3 {
+                let cov_val: f32 = covariance[(i, j)];
+                let exp_val: f32 = expected[(i, j)];
+                let error: f32 = (cov_val - exp_val).abs();
+                assert!(error < TOLERANCE,
+                    "Covariance[{},{}] error too large: {} vs {} (error: {})",
+                    i, j, cov_val, exp_val, error);
+            }
+        }
+
+        // Verify symmetry
+        verify_symmetric(&covariance, TOLERANCE, "Test 2");
+
+        // Verify positive semi-definite
+        verify_positive_semidefinite(&covariance, "Test 2");
+
+        println!("  ✓ Identity rotation with non-uniform scale correct\n");
+    }
+
+    // Test Case 3: Rotation around Z-axis (90°) with uniform scale
+    {
+        println!("Test 3 - 90° Z-rotation, uniform scale:");
+
+        // Scale: [1, 1, 1]
+        let log_scale = Vector3::new(0.0, 0.0, 0.0);
+
+        // 90° rotation around Z-axis
+        let angle = std::f32::consts::FRAC_PI_2;
+        let axis = Vector3::z_axis();
+        let rotation = UnitQuaternion::from_axis_angle(&axis, angle);
+
+        let gaussian = Gaussian::new(
+            Vector3::zeros(),
+            log_scale,
+            rotation,
+            0.0,
+            [[0.0; 3]; 16],
+        );
+
+        let covariance = gaussian.covariance_matrix();
+
+        // Expected: R * I * R^T = R * R^T = I (since scale is uniform)
+        let expected = Matrix3::identity();
+
+        println!("  Rotation: 90° around Z-axis");
+        println!("  Expected covariance:\n{}", expected);
+        println!("  Computed covariance:\n{}", covariance);
+
+        // Verify elements match
+        for i in 0..3 {
+            for j in 0..3 {
+                let cov_val: f32 = covariance[(i, j)];
+                let exp_val: f32 = expected[(i, j)];
+                let error: f32 = (cov_val - exp_val).abs();
+                assert!(error < TOLERANCE,
+                    "Covariance[{},{}] error too large: {} vs {} (error: {})",
+                    i, j, cov_val, exp_val, error);
+            }
+        }
+
+        // Verify symmetry
+        verify_symmetric(&covariance, TOLERANCE, "Test 3");
+
+        // Verify positive semi-definite
+        verify_positive_semidefinite(&covariance, "Test 3");
+
+        println!("  ✓ Rotated uniform scale correct (result is isotropic)\n");
+    }
+
+    // Test Case 4: General rotation with non-uniform scale
+    {
+        println!("Test 4 - General rotation, non-uniform scale:");
+
+        // Scale: [2, 3, 4]
+        let sx = 2.0f32;
+        let sy = 3.0f32;
+        let sz = 4.0f32;
+        let log_scale = Vector3::new(sx.ln(), sy.ln(), sz.ln());
+
+        // 45° rotation around Y-axis
+        let angle = std::f32::consts::FRAC_PI_4;
+        let axis = Vector3::y_axis();
+        let rotation = UnitQuaternion::from_axis_angle(&axis, angle);
+
+        let gaussian = Gaussian::new(
+            Vector3::zeros(),
+            log_scale,
+            rotation,
+            0.0,
+            [[0.0; 3]; 16],
+        );
+
+        let covariance = gaussian.covariance_matrix();
+
+        // Expected: R * S * S^T * R^T
+        // Compute manually for validation
+        let rotation_matrix = rotation.to_rotation_matrix().into_inner();
+        let s_squared = Matrix3::from_diagonal(&Vector3::new(sx * sx, sy * sy, sz * sz));
+        let expected = rotation_matrix * s_squared * rotation_matrix.transpose();
+
+        println!("  Rotation: 45° around Y-axis");
+        println!("  Actual scale: ({}, {}, {})", sx, sy, sz);
+        println!("  Expected covariance:\n{}", expected);
+        println!("  Computed covariance:\n{}", covariance);
+
+        // Verify elements match
+        for i in 0..3 {
+            for j in 0..3 {
+                let cov_val: f32 = covariance[(i, j)];
+                let exp_val: f32 = expected[(i, j)];
+                let error: f32 = (cov_val - exp_val).abs();
+                assert!(error < TOLERANCE,
+                    "Covariance[{},{}] error too large: {} vs {} (error: {})",
+                    i, j, cov_val, exp_val, error);
+            }
+        }
+
+        // Verify symmetry
+        verify_symmetric(&covariance, TOLERANCE, "Test 4");
+
+        // Verify positive semi-definite
+        verify_positive_semidefinite(&covariance, "Test 4");
+
+        println!("  ✓ General rotation with non-uniform scale correct\n");
+    }
+
+    // Test Case 5: Complex rotation (Euler angles) with varying scales
+    {
+        println!("Test 5 - Complex rotation (Euler angles), varying scales:");
+
+        // Scale: [0.5, 1.5, 2.5]
+        let sx = 0.5f32;
+        let sy = 1.5f32;
+        let sz = 2.5f32;
+        let log_scale = Vector3::new(sx.ln(), sy.ln(), sz.ln());
+
+        // Rotation with Euler angles (30°, 45°, 60°)
+        let rotation = UnitQuaternion::from_euler_angles(
+            30.0f32.to_radians(),
+            45.0f32.to_radians(),
+            60.0f32.to_radians(),
+        );
+
+        let gaussian = Gaussian::new(
+            Vector3::zeros(),
+            log_scale,
+            rotation,
+            0.0,
+            [[0.0; 3]; 16],
+        );
+
+        let covariance = gaussian.covariance_matrix();
+
+        // Expected: R * S * S^T * R^T
+        let rotation_matrix = rotation.to_rotation_matrix().into_inner();
+        let s_squared = Matrix3::from_diagonal(&Vector3::new(sx * sx, sy * sy, sz * sz));
+        let expected = rotation_matrix * s_squared * rotation_matrix.transpose();
+
+        println!("  Rotation: Euler angles (30°, 45°, 60°)");
+        println!("  Actual scale: ({}, {}, {})", sx, sy, sz);
+        println!("  Expected covariance:\n{}", expected);
+        println!("  Computed covariance:\n{}", covariance);
+
+        // Verify elements match
+        for i in 0..3 {
+            for j in 0..3 {
+                let cov_val: f32 = covariance[(i, j)];
+                let exp_val: f32 = expected[(i, j)];
+                let error: f32 = (cov_val - exp_val).abs();
+                assert!(error < TOLERANCE,
+                    "Covariance[{},{}] error too large: {} vs {} (error: {})",
+                    i, j, cov_val, exp_val, error);
+            }
+        }
+
+        // Verify symmetry
+        verify_symmetric(&covariance, TOLERANCE, "Test 5");
+
+        // Verify positive semi-definite
+        verify_positive_semidefinite(&covariance, "Test 5");
+
+        println!("  ✓ Complex rotation with varying scales correct\n");
+    }
+
+    println!("✅ TC-COV-001: Covariance matrix construction verified");
+    println!("   Formula: Σ = R * S * S^T * R^T validated");
+    println!("   All matrices are symmetric (Σ = Σ^T)");
+    println!("   All matrices are positive semi-definite");
+    println!("   All elements match within {}", TOLERANCE);
+}
+
+/// Helper function to verify matrix is symmetric
+fn verify_symmetric(matrix: &Matrix3<f32>, tolerance: f32, test_name: &str) {
+    for i in 0..3 {
+        for j in 0..3 {
+            let diff = (matrix[(i, j)] - matrix[(j, i)]).abs();
+            assert!(diff < tolerance,
+                "{}: Matrix not symmetric at ({},{}): {} vs {}",
+                test_name, i, j, matrix[(i, j)], matrix[(j, i)]);
+        }
+    }
+}
+
+/// Helper function to verify matrix is positive semi-definite
+/// (all eigenvalues >= 0)
+fn verify_positive_semidefinite(matrix: &Matrix3<f32>, test_name: &str) {
+    // Compute eigenvalues
+    let eigen = matrix.symmetric_eigen();
+    let eigenvalues = eigen.eigenvalues;
+
+    println!("  Eigenvalues: ({:.6}, {:.6}, {:.6})",
+        eigenvalues[0], eigenvalues[1], eigenvalues[2]);
+
+    for (i, &eigenvalue) in eigenvalues.iter().enumerate() {
+        assert!(eigenvalue >= -1e-6,
+            "{}: Negative eigenvalue {} at index {}: {}",
+            test_name, i, i, eigenvalue);
+    }
 }
 
 #[cfg(test)]
