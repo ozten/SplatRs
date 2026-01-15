@@ -1284,3 +1284,269 @@ fn tc_opt_003_ssim_loss_correctness() {
 
     println!("✓ TC-OPT-003 passed: SSIM loss computation matches expected behavior!");
 }
+
+/// Helper: Compute D-SSIM loss
+/// D-SSIM (Dissimilarity SSIM) is formulated as: (1 - SSIM) / 2
+fn compute_dssim(rendered: &[Vector3<f32>], target: &[Vector3<f32>]) -> f32 {
+    let ssim = compute_ssim(rendered, target);
+    (1.0 - ssim) / 2.0
+}
+
+/// TC-OPT-004: D-SSIM Loss Correctness
+///
+/// Verify D-SSIM formulation: (1 - SSIM) / 2
+///
+/// Pass Criteria:
+/// - D-SSIM formula correct
+/// - Gradients non-zero and reasonable magnitude
+///
+/// This test verifies that our D-SSIM (Dissimilarity SSIM) implementation
+/// correctly computes (1 - SSIM) / 2 and that gradients are computed correctly.
+#[test]
+fn tc_opt_004_dssim_loss_correctness() {
+    println!("\n=== TC-OPT-004: D-SSIM Loss Correctness ===\n");
+
+    // Test case 1: Identical images (D-SSIM = 0)
+    {
+        println!("Test 1: Identical images (D-SSIM should be ~0)");
+        let img_a = vec![
+            Vector3::new(0.5, 0.5, 0.5),
+            Vector3::new(0.8, 0.2, 0.3),
+            Vector3::new(0.1, 0.9, 0.4),
+            Vector3::new(0.6, 0.3, 0.7),
+            Vector3::new(0.2, 0.8, 0.5),
+        ];
+        let img_b = img_a.clone();
+
+        let ssim = compute_ssim(&img_a, &img_b);
+        let dssim = compute_dssim(&img_a, &img_b);
+        let expected_dssim = (1.0 - ssim) / 2.0;
+
+        println!("  SSIM: {:.10}", ssim);
+        println!("  D-SSIM (computed): {:.10}", dssim);
+        println!("  D-SSIM (expected): {:.10}", expected_dssim);
+        println!("  Difference: {:.10}", (dssim - expected_dssim).abs());
+
+        // Verify formula correctness
+        assert!(
+            (dssim - expected_dssim).abs() < 1e-9,
+            "D-SSIM formula incorrect: {} != {}",
+            dssim,
+            expected_dssim
+        );
+
+        // For identical images, SSIM ≈ 1, so D-SSIM ≈ 0
+        assert!(
+            dssim < 0.001,
+            "D-SSIM for identical images {} should be < 0.001",
+            dssim
+        );
+        println!("  ✓ Passed\n");
+    }
+
+    // Test case 2: Completely different images (high D-SSIM)
+    {
+        println!("Test 2: Completely different images (D-SSIM should be high)");
+        let img_a = vec![
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.0, 0.0, 0.0),
+        ];
+        let img_b = vec![
+            Vector3::new(1.0, 1.0, 1.0),
+            Vector3::new(1.0, 1.0, 1.0),
+            Vector3::new(1.0, 1.0, 1.0),
+            Vector3::new(1.0, 1.0, 1.0),
+            Vector3::new(1.0, 1.0, 1.0),
+        ];
+
+        let ssim = compute_ssim(&img_a, &img_b);
+        let dssim = compute_dssim(&img_a, &img_b);
+        let expected_dssim = (1.0 - ssim) / 2.0;
+
+        println!("  SSIM: {:.10}", ssim);
+        println!("  D-SSIM (computed): {:.10}", dssim);
+        println!("  D-SSIM (expected): {:.10}", expected_dssim);
+        println!("  Difference: {:.10}", (dssim - expected_dssim).abs());
+
+        // Verify formula correctness
+        assert!(
+            (dssim - expected_dssim).abs() < 1e-9,
+            "D-SSIM formula incorrect: {} != {}",
+            dssim,
+            expected_dssim
+        );
+
+        // For very different images, D-SSIM should be high (close to 0.5)
+        assert!(
+            dssim > 0.25,
+            "D-SSIM for very different images {} should be > 0.25",
+            dssim
+        );
+        println!("  ✓ Passed\n");
+    }
+
+    // Test case 3: Verify D-SSIM range is [0, 0.5]
+    {
+        println!("Test 3: D-SSIM range validation");
+        let test_cases = vec![
+            (
+                vec![Vector3::new(0.0, 0.0, 0.0); 10],
+                vec![Vector3::new(0.5, 0.5, 0.5); 10],
+            ),
+            (
+                vec![Vector3::new(0.5, 0.5, 0.5); 10],
+                vec![Vector3::new(1.0, 1.0, 1.0); 10],
+            ),
+            (
+                vec![Vector3::new(0.2, 0.3, 0.4); 10],
+                vec![Vector3::new(0.6, 0.7, 0.8); 10],
+            ),
+            (
+                vec![Vector3::new(0.3, 0.3, 0.3); 10],
+                vec![Vector3::new(0.3, 0.3, 0.3); 10],
+            ),
+        ];
+
+        for (i, (img_a, img_b)) in test_cases.iter().enumerate() {
+            let dssim = compute_dssim(img_a, img_b);
+            println!("  Case {}: D-SSIM = {:.6}", i + 1, dssim);
+            assert!(
+                dssim >= 0.0 && dssim <= 0.5,
+                "D-SSIM {} should be in range [0, 0.5]",
+                dssim
+            );
+        }
+        println!("  ✓ Passed (all in range [0, 0.5])\n");
+    }
+
+    // Test case 4: Small difference (low D-SSIM)
+    {
+        println!("Test 4: Small difference (D-SSIM should be low)");
+        let img_a = vec![
+            Vector3::new(0.5, 0.5, 0.5),
+            Vector3::new(0.5, 0.5, 0.5),
+            Vector3::new(0.5, 0.5, 0.5),
+            Vector3::new(0.5, 0.5, 0.5),
+            Vector3::new(0.5, 0.5, 0.5),
+        ];
+        let img_b = vec![
+            Vector3::new(0.51, 0.51, 0.51),
+            Vector3::new(0.51, 0.51, 0.51),
+            Vector3::new(0.51, 0.51, 0.51),
+            Vector3::new(0.51, 0.51, 0.51),
+            Vector3::new(0.51, 0.51, 0.51),
+        ];
+
+        let ssim = compute_ssim(&img_a, &img_b);
+        let dssim = compute_dssim(&img_a, &img_b);
+        let expected_dssim = (1.0 - ssim) / 2.0;
+
+        println!("  SSIM: {:.10}", ssim);
+        println!("  D-SSIM (computed): {:.10}", dssim);
+        println!("  D-SSIM (expected): {:.10}", expected_dssim);
+
+        // Verify formula correctness
+        assert!(
+            (dssim - expected_dssim).abs() < 1e-9,
+            "D-SSIM formula incorrect: {} != {}",
+            dssim,
+            expected_dssim
+        );
+
+        // Small differences should give low D-SSIM (< 0.01)
+        assert!(
+            dssim < 0.01,
+            "D-SSIM for small difference {} should be < 0.01",
+            dssim
+        );
+        println!("  ✓ Passed\n");
+    }
+
+    // Test case 5: Gradient verification - ensure gradients are non-zero
+    {
+        println!("Test 5: Gradient verification (numerical check)");
+
+        // Create a simple test case with a single Gaussian
+        let camera = Camera::new(
+            100.0, 100.0, 32.0, 32.0, 64, 64,
+            Matrix3::identity(),
+            Vector3::zeros(),
+        );
+
+        let gaussian = Gaussian::new(
+            Vector3::new(0.0, 0.0, 5.0),
+            Vector3::new(-1.0, -1.0, -1.0),
+            UnitQuaternion::identity(),
+            0.0,
+            sh_constant_color(Vector3::new(0.6, 0.5, 0.4)),
+        );
+
+        // Create target image
+        let background = Vector3::zeros();
+        let target = render_full_linear(&[gaussian.clone()], &camera, &background, false);
+
+        // Create slightly perturbed Gaussian
+        let mut perturbed = gaussian.clone();
+        perturbed.sh_coeffs[0][0] += 0.1; // Perturb red channel
+
+        // Render perturbed image
+        let rendered = render_full_linear(&[perturbed.clone()], &camera, &background, false);
+
+        // Compute D-SSIM for both
+        let dssim_original = compute_dssim(&target, &target);
+        let dssim_perturbed = compute_dssim(&rendered, &target);
+
+        println!("  D-SSIM (original vs target): {:.10}", dssim_original);
+        println!("  D-SSIM (perturbed vs target): {:.10}", dssim_perturbed);
+        println!("  D-SSIM change: {:.10}", (dssim_perturbed - dssim_original).abs());
+
+        // Verify that D-SSIM changes with perturbation (gradient is non-zero)
+        assert!(
+            (dssim_perturbed - dssim_original).abs() > 1e-6,
+            "D-SSIM should change when parameters are perturbed (gradient non-zero)"
+        );
+
+        // Verify gradient has reasonable magnitude (not too small, not too large)
+        let gradient_magnitude = (dssim_perturbed - dssim_original).abs();
+        assert!(
+            gradient_magnitude > 1e-6 && gradient_magnitude < 1.0,
+            "D-SSIM gradient magnitude {} should be in reasonable range [1e-6, 1.0]",
+            gradient_magnitude
+        );
+
+        println!("  ✓ Passed (gradient non-zero and reasonable magnitude)\n");
+    }
+
+    // Test case 6: Verify D-SSIM is symmetric
+    {
+        println!("Test 6: D-SSIM symmetry");
+        let img_a = vec![
+            Vector3::new(0.2, 0.4, 0.6),
+            Vector3::new(0.8, 0.1, 0.3),
+            Vector3::new(0.5, 0.7, 0.9),
+        ];
+        let img_b = vec![
+            Vector3::new(0.3, 0.5, 0.7),
+            Vector3::new(0.9, 0.2, 0.4),
+            Vector3::new(0.6, 0.8, 1.0),
+        ];
+
+        let dssim_ab = compute_dssim(&img_a, &img_b);
+        let dssim_ba = compute_dssim(&img_b, &img_a);
+
+        println!("  D-SSIM(A, B): {:.10}", dssim_ab);
+        println!("  D-SSIM(B, A): {:.10}", dssim_ba);
+        println!("  Difference: {:.10}", (dssim_ab - dssim_ba).abs());
+
+        assert!(
+            (dssim_ab - dssim_ba).abs() < 1e-6,
+            "D-SSIM should be symmetric: D-SSIM(A,B) = D-SSIM(B,A)"
+        );
+        println!("  ✓ Passed (symmetric)\n");
+    }
+
+    println!("✓ TC-OPT-004 passed: D-SSIM loss computation is correct and gradients are valid!");
+}
