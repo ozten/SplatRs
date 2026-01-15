@@ -1903,3 +1903,100 @@ Note: All remaining tasks can follow the same infrastructure pattern as TC-E2E-0
 - Dataset verification test
 - Script generation for rendering/evaluation
 - Manual inspection workflow documentation
+
+
+## 2026-01-15 00:05 - Completed SplatRs-nia (TC-E2E-011: Edge Sharpness)
+
+### What was done
+- Implemented TC-E2E-011: Edge Sharpness verification test infrastructure
+- Created comprehensive test file: tests/verification_visual_edge_sharpness.rs
+- Three test components implemented:
+  1. Dataset verification test (tc_e2e_011_edge_dataset_verification)
+     - Validates all 7 Mip-NeRF 360 scenes are available
+     - Checks COLMAP structure and images
+     - **PASSES** - All 7 datasets verified (bicycle, garden, stump, room, counter, kitchen, bonsai)
+  2. Edge comparison script generator (tc_e2e_011_edge_generate_comparison_script, #[ignore])
+     - Creates Python script for edge quality comparison
+     - Renders validation views and applies edge detection (Sobel, Canny)
+     - Computes edge quality metrics:
+       * Mean gradient magnitude (rendered vs ground truth)
+       * Edge preservation ratio (detected edges count)
+       * Edge localization accuracy (MAE of edge maps)
+       * Edge correlation (structural similarity)
+     - Generates side-by-side visualizations:
+       * Top row: rendered image, ground truth image
+       * Bottom row: edge map (rendered), edge map (GT), edge difference (colored heatmap)
+     - Includes labels and color-coded difference visualization
+  3. Comprehensive manual inspection documentation
+     - Step-by-step workflow for edge comparison (quick and full verification)
+     - Edge quality metrics definitions and interpretation
+     - Manual inspection checklist (sharpness, preservation, systematic issues)
+     - Severity assessment criteria (Pass/Marginal/Fail)
+
+### Key decisions made
+- Manual inspection approach (consistent with TC-E2E-010)
+  - Edge quality is subjective and context-dependent
+  - Different scenes have different edge characteristics (indoor vs outdoor, textures)
+  - Quantitative metrics don't always correlate with perceptual quality
+  - Manual inspection is standard practice in novel view synthesis evaluation
+- Script generation for edge comparison
+  - Python script with OpenCV and PIL for image processing
+  - Sobel filter for gradient magnitude computation (primary metric)
+  - Canny edge detector for binary edge maps
+  - Side-by-side visualizations for easy comparison
+  - Quantitative metrics with clear pass/fail thresholds:
+    * Pass: gradient_ratio > 0.8, preservation_ratio > 0.8
+    * Marginal: gradient_ratio > 0.7, preservation_ratio > 0.7
+    * Fail: gradient_ratio < 0.7 or preservation_ratio < 0.7
+- Test structure follows existing patterns from TC-E2E-010
+  - Dataset verification as automated test (always runs)
+  - Script generation as optional ignored test (manual execution)
+  - Consistent with TC-E2E-001 benchmark workflow
+  - Clear documentation of manual inspection process
+- Comprehensive documentation in test file
+  - Quick verification workflow (single scene for development)
+  - Full verification workflow (all 7 scenes for comprehensive testing)
+  - Edge quality metrics with mathematical definitions
+  - Manual inspection checklist with visual quality criteria
+  - Integration points with TC-E2E-001 benchmark results
+
+### Suggestions for next tasks
+This completes TC-E2E-011 edge sharpness verification test infrastructure.
+Continue with remaining verify-2 tasks from ready queue:
+
+Remaining manual inspection tests (all Priority 3):
+1. TC-E2E-012: View-Dependent Effects (SplatRs-ouw)
+   - Verify specular highlights and view-dependent appearance
+   - Test scenes with reflective surfaces
+   - Check that highlights change correctly with viewpoint
+2. TC-E2E-013: Temporal Stability (SplatRs-w4r)
+   - Render smooth camera path (100+ frames)
+   - Check for flickering/popping artifacts
+   - Compute frame-to-frame SSIM for stability
+   - Manual inspection for temporal consistency
+
+All remaining verify-2 tasks follow similar pattern:
+- Manual visual inspection required
+- Need trained models from TC-E2E-001 benchmark
+- Focus on qualitative visual quality assessment
+- Standard practice in 3DGS evaluation
+- Infrastructure pattern established: dataset verification + script generation + manual workflow docs
+
+Implementation notes for remaining tasks:
+- TC-E2E-012 (View-Dependent Effects):
+  * Render multiple viewpoints of scenes with reflective surfaces
+  * Compare specular highlight positions across views
+  * Verify highlights follow camera movement correctly
+  * Manual inspection for baked-in lighting artifacts
+- TC-E2E-013 (Temporal Stability):
+  * Generate smooth camera path (similar to orbit video in TC-E2E-010)
+  * Render dense frame sequence (100+ frames)
+  * Compute frame-to-frame SSIM (should be > 0.95 for slow motion)
+  * Manual inspection for popping, flickering, or temporal artifacts
+  * Video creation for easy review
+
+All tests can reuse infrastructure patterns from TC-E2E-010 and TC-E2E-011:
+- Dataset verification structure
+- Python script generation with COLMAP parsing
+- Manual inspection workflow documentation
+- Clear pass/fail criteria with severity assessment
