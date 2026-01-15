@@ -870,6 +870,32 @@ fn verify_symmetric(matrix: &Matrix3<f32>, tolerance: f32, test_name: &str) {
     }
 }
 
+/// Helper function to verify matrix is symmetric with relative tolerance
+/// This is useful for matrices with very large or very small values
+fn verify_symmetric_relative(matrix: &Matrix3<f32>, rel_tolerance: f32, test_name: &str) {
+    for i in 0..3 {
+        for j in 0..3 {
+            let val1 = matrix[(i, j)];
+            let val2 = matrix[(j, i)];
+            let max_abs = val1.abs().max(val2.abs());
+
+            // For values near zero, use absolute tolerance
+            if max_abs < 1e-10 {
+                let diff = (val1 - val2).abs();
+                assert!(diff < 1e-10,
+                    "{}: Matrix not symmetric at ({},{}): {} vs {} (near-zero values)",
+                    test_name, i, j, val1, val2);
+            } else {
+                // For larger values, use relative tolerance
+                let rel_diff = (val1 - val2).abs() / max_abs;
+                assert!(rel_diff < rel_tolerance,
+                    "{}: Matrix not symmetric at ({},{}): {} vs {} (relative diff: {:.3e})",
+                    test_name, i, j, val1, val2, rel_diff);
+            }
+        }
+    }
+}
+
 /// Helper function to verify matrix is positive semi-definite
 /// (all eigenvalues >= 0)
 fn verify_positive_semidefinite(matrix: &Matrix3<f32>, test_name: &str) {
@@ -884,6 +910,29 @@ fn verify_positive_semidefinite(matrix: &Matrix3<f32>, test_name: &str) {
         assert!(eigenvalue >= -1e-6,
             "{}: Negative eigenvalue {} at index {}: {}",
             test_name, i, i, eigenvalue);
+    }
+}
+
+/// Helper function to verify matrix is positive semi-definite with relaxed tolerance
+/// For extreme scale combinations, floating-point errors can produce small negative eigenvalues
+fn verify_positive_semidefinite_relaxed(matrix: &Matrix3<f32>, test_name: &str) {
+    // Compute eigenvalues
+    let eigen = matrix.symmetric_eigen();
+    let eigenvalues = eigen.eigenvalues;
+
+    println!("  Eigenvalues: ({:.6}, {:.6}, {:.6})",
+        eigenvalues[0], eigenvalues[1], eigenvalues[2]);
+
+    // For extreme scales, allow small negative eigenvalues due to f32 precision limits
+    // The relative error should be small compared to the largest eigenvalue
+    let max_eigenvalue = eigenvalues.iter().map(|&e| e.abs()).fold(0.0f32, f32::max);
+
+    for (i, &eigenvalue) in eigenvalues.iter().enumerate() {
+        // Allow negative eigenvalues if they're small relative to the largest eigenvalue
+        let rel_error = eigenvalue.abs() / max_eigenvalue;
+        assert!(eigenvalue >= 0.0 || rel_error < 1e-4,
+            "{}: Eigenvalue {} is too negative: {} (relative error: {:.3e})",
+            test_name, i, eigenvalue, rel_error);
     }
 }
 
@@ -1827,5 +1876,324 @@ fn tc_inp_011_initial_gaussian_parameter_bounds() {
     assert_eq!(quaternion_errors, 0, "Found {} Gaussians with unnormalized quaternions", quaternion_errors);
 
     println!("\n✓ All initial Gaussian parameters are within valid ranges");
+}
+
+/// TC-COV-003: Verify numerical stability with extreme scale values.
+///
+/// Pass Criteria:
+/// - No NaN or Inf values in covariance matrices
+/// - Matrices remain symmetric positive semi-definite
+/// - Inverse covariance computable or gracefully handled
+///
+/// This test verifies that the implementation handles extreme scale values (very small and very large)
+/// without numerical issues.
+#[test]
+fn tc_cov_003_numerical_stability_extreme_scales() {
+    use nalgebra::{Matrix3, UnitQuaternion, Vector3};
+    use sugar_rs::core::Gaussian;
+
+    const TOLERANCE: f32 = 1e-6;
+
+    println!("\n=== TC-COV-003: Numerical Stability with Extreme Scales ===\n");
+
+    // Test Case 1: Very small scales (1e-7)
+    {
+        println!("Test 1 - Very small scales (1e-7):");
+
+        // Scale in log-space: log(1e-7) ≈ -16.1
+        let small_scale = 1e-7f32;
+        let log_scale = Vector3::new(small_scale.ln(), small_scale.ln(), small_scale.ln());
+        let rotation = UnitQuaternion::identity();
+
+        let gaussian = Gaussian::new(
+            Vector3::zeros(),
+            log_scale,
+            rotation,
+            0.0,
+            [[0.0; 3]; 16],
+        );
+
+        let covariance = gaussian.covariance_matrix();
+
+        println!("  Log scale: ({:.6}, {:.6}, {:.6})", log_scale.x, log_scale.y, log_scale.z);
+        println!("  Actual scale: ({:.3e}, {:.3e}, {:.3e})", small_scale, small_scale, small_scale);
+        println!("  Covariance:\n{}", covariance);
+
+        // 1. Verify no NaN or Inf
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!(covariance[(i, j)].is_finite(),
+                    "Covariance[{},{}] is NaN or Inf: {}", i, j, covariance[(i, j)]);
+            }
+        }
+        println!("  ✓ No NaN or Inf values");
+
+        // 2. Verify symmetry
+        verify_symmetric(&covariance, TOLERANCE, "Test 1");
+        println!("  ✓ Matrix is symmetric");
+
+        // 3. Verify positive semi-definite
+        verify_positive_semidefinite(&covariance, "Test 1");
+        println!("  ✓ Matrix is positive semi-definite");
+
+        // 4. Attempt to compute inverse (may fail gracefully for very small scales)
+        // Expected covariance ≈ (1e-7)² * I = 1e-14 * I
+        // Inverse should be ≈ 1e14 * I (very large but computable)
+        match covariance.try_inverse() {
+            Some(inv) => {
+                println!("  ✓ Inverse computable");
+                println!("  Inverse diagonal elements: ({:.3e}, {:.3e}, {:.3e})",
+                    inv[(0, 0)], inv[(1, 1)], inv[(2, 2)]);
+
+                // Verify inv is also symmetric and has no NaN/Inf
+                for i in 0..3 {
+                    for j in 0..3 {
+                        assert!(inv[(i, j)].is_finite(),
+                            "Inverse[{},{}] is NaN or Inf: {}", i, j, inv[(i, j)]);
+                    }
+                }
+            }
+            None => {
+                println!("  ⚠ Inverse not computable (acceptable for very small scales)");
+            }
+        }
+
+        println!();
+    }
+
+    // Test Case 2: Very large scales (1e6)
+    {
+        println!("Test 2 - Very large scales (1e6):");
+
+        // Scale in log-space: log(1e6) ≈ 13.8
+        let large_scale = 1e6f32;
+        let log_scale = Vector3::new(large_scale.ln(), large_scale.ln(), large_scale.ln());
+        let rotation = UnitQuaternion::identity();
+
+        let gaussian = Gaussian::new(
+            Vector3::zeros(),
+            log_scale,
+            rotation,
+            0.0,
+            [[0.0; 3]; 16],
+        );
+
+        let covariance = gaussian.covariance_matrix();
+
+        println!("  Log scale: ({:.6}, {:.6}, {:.6})", log_scale.x, log_scale.y, log_scale.z);
+        println!("  Actual scale: ({:.3e}, {:.3e}, {:.3e})", large_scale, large_scale, large_scale);
+        println!("  Covariance:\n{}", covariance);
+
+        // 1. Verify no NaN or Inf
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!(covariance[(i, j)].is_finite(),
+                    "Covariance[{},{}] is NaN or Inf: {}", i, j, covariance[(i, j)]);
+            }
+        }
+        println!("  ✓ No NaN or Inf values");
+
+        // 2. Verify symmetry
+        // Use larger tolerance for large scale values due to floating-point errors
+        let large_tolerance = 1e-3;
+        verify_symmetric(&covariance, large_tolerance, "Test 2");
+        println!("  ✓ Matrix is symmetric (tolerance: {})", large_tolerance);
+
+        // 3. Verify positive semi-definite
+        verify_positive_semidefinite(&covariance, "Test 2");
+        println!("  ✓ Matrix is positive semi-definite");
+
+        // 4. Attempt to compute inverse
+        // Expected covariance ≈ (1e6)² * I = 1e12 * I
+        // Inverse should be ≈ 1e-12 * I (very small but computable)
+        match covariance.try_inverse() {
+            Some(inv) => {
+                println!("  ✓ Inverse computable");
+                println!("  Inverse diagonal elements: ({:.3e}, {:.3e}, {:.3e})",
+                    inv[(0, 0)], inv[(1, 1)], inv[(2, 2)]);
+
+                // Verify inv is also symmetric and has no NaN/Inf
+                for i in 0..3 {
+                    for j in 0..3 {
+                        assert!(inv[(i, j)].is_finite(),
+                            "Inverse[{},{}] is NaN or Inf: {}", i, j, inv[(i, j)]);
+                    }
+                }
+            }
+            None => {
+                println!("  ⚠ Inverse not computable (acceptable for very large scales)");
+            }
+        }
+
+        println!();
+    }
+
+    // Test Case 3: Mixed extreme scales (1e-7, 1.0, 1e6)
+    {
+        println!("Test 3 - Mixed extreme scales (1e-7, 1.0, 1e6):");
+
+        // One very small, one normal, one very large
+        let sx = 1e-7f32;
+        let sy = 1.0f32;
+        let sz = 1e6f32;
+        let log_scale = Vector3::new(sx.ln(), sy.ln(), sz.ln());
+        let rotation = UnitQuaternion::identity();
+
+        let gaussian = Gaussian::new(
+            Vector3::zeros(),
+            log_scale,
+            rotation,
+            0.0,
+            [[0.0; 3]; 16],
+        );
+
+        let covariance = gaussian.covariance_matrix();
+
+        println!("  Log scale: ({:.6}, {:.6}, {:.6})", log_scale.x, log_scale.y, log_scale.z);
+        println!("  Actual scale: ({:.3e}, {:.3e}, {:.3e})", sx, sy, sz);
+        println!("  Covariance:\n{}", covariance);
+
+        // 1. Verify no NaN or Inf
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!(covariance[(i, j)].is_finite(),
+                    "Covariance[{},{}] is NaN or Inf: {}", i, j, covariance[(i, j)]);
+            }
+        }
+        println!("  ✓ No NaN or Inf values");
+
+        // 2. Verify symmetry
+        let mixed_tolerance = 1e-3;
+        verify_symmetric(&covariance, mixed_tolerance, "Test 3");
+        println!("  ✓ Matrix is symmetric (tolerance: {})", mixed_tolerance);
+
+        // 3. Verify positive semi-definite
+        verify_positive_semidefinite(&covariance, "Test 3");
+        println!("  ✓ Matrix is positive semi-definite");
+
+        // 4. Verify diagonal values match expected
+        // For identity rotation: Σ should be diagonal with Σ_ii = scale_i²
+        let expected_xx = sx * sx;
+        let expected_yy = sy * sy;
+        let expected_zz = sz * sz;
+
+        // Use relative tolerance for mixed scales
+        let rel_tolerance = 1e-5;
+        assert!((covariance[(0, 0)] - expected_xx).abs() / expected_xx < rel_tolerance,
+            "Covariance[0,0] mismatch: {} vs {}", covariance[(0, 0)], expected_xx);
+        assert!((covariance[(1, 1)] - expected_yy).abs() / expected_yy < rel_tolerance,
+            "Covariance[1,1] mismatch: {} vs {}", covariance[(1, 1)], expected_yy);
+        assert!((covariance[(2, 2)] - expected_zz).abs() / expected_zz < rel_tolerance,
+            "Covariance[2,2] mismatch: {} vs {}", covariance[(2, 2)], expected_zz);
+
+        println!("  ✓ Diagonal values match expected: ({:.3e}, {:.3e}, {:.3e})",
+            expected_xx, expected_yy, expected_zz);
+
+        println!();
+    }
+
+    // Test Case 4: Extreme scales with non-identity rotation
+    {
+        println!("Test 4 - Extreme scales (1e-6, 1.0, 1e5) with 45° Y-rotation:");
+
+        let sx = 1e-6f32;
+        let sy = 1.0f32;
+        let sz = 1e5f32;
+        let log_scale = Vector3::new(sx.ln(), sy.ln(), sz.ln());
+
+        // 45° rotation around Y-axis
+        let angle = std::f32::consts::FRAC_PI_4;
+        let axis = Vector3::y_axis();
+        let rotation = UnitQuaternion::from_axis_angle(&axis, angle);
+
+        let gaussian = Gaussian::new(
+            Vector3::zeros(),
+            log_scale,
+            rotation,
+            0.0,
+            [[0.0; 3]; 16],
+        );
+
+        let covariance = gaussian.covariance_matrix();
+
+        println!("  Log scale: ({:.6}, {:.6}, {:.6})", log_scale.x, log_scale.y, log_scale.z);
+        println!("  Actual scale: ({:.3e}, {:.3e}, {:.3e})", sx, sy, sz);
+        println!("  Rotation: 45° around Y-axis");
+        println!("  Covariance:\n{}", covariance);
+
+        // 1. Verify no NaN or Inf
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!(covariance[(i, j)].is_finite(),
+                    "Covariance[{},{}] is NaN or Inf: {}", i, j, covariance[(i, j)]);
+            }
+        }
+        println!("  ✓ No NaN or Inf values");
+
+        // 2. Verify symmetry with relative tolerance for extreme values
+        // For large values like 5e9, absolute tolerance needs to scale
+        // Use relative tolerance instead
+        verify_symmetric_relative(&covariance, 1e-4, "Test 4");
+        println!("  ✓ Matrix is symmetric (relative tolerance: 1e-4)");
+
+        // 3. Verify positive semi-definite (relaxed for extreme scales)
+        // With extreme scale differences (1e-6 to 1e5), f32 precision limits
+        // can cause small negative eigenvalues due to floating-point errors
+        verify_positive_semidefinite_relaxed(&covariance, "Test 4");
+        println!("  ✓ Matrix is positive semi-definite (within f32 precision limits)");
+
+        println!();
+    }
+
+    // Test Case 5: Boundary cases - scales approaching zero and infinity
+    {
+        println!("Test 5 - Boundary cases (1e-10, 1.0, 1e10):");
+
+        let sx = 1e-10f32;
+        let sy = 1.0f32;
+        let sz = 1e10f32;
+        let log_scale = Vector3::new(sx.ln(), sy.ln(), sz.ln());
+        let rotation = UnitQuaternion::identity();
+
+        let gaussian = Gaussian::new(
+            Vector3::zeros(),
+            log_scale,
+            rotation,
+            0.0,
+            [[0.0; 3]; 16],
+        );
+
+        let covariance = gaussian.covariance_matrix();
+
+        println!("  Log scale: ({:.6}, {:.6}, {:.6})", log_scale.x, log_scale.y, log_scale.z);
+        println!("  Actual scale: ({:.3e}, {:.3e}, {:.3e})", sx, sy, sz);
+        println!("  Covariance diagonal: ({:.3e}, {:.3e}, {:.3e})",
+            covariance[(0, 0)], covariance[(1, 1)], covariance[(2, 2)]);
+
+        // 1. Verify no NaN or Inf
+        for i in 0..3 {
+            for j in 0..3 {
+                assert!(covariance[(i, j)].is_finite(),
+                    "Covariance[{},{}] is NaN or Inf: {}", i, j, covariance[(i, j)]);
+            }
+        }
+        println!("  ✓ No NaN or Inf values");
+
+        // 2. Verify symmetry with relative tolerance for extreme values
+        verify_symmetric_relative(&covariance, 1e-3, "Test 5");
+        println!("  ✓ Matrix is symmetric (relative tolerance: 1e-3)");
+
+        // 3. Verify positive semi-definite (relaxed for extreme scales)
+        verify_positive_semidefinite_relaxed(&covariance, "Test 5");
+        println!("  ✓ Matrix is positive semi-definite (within f32 precision limits)");
+
+        println!();
+    }
+
+    println!("✅ TC-COV-003: Numerical stability with extreme scales verified");
+    println!("   Scales tested: 1e-10 to 1e10");
+    println!("   No NaN or Inf values in any covariance matrix");
+    println!("   All matrices remain symmetric positive semi-definite");
+    println!("   Implementation handles extreme scales gracefully");
 }
 
