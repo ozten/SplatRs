@@ -2295,3 +2295,60 @@ Next steps for training quality:
    - How to balance densification with memory constraints
 
 The fix is ready for testing. The theory is sound and the implementation is straightforward.
+
+## [2026-01-15 15:40] Completed SplatRs-2cg: TC-E2E-010-1: Create orbit path rendering script
+
+### What was done
+- Created `scripts/render_orbit_floater_detection.py` for TC-E2E-010 floater detection verification
+- Implemented 360° orbital camera path generation with configurable parameters:
+  - Elevation angle support (0°, 30°, 90°) for different viewing perspectives
+  - Auto-computes orbit radius from COLMAP point cloud (90th percentile distance * 1.5)
+  - Generates dense frame sequences (default 360 frames = 1 frame per degree)
+  - Saves camera path as JSON for reference and debugging
+- Script structure mirrors existing verification scripts (temporal stability, view-dependent effects)
+- Includes comprehensive documentation for manual floater inspection workflow
+- Placeholder rendering logic ready for sugar-render custom pose API
+
+### Key decisions made
+- Used elevation angle instead of separate height parameter for more intuitive camera positioning
+  - 0° = ground level orbit (standard horizontal view)
+  - 30° = elevated orbit (better visibility of top-down floaters)
+  - 90° = top-down view (see floaters from above)
+- Auto-compute radius from scene point cloud rather than requiring manual specification
+  - Uses 90th percentile distance to avoid outliers
+  - Multiplies by 1.5 to ensure camera is outside scene bounds
+- Save camera path as JSON to enable:
+  - Debugging of camera positions
+  - Reuse of paths for depth map rendering
+  - Analysis of coverage and viewing angles
+- Follow consistent pattern with other visual verification scripts:
+  - COLMAP point cloud parsing for scene center
+  - Placeholder rendering logic (awaits sugar-render custom pose support)
+  - Comprehensive usage documentation and manual inspection checklist
+
+### Verification
+- Test file `tests/verification_visual_floater.rs` already exists with dataset verification
+- Dataset verification test passes for all 7 Mip-NeRF 360 scenes
+- Script generation test `tc_e2e_010_floater_generate_orbit_script` generates `render_orbit_video.py`
+- New improved script `render_orbit_floater_detection.py` committed separately
+
+### Suggestions for next tasks
+Continue with TC-E2E-010 floater detection subtasks:
+1. **SplatRs-zp1: TC-E2E-010-2**: Add depth map output to sugar-render
+   - Extend rendering pipeline to output per-pixel depth values
+   - Compute depth as weighted sum of Gaussian depths (similar to color)
+   - Normalize depth values for visualization
+   - Add depth output flag to sugar-render CLI
+2. **SplatRs-sae: TC-E2E-010-3**: Create depth map orbit rendering script
+   - Reuse camera path generation from orbit rendering script
+   - Render depth maps instead of RGB images
+   - Visualize depth discontinuities for floater detection
+   - Generate side-by-side RGB+depth video for comparison
+3. **SplatRs-bm6: TC-E2E-010-4**: Floater detection integration test and docs
+   - Create end-to-end workflow documentation
+   - Add test that verifies both scripts work together
+   - Document severity assessment criteria
+   - Provide examples of common floater patterns
+
+The orbit rendering script infrastructure is complete. The next critical step is extending
+sugar-render to support custom camera poses (needed by all manual inspection tests).
