@@ -1230,3 +1230,53 @@ Then proceed to end-to-end benchmark tests:
 1. TC-OPT-012: NeRF Synthetic Benchmark (SplatRs-diu)
 2. TC-E2E-001: Mip-NeRF 360 Benchmark (SplatRs-7ib)
 
+## 2026-01-14 [Completed] SplatRs-2ba (TC-ADC-010)
+
+### What was done
+- Implemented TC-ADC-010: Opacity-Based Pruning verification test
+- Added comprehensive test to tests/verification_phase3_optimization.rs (310 lines)
+- Test validates that Gaussians with opacity below threshold are correctly removed during pruning
+- Test setup:
+  - 3 target Gaussians (red, green, blue) at distinct positions
+  - 7 initial Gaussians: 3 useful (positioned near targets) + 4 useless (far from targets)
+  - Useless Gaussians initialized with very low opacity (sigmoid(-6.0) ≈ 0.0025)
+  - 100 iterations with pruning every 25 iterations
+  - Opacity threshold: 0.005 (Gaussians below this are pruned)
+- Optimization approach:
+  - Gradient descent with color LR = 5.0, opacity LR = 0.02
+  - Render + compute gradients + update parameters each iteration
+  - Pruning filter: retain only Gaussians with actual_opacity() >= threshold
+- Test results show successful pruning:
+  - Pruned 4 out of 7 Gaussians in first pruning event (iteration 25)
+  - Final Gaussian count: 3 (useful Gaussians retained)
+  - All remaining Gaussians have opacity >= 0.622 (well above 0.005 threshold)
+  - Reconstruction quality maintained: PSNR = 36.86 dB (requirement: > 25 dB)
+  - Final loss: 0.000206
+
+### Key decisions made
+- Initialized useless Gaussians with opacity = -6.0 in logit-space
+  - sigmoid(-6.0) ≈ 0.0025, which is below the 0.005 threshold
+  - Initial attempt with opacity = 0.0 failed: sigmoid(0.0) = 0.5 (too high)
+  - Low initial opacity ensures these Gaussians will be pruned
+- Positioned useless Gaussians far from target regions (-4, ±2, 5) vs targets at (-2, 0, 5), (0, 0, 5), (2, 0, 5)
+  - Ensures they contribute minimally to reconstruction
+  - Optimization won't increase their opacity significantly
+- Used opacity threshold of 0.005 (0.5% opacity)
+  - Low enough to remove truly useless Gaussians
+  - High enough to avoid numerical instability
+- Test validates four pass criteria:
+  1. Low-opacity Gaussians removed (4 pruned ✓)
+  2. Gaussian count reduced (7 → 3 ✓)
+  3. Remaining Gaussians meet threshold (min opacity = 0.622 ✓)
+  4. Reconstruction quality maintained (PSNR = 36.86 dB ✓)
+- Test structure follows existing Phase 3 verification pattern for consistency
+- Self-contained test with synthetic data, no external dependencies required
+
+### Suggestions for next tasks
+Continue with adaptive densification and control verification tests:
+1. TC-ADC-011: Scale-Based Pruning (SplatRs-a8q)
+
+Then proceed to end-to-end benchmark tests:
+1. TC-OPT-012: NeRF Synthetic Benchmark (SplatRs-diu)
+2. TC-E2E-001: Mip-NeRF 360 Benchmark (SplatRs-7ib)
+
