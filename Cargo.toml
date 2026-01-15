@@ -110,6 +110,9 @@ rand = "0.8"
 # For temporary files in tests
 tempfile = "3.8"
 
+# PNG encoding for test image output
+png = "0.17"
+
 [profile.dev]
 # Faster debug builds (helpful for iterative development)
 opt-level = 1
