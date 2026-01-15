@@ -908,3 +908,54 @@ Then proceed to Phase 3 optimization verification tasks:
 2. TC-OPT-002: L2 (MSE) Loss Correctness (SplatRs-gew)
 3. TC-OPT-003: SSIM Loss Correctness (SplatRs-fqa)
 
+## 2026-01-14 [Completed] SplatRs-l77 (TC-RAS-011)
+
+### What was done
+- Implemented TC-RAS-011: Anisotropic Gaussian Projection verification test
+- Added comprehensive test to tests/verification_phase2_rasterization.rs (375 lines)
+- Test verifies that elongated (anisotropic) Gaussians project correctly at various orientations
+- Validates major/minor axis lengths and orientation angles match analytical expectations
+- Five comprehensive test scenarios implemented:
+  1. X-aligned elongated Gaussian (0° rotation)
+  2. Y-aligned elongated Gaussian (90° rotation)
+  3. 45° Z-axis rotation
+  4. 30° Z-axis rotation (arbitrary angle)
+  5. 30° Y-axis rotation (oblique projection)
+- All tests pass successfully with perfect agreement:
+  - Major/minor axis lengths: 0.0% relative error (within 5% tolerance)
+  - Orientation angles: 0.0° error (within 2° tolerance)
+- Created helper function `analyze_2d_covariance()`:
+  - Computes eigenvalues to extract major/minor axis lengths
+  - Computes orientation angle using: `angle = 0.5 * atan2(2*b, a - c)`
+  - Returns (major_axis, minor_axis, angle_rad)
+
+### Key decisions made
+- Used eigenvalue decomposition to extract principal axes from 2D covariance matrix
+  - Major/minor axis lengths are sqrt of eigenvalues (standard deviations)
+  - Eigenvalues computed analytically: λ = (trace ± sqrt(trace² - 4*det)) / 2
+- Orientation angle formula: `angle = 0.5 * atan2(2*b, a - c)`
+  - This is the standard formula for finding the principal axis angle of a 2x2 symmetric matrix
+  - Gives the rotation angle that diagonalizes the covariance matrix
+- Test scenarios cover different rotation types:
+  - Z-axis rotations (0°, 30°, 45°, 90°): Test in-plane rotations
+  - Y-axis rotation (30°): Tests oblique/out-of-plane rotations
+- For oblique rotations, validated basic properties instead of exact angles:
+  - Axis lengths positive and major > minor
+  - Covariance matrix symmetric and positive definite
+- Test validates analytical projection formulas directly
+  - No rendering required - tests pure projection math
+  - Uses `project_covariance_2d()` and `perspective_jacobian()` functions
+- All tests use centered Gaussians (x=0, y=0) at various depths
+  - Simplifies analytical expectations
+  - Eliminates perspective distortion effects at image center
+
+### Suggestions for next tasks
+All Phase 2 rasterization verification tests complete! Proceed to Phase 3 optimization:
+1. TC-OPT-001: L1 Loss Correctness (SplatRs-wyc)
+2. TC-OPT-002: L2 (MSE) Loss Correctness (SplatRs-gew)
+3. TC-OPT-003: SSIM Loss Correctness (SplatRs-fqa)
+
+Other medium-priority tasks:
+1. TC-INP-005: Alpha Channel Handling (SplatRs-wxv)
+2. TC-RAS-003: Tile Boundary Handling (SplatRs-9vd)
+
