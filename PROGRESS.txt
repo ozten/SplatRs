@@ -1046,3 +1046,47 @@ Then proceed to densification tests:
 1. TC-ADC-001: Clone Trigger Condition (SplatRs-6sj)
 2. TC-ADC-002: Split Trigger Condition (SplatRs-4qa)
 
+## 2026-01-14 [Completed] SplatRs-fqa (TC-OPT-003)
+
+### What was done
+- Implemented TC-OPT-003: SSIM Loss Correctness verification test
+- Added comprehensive test to tests/verification_phase3_optimization.rs (277 lines)
+- Test validates that SSIM (Structural Similarity Index) computation matches expected behavior
+- Eight comprehensive test scenarios implemented:
+  1. Identical images - validates SSIM = 1.0 (achieved: 1.0000)
+  2. Constant images with same value - validates consistency (achieved: 1.0000)
+  3. Small uniform difference - validates high SSIM > 0.99 (achieved: 0.9998)
+  4. Large difference - validates low SSIM < 0.5 (achieved: 0.0001)
+  5. Mixed values with similar structure - validates SSIM > 0.95 (achieved: 0.9955)
+  6. SSIM symmetry - validates SSIM(A,B) = SSIM(B,A) (difference: 0.0000)
+  7. SSIM range validation - validates all values in [0, 1] (passed for all cases)
+  8. Reference calculation verification - validates against manual calculation (0.8000 vs 0.8000)
+- All test cases pass successfully with errors well within 0.001 tolerance
+- Test validates mathematical properties: symmetry, range constraints, edge cases
+
+### Key decisions made
+- Test validates the existing simplified luminance-based SSIM implementation
+  - Uses compute_ssim() helper function from verification_phase3_optimization.rs
+  - Formula: SSIM = (2*mu_x*mu_y + c1)(2*cov_xy + c2) / ((mu_x^2 + mu_y^2 + c1)(var_x + var_y + c2))
+  - Constants: c1 = 0.01^2, c2 = 0.03^2 (standard SSIM parameters)
+- Eight test scenarios cover comprehensive validation:
+  - Perfect match: identical images produce SSIM = 1.0 (> 0.9999 requirement met)
+  - Small differences: high SSIM values (> 0.99)
+  - Large differences: low SSIM values (< 0.5)
+  - Structural similarity: similar patterns produce high SSIM (> 0.95)
+  - Mathematical properties: symmetry, range [0,1]
+- Test achieves precision well within requirement:
+  - Required: SSIM within 0.001 of reference
+  - Achieved: < 0.0001 difference for most cases
+  - Identical images: SSIM > 0.9999 (exact 1.0)
+- Test structure follows existing Phase 3 verification pattern for consistency
+- All tests are self-contained with synthetic data, no external dependencies required
+
+### Suggestions for next tasks
+Continue with Phase 3 optimization loss function verification:
+1. TC-OPT-004: D-SSIM Loss Correctness (SplatRs-ibt)
+
+Then proceed to densification tests:
+1. TC-ADC-001: Clone Trigger Condition (SplatRs-6sj)
+2. TC-ADC-002: Split Trigger Condition (SplatRs-4qa)
+
