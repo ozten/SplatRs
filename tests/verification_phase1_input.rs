@@ -196,6 +196,256 @@ fn tc_inp_002_camera_extrinsics_parsing() {
     println!("   All quaternions are properly normalized");
 }
 
+/// TC-INP-003: Verify consistent coordinate system convention (OpenCV/COLMAP vs OpenGL).
+///
+/// Pass Criteria:
+/// - Projected coordinates match analytical solution within 1e-4
+/// - Coordinate system documented and verified
+///
+/// This test verifies that we use a consistent coordinate system throughout the pipeline:
+/// - Camera space: +Z forward (into scene), +X right, +Y down (OpenCV/COLMAP convention)
+/// - World to camera: p_cam = R * p_world + t
+/// - Projection: [u, v] = [fx * x/z + cx, fy * y/z + cy]
+#[test]
+fn tc_inp_003_coordinate_system_convention() {
+    const TOLERANCE: f32 = 1e-4; // Tolerance for floating-point comparisons
+    use nalgebra::{Matrix3, Quaternion, UnitQuaternion, Vector3};
+    use sugar_rs::core::Camera;
+
+    println!("\n=== TC-INP-003: Coordinate System Convention Verification ===\n");
+
+    // Test Case 1: Identity camera, simple point
+    // Camera at origin, looking down +Z axis
+    {
+        let camera = Camera::new(
+            100.0,               // fx
+            100.0,               // fy
+            50.0,                // cx
+            50.0,                // cy
+            100,                 // width
+            100,                 // height
+            Matrix3::identity(), // rotation (identity = no rotation)
+            Vector3::zeros(),    // translation (at origin)
+        );
+
+        // Point at (1, 2, 5) in world space
+        // With identity camera, world = camera space
+        // Expected projection: u = 100 * (1/5) + 50 = 70
+        //                      v = 100 * (2/5) + 50 = 90
+        let point_world = Vector3::new(1.0, 2.0, 5.0);
+        let expected_pixel = Vector3::new(70.0, 90.0, 5.0); // [u, v, depth]
+
+        let pixel = camera.world_to_pixel(&point_world)
+            .expect("Point should be in front of camera");
+
+        println!("Test 1 - Identity camera:");
+        println!("  World point: ({:.6}, {:.6}, {:.6})", point_world.x, point_world.y, point_world.z);
+        println!("  Expected pixel: ({:.6}, {:.6})", expected_pixel.x, expected_pixel.y);
+        println!("  Computed pixel: ({:.6}, {:.6})", pixel.x, pixel.y);
+        println!("  Error: ({:.6}, {:.6})",
+            (pixel.x - expected_pixel.x).abs(),
+            (pixel.y - expected_pixel.y).abs());
+
+        assert!((pixel.x - expected_pixel.x).abs() < TOLERANCE,
+            "X projection error too large: {} vs {}", pixel.x, expected_pixel.x);
+        assert!((pixel.y - expected_pixel.y).abs() < TOLERANCE,
+            "Y projection error too large: {} vs {}", pixel.y, expected_pixel.y);
+
+        println!("  ✓ Identity camera projection correct\n");
+    }
+
+    // Test Case 2: Translated camera
+    // Camera translated to (10, 0, 0), still looking down +Z
+    {
+        let camera = Camera::new(
+            100.0,
+            100.0,
+            50.0,
+            50.0,
+            100,
+            100,
+            Matrix3::identity(),
+            Vector3::new(10.0, 0.0, 0.0), // translation
+        );
+
+        // Point at (11, 2, 5) in world space
+        // In camera space: p_cam = I * (11, 2, 5) + (10, 0, 0) = (21, 2, 5)
+        // Expected projection: u = 100 * (21/5) + 50 = 470
+        //                      v = 100 * (2/5) + 50 = 90
+        let point_world = Vector3::new(11.0, 2.0, 5.0);
+        let expected_pixel = Vector3::new(470.0, 90.0, 5.0);
+
+        let pixel = camera.world_to_pixel(&point_world)
+            .expect("Point should be in front of camera");
+
+        println!("Test 2 - Translated camera:");
+        println!("  World point: ({:.6}, {:.6}, {:.6})", point_world.x, point_world.y, point_world.z);
+        println!("  Expected pixel: ({:.6}, {:.6})", expected_pixel.x, expected_pixel.y);
+        println!("  Computed pixel: ({:.6}, {:.6})", pixel.x, pixel.y);
+        println!("  Error: ({:.6}, {:.6})",
+            (pixel.x - expected_pixel.x).abs(),
+            (pixel.y - expected_pixel.y).abs());
+
+        assert!((pixel.x - expected_pixel.x).abs() < TOLERANCE,
+            "X projection error too large: {} vs {}", pixel.x, expected_pixel.x);
+        assert!((pixel.y - expected_pixel.y).abs() < TOLERANCE,
+            "Y projection error too large: {} vs {}", pixel.y, expected_pixel.y);
+
+        println!("  ✓ Translated camera projection correct\n");
+    }
+
+    // Test Case 3: Rotated camera (90° rotation around Y-axis)
+    // Camera rotated 90° around Y-axis: was looking at +Z, now looking at +X
+    {
+        // Rotation by 90° around Y-axis (counter-clockwise when looking down -Y)
+        // This rotates +Z to +X
+        let angle = std::f32::consts::FRAC_PI_2; // 90 degrees
+        let axis = Vector3::y_axis();
+        let rotation_quat = UnitQuaternion::from_axis_angle(&axis, angle);
+        let rotation_matrix = rotation_quat.to_rotation_matrix().into_inner();
+
+        let camera = Camera::new(
+            100.0,
+            100.0,
+            50.0,
+            50.0,
+            100,
+            100,
+            rotation_matrix,
+            Vector3::zeros(),
+        );
+
+        // Point at (5, 2, 1) in world space
+        // After 90° rotation around Y: (x,y,z) -> (z, y, -x)
+        // In camera space: R * (5, 2, 1) = (1, 2, -5)
+        // Depth check: z = -5, which is negative (behind camera)
+        // So this point should NOT project
+
+        // Let's use a point that will be in front
+        // Point at (5, 2, -1) in world space
+        // After rotation: R * (5, 2, -1) = (-1, 2, -5) - still behind
+
+        // For a point to be in front after Y-rotation by 90°:
+        // We need R * p to have positive z
+        // R_y(90°) maps (x,y,z) -> (z, y, -x)
+        // For positive z in camera: -x > 0, so x < 0 in world
+
+        let point_world = Vector3::new(-5.0, 2.0, 1.0);
+        // After rotation: (-5, 2, 1) -> (1, 2, 5) in camera space
+        // Expected projection: u = 100 * (1/5) + 50 = 70
+        //                      v = 100 * (2/5) + 50 = 90
+        let expected_pixel = Vector3::new(70.0, 90.0, 5.0);
+
+        let pixel = camera.world_to_pixel(&point_world)
+            .expect("Point should be in front of camera");
+
+        println!("Test 3 - Rotated camera (90° around Y):");
+        println!("  World point: ({:.6}, {:.6}, {:.6})", point_world.x, point_world.y, point_world.z);
+        println!("  Expected pixel: ({:.6}, {:.6})", expected_pixel.x, expected_pixel.y);
+        println!("  Computed pixel: ({:.6}, {:.6})", pixel.x, pixel.y);
+        println!("  Error: ({:.6}, {:.6})",
+            (pixel.x - expected_pixel.x).abs(),
+            (pixel.y - expected_pixel.y).abs());
+
+        assert!((pixel.x - expected_pixel.x).abs() < TOLERANCE,
+            "X projection error too large: {} vs {}", pixel.x, expected_pixel.x);
+        assert!((pixel.y - expected_pixel.y).abs() < TOLERANCE,
+            "Y projection error too large: {} vs {}", pixel.y, expected_pixel.y);
+
+        println!("  ✓ Rotated camera projection correct\n");
+    }
+
+    // Test Case 4: General camera pose (combined rotation and translation)
+    {
+        // 45° rotation around Y-axis
+        let angle = std::f32::consts::FRAC_PI_4; // 45 degrees
+        let axis = Vector3::y_axis();
+        let rotation_quat = UnitQuaternion::from_axis_angle(&axis, angle);
+        let rotation_matrix = rotation_quat.to_rotation_matrix().into_inner();
+
+        let translation = Vector3::new(1.0, 2.0, 3.0);
+
+        let camera = Camera::new(
+            200.0, // fx
+            200.0, // fy
+            100.0, // cx
+            100.0, // cy
+            200,
+            200,
+            rotation_matrix,
+            translation,
+        );
+
+        // Point at (5, 3, 8) in world space
+        let point_world = Vector3::new(5.0, 3.0, 8.0);
+
+        // Manually compute expected projection
+        // p_cam = R * p_world + t
+        let point_camera = rotation_matrix * point_world + translation;
+
+        // Should have positive z (in front)
+        assert!(point_camera.z > 0.0,
+            "Test point should be in front of camera, got z={}", point_camera.z);
+
+        // Expected projection: [u, v] = [fx * x/z + cx, fy * y/z + cy]
+        let expected_u = 200.0 * point_camera.x / point_camera.z + 100.0;
+        let expected_v = 200.0 * point_camera.y / point_camera.z + 100.0;
+        let expected_pixel = Vector3::new(expected_u, expected_v, point_camera.z);
+
+        let pixel = camera.world_to_pixel(&point_world)
+            .expect("Point should be in front of camera");
+
+        println!("Test 4 - General camera pose:");
+        println!("  World point: ({:.6}, {:.6}, {:.6})", point_world.x, point_world.y, point_world.z);
+        println!("  Camera point: ({:.6}, {:.6}, {:.6})", point_camera.x, point_camera.y, point_camera.z);
+        println!("  Expected pixel: ({:.6}, {:.6})", expected_pixel.x, expected_pixel.y);
+        println!("  Computed pixel: ({:.6}, {:.6})", pixel.x, pixel.y);
+        println!("  Error: ({:.6}, {:.6})",
+            (pixel.x - expected_pixel.x).abs(),
+            (pixel.y - expected_pixel.y).abs());
+
+        assert!((pixel.x - expected_pixel.x).abs() < TOLERANCE,
+            "X projection error too large: {} vs {}", pixel.x, expected_pixel.x);
+        assert!((pixel.y - expected_pixel.y).abs() < TOLERANCE,
+            "Y projection error too large: {} vs {}", pixel.y, expected_pixel.y);
+
+        println!("  ✓ General camera projection correct\n");
+    }
+
+    // Test Case 5: Verify point behind camera is rejected
+    {
+        let camera = Camera::new(
+            100.0,
+            100.0,
+            50.0,
+            50.0,
+            100,
+            100,
+            Matrix3::identity(),
+            Vector3::zeros(),
+        );
+
+        // Point with negative Z (behind camera)
+        let point_world = Vector3::new(1.0, 2.0, -5.0);
+        let pixel = camera.world_to_pixel(&point_world);
+
+        println!("Test 5 - Point behind camera:");
+        println!("  World point: ({:.6}, {:.6}, {:.6})", point_world.x, point_world.y, point_world.z);
+        println!("  Projection result: {:?}", pixel);
+
+        assert!(pixel.is_none(),
+            "Point behind camera should not project");
+
+        println!("  ✓ Point behind camera correctly rejected\n");
+    }
+
+    println!("✅ TC-INP-003: Coordinate system convention verified");
+    println!("   Convention: OpenCV/COLMAP (Z-forward, camera-to-world)");
+    println!("   World to camera: p_cam = R * p_world + t");
+    println!("   Projection: [u,v] = [fx*x/z + cx, fy*y/z + cy]");
+    println!("   All analytical projections match within {}", TOLERANCE);
+}
+
 #[cfg(test)]
 mod reference_implementation {
     //! Reference implementation for validating COLMAP intrinsics parsing
