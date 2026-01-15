@@ -2751,3 +2751,260 @@ fn tc_ras_011_anisotropic_gaussian_projection() {
     println!("   All orientation angles within 2° tolerance");
     println!("   Tested: 0°, 90°, 45°, 30° Z-rotations, and Y-axis oblique rotation");
 }
+
+/// TC-RAS-003: Tile Boundary Handling
+///
+/// Pass Criteria:
+/// - No visible seams
+/// - Pixel values continuous across boundaries (< 1/255 difference)
+///
+/// This test verifies that Gaussians spanning tile boundaries render correctly without seams.
+/// Note: The CPU renderer processes the full image at once without tiling. This test validates
+/// that the rendering is smooth across positions that would be tile boundaries if tiling were used.
+/// For the GPU renderer (which uses actual 32x32 or 16x16 tiles), see the GPU-specific tests.
+#[test]
+fn tc_ras_003_tile_boundary_handling() {
+    const TILE_SIZE: u32 = 32; // Standard tile size used in GPU renderer
+    const CONTINUITY_TOLERANCE: f32 = 1.0 / 255.0; // 1/255 per channel as specified
+
+    println!("\n=== TC-RAS-003: Tile Boundary Handling ===\n");
+
+    // Create a camera with resolution that has clear tile boundaries
+    // 128x128 image = 4x4 grid of 32x32 tiles
+    let width = 128u32;
+    let height = 128u32;
+    let camera = Camera::new(
+        200.0,                    // fx
+        200.0,                    // fy
+        (width / 2) as f32,      // cx
+        (height / 2) as f32,     // cy
+        width,
+        height,
+        Matrix3::identity(),
+        Vector3::zeros(),
+    );
+
+    let background = Vector3::new(0.1, 0.1, 0.1);
+
+    // Create Gaussians positioned to span tile boundaries
+    // We'll create Gaussians centered at tile edges to test boundary handling
+    let mut gaussians = Vec::new();
+
+    // Helper to convert screen pixel to world coordinate
+    // Camera at origin looking down +Z, so world (x, y, z) projects to pixel (cx + fx*x/z, cy + fy*y/z)
+    let fx = 200.0;
+    let fy = 200.0;
+    let cx = (width / 2) as f32;
+    let cy = (height / 2) as f32;
+
+    // Gaussian 1: Centered on vertical tile boundary at x=32 pixels
+    // Solve: cx + fx*x/z = 32 => x = (32 - cx) * z / fx
+    let depth = 8.0;
+    let g1_world_x = (32.0 - cx) * depth / fx;
+    let g1_world_y = (32.0 - cy) * depth / fy; // Also offset in Y to separate from other Gaussians
+    let sh_red = {
+        let mut sh = [[0.0f32; 3]; 16];
+        sh[0] = [0.8, 0.2, 0.1]; // Red
+        sh
+    };
+    gaussians.push(Gaussian::new(
+        Vector3::new(g1_world_x, g1_world_y, depth),
+        Vector3::new(-1.5, -1.5, -1.5), // Scale spans boundary
+        UnitQuaternion::identity(),
+        1.0, // Higher opacity
+        sh_red,
+    ));
+
+    // Gaussian 2: Centered on horizontal tile boundary at y=64 pixels
+    let g2_world_x = (32.0 - cx) * depth / fx; // Offset in X to separate
+    let g2_world_y = (64.0 - cy) * depth / fy;
+    let sh_green = {
+        let mut sh = [[0.0f32; 3]; 16];
+        sh[0] = [0.2, 0.8, 0.1]; // Green
+        sh
+    };
+    gaussians.push(Gaussian::new(
+        Vector3::new(g2_world_x, g2_world_y, depth),
+        Vector3::new(-1.5, -1.5, -1.5),
+        UnitQuaternion::identity(),
+        1.0,
+        sh_green,
+    ));
+
+    // Gaussian 3: Centered at tile corner (x=64, y=64, spans all 4 adjacent tiles)
+    let g3_world_x = (64.0 - cx) * depth / fx;
+    let g3_world_y = (64.0 - cy) * depth / fy;
+    let sh_blue = {
+        let mut sh = [[0.0f32; 3]; 16];
+        sh[0] = [0.1, 0.2, 0.8]; // Blue
+        sh
+    };
+    gaussians.push(Gaussian::new(
+        Vector3::new(g3_world_x, g3_world_y, depth), // Center at tile corner intersection
+        Vector3::new(-1.2, -1.2, -1.2), // Larger scale to definitely span boundaries
+        UnitQuaternion::identity(),
+        1.5, // Even higher opacity
+        sh_blue,
+    ));
+
+    // Gaussian 4: Large Gaussian spanning multiple tiles, centered at (96, 96)
+    let g4_world_x = (96.0 - cx) * depth / fx;
+    let g4_world_y = (96.0 - cy) * depth / fy;
+    let sh_yellow = {
+        let mut sh = [[0.0f32; 3]; 16];
+        sh[0] = [0.7, 0.7, 0.1]; // Yellow
+        sh
+    };
+    gaussians.push(Gaussian::new(
+        Vector3::new(g4_world_x, g4_world_y, 9.0), // Slightly farther away
+        Vector3::new(-0.8, -0.8, -0.8), // Large scale
+        UnitQuaternion::identity(),
+        0.5, // Lower opacity so it blends
+        sh_yellow,
+    ));
+
+    println!("Created {} Gaussians positioned to span tile boundaries", gaussians.len());
+    println!("Image resolution: {}x{}", width, height);
+    println!("Tile size: {}x{}", TILE_SIZE, TILE_SIZE);
+    println!("Number of tiles: {}x{}\n", width / TILE_SIZE, height / TILE_SIZE);
+
+    // Render the full image
+    let pixels = render_full_linear(&gaussians, &camera, &background, false);
+
+    // Test 1: Check continuity across vertical tile boundaries
+    {
+        println!("Test 1 - Vertical tile boundary continuity:");
+
+        let num_boundaries = (width / TILE_SIZE) - 1;
+        let mut max_discontinuity = 0.0f32;
+        let mut total_discontinuity = 0.0f32;
+        let mut num_samples = 0;
+
+        for boundary_idx in 1..=(num_boundaries as usize) {
+            let boundary_x = (boundary_idx as u32 * TILE_SIZE) as usize;
+
+            // Check continuity along the entire vertical boundary
+            for y in 0..(height as usize) {
+                let left_idx = y * (width as usize) + (boundary_x - 1);
+                let right_idx = y * (width as usize) + boundary_x;
+
+                let pixel_left = pixels[left_idx];
+                let pixel_right = pixels[right_idx];
+
+                let diff = (pixel_left - pixel_right).norm();
+                max_discontinuity = max_discontinuity.max(diff);
+                total_discontinuity += diff;
+                num_samples += 1;
+
+                if diff > CONTINUITY_TOLERANCE {
+                    println!("  Discontinuity at boundary x={}, y={}: {:.6} > {:.6}",
+                        boundary_x, y, diff, CONTINUITY_TOLERANCE);
+                }
+            }
+        }
+
+        let avg_discontinuity = total_discontinuity / (num_samples as f32);
+        println!("  Checked {} vertical boundaries", num_boundaries);
+        println!("  Average discontinuity: {:.8}", avg_discontinuity);
+        println!("  Max discontinuity: {:.8}", max_discontinuity);
+
+        assert!(max_discontinuity < CONTINUITY_TOLERANCE,
+            "Vertical tile boundary has discontinuity: {:.6} > {:.6}",
+            max_discontinuity, CONTINUITY_TOLERANCE);
+
+        println!("  ✓ All vertical tile boundaries are continuous\n");
+    }
+
+    // Test 2: Check continuity across horizontal tile boundaries
+    {
+        println!("Test 2 - Horizontal tile boundary continuity:");
+
+        let num_boundaries = (height / TILE_SIZE) - 1;
+        let mut max_discontinuity = 0.0f32;
+        let mut total_discontinuity = 0.0f32;
+        let mut num_samples = 0;
+
+        for boundary_idx in 1..=(num_boundaries as usize) {
+            let boundary_y = (boundary_idx as u32 * TILE_SIZE) as usize;
+
+            // Check continuity along the entire horizontal boundary
+            for x in 0..(width as usize) {
+                let top_idx = (boundary_y - 1) * (width as usize) + x;
+                let bottom_idx = boundary_y * (width as usize) + x;
+
+                let pixel_top = pixels[top_idx];
+                let pixel_bottom = pixels[bottom_idx];
+
+                let diff = (pixel_top - pixel_bottom).norm();
+                max_discontinuity = max_discontinuity.max(diff);
+                total_discontinuity += diff;
+                num_samples += 1;
+
+                if diff > CONTINUITY_TOLERANCE {
+                    println!("  Discontinuity at boundary y={}, x={}: {:.6} > {:.6}",
+                        boundary_y, x, diff, CONTINUITY_TOLERANCE);
+                }
+            }
+        }
+
+        let avg_discontinuity = total_discontinuity / (num_samples as f32);
+        println!("  Checked {} horizontal boundaries", num_boundaries);
+        println!("  Average discontinuity: {:.8}", avg_discontinuity);
+        println!("  Max discontinuity: {:.8}", max_discontinuity);
+
+        assert!(max_discontinuity < CONTINUITY_TOLERANCE,
+            "Horizontal tile boundary has discontinuity: {:.6} > {:.6}",
+            max_discontinuity, CONTINUITY_TOLERANCE);
+
+        println!("  ✓ All horizontal tile boundaries are continuous\n");
+    }
+
+    // Test 3: Verify Gaussians centered at tile boundaries render correctly
+    // Check that the rendered color at the Gaussian centers matches expectations
+    {
+        println!("Test 3 - Gaussians centered at tile boundaries render correctly:");
+
+        // Check Gaussian 1 (red, at pixel 32, 32)
+        let g1_screen_x = 32;
+        let g1_screen_y = 32;
+        let g1_idx = g1_screen_y * (width as usize) + g1_screen_x;
+        let g1_color = pixels[g1_idx];
+        println!("  Gaussian 1 (red, at pixel 32, 32): RGB = ({:.4}, {:.4}, {:.4})",
+            g1_color.x, g1_color.y, g1_color.z);
+        assert!(g1_color.x > g1_color.y && g1_color.x > g1_color.z,
+            "Gaussian 1 should be predominantly red (got R={:.4} G={:.4} B={:.4})",
+            g1_color.x, g1_color.y, g1_color.z);
+
+        // Check Gaussian 2 (green, at pixel 32, 64)
+        let g2_screen_x = 32;
+        let g2_screen_y = 64;
+        let g2_idx = g2_screen_y * (width as usize) + g2_screen_x;
+        let g2_color = pixels[g2_idx];
+        println!("  Gaussian 2 (green, at pixel 32, 64): RGB = ({:.4}, {:.4}, {:.4})",
+            g2_color.x, g2_color.y, g2_color.z);
+        assert!(g2_color.y > g2_color.x && g2_color.y > g2_color.z,
+            "Gaussian 2 should be predominantly green (got R={:.4} G={:.4} B={:.4})",
+            g2_color.x, g2_color.y, g2_color.z);
+
+        // Check Gaussian 3 (blue, at pixel 64, 64)
+        let g3_screen_x = 64;
+        let g3_screen_y = 64;
+        let g3_idx = g3_screen_y * (width as usize) + g3_screen_x;
+        let g3_color = pixels[g3_idx];
+        println!("  Gaussian 3 (blue, at pixel 64, 64): RGB = ({:.4}, {:.4}, {:.4})",
+            g3_color.x, g3_color.y, g3_color.z);
+        assert!(g3_color.z > g3_color.x && g3_color.z > g3_color.y,
+            "Gaussian 3 should be predominantly blue (got R={:.4} G={:.4} B={:.4})",
+            g3_color.x, g3_color.y, g3_color.z);
+
+        println!("  ✓ Gaussians at tile boundaries render with expected colors\n");
+    }
+
+    println!("✅ TC-RAS-003: Tile boundary handling passed");
+    println!("   No visible seams detected at tile boundaries");
+    println!("   All pixel values continuous across boundaries (< 1/255 difference)");
+    println!("   Tested {} vertical and {} horizontal tile boundaries",
+        (width / TILE_SIZE) - 1, (height / TILE_SIZE) - 1);
+    println!("   Note: This test uses CPU renderer (no actual tiling).");
+    println!("   GPU renderer with actual tile-based rendering should also pass this test.");
+}
