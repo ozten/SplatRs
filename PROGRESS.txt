@@ -768,3 +768,51 @@ Then proceed to Phase 3 optimization verification tasks:
 2. TC-OPT-002: L2 (MSE) Loss Correctness (SplatRs-gew)
 3. TC-OPT-003: SSIM Loss Correctness (SplatRs-fqa)
 
+
+## 2026-01-14 23:30 - Completed SplatRs-m2e (TC-COV-003)
+
+### What was done
+- Implemented TC-COV-003: Numerical Stability with Extreme Scales verification test
+- Added comprehensive test to tests/verification_phase1_input.rs (350+ lines)
+- Test validates covariance matrix computation with extreme scale values (1e-10 to 1e10)
+- Five comprehensive test scenarios implemented:
+  1. Very small scales (1e-7): validates computation with tiny scales
+  2. Very large scales (1e6): validates computation with large scales
+  3. Mixed extreme scales (1e-7, 1.0, 1e6): validates handling of mixed scale ranges
+  4. Extreme scales with rotation (1e-6, 1.0, 1e5) with 45° Y-rotation: tests numerical stability under transformation
+  5. Boundary cases (1e-10, 1.0, 1e10): pushes f32 precision limits
+- All pass criteria met:
+  - No NaN or Inf values in any covariance matrix
+  - All matrices remain symmetric (verified with appropriate tolerances)
+  - All matrices remain positive semi-definite (within f32 precision limits)
+  - Inverse covariance computable for most cases (gracefully handled when not)
+- Created helper functions:
+  - verify_symmetric_relative(): validates symmetry using relative tolerance for extreme values
+  - verify_positive_semidefinite_relaxed(): validates positive semi-definite property with relaxed tolerance for extreme scales
+
+### Key decisions made
+- Used relative tolerances instead of absolute for extreme values
+  - Large values (5e9) require relative comparison to handle f32 precision limits
+  - Absolute tolerance of 1e-6 inadequate for values differing by ~600 out of 5e9
+  - verify_symmetric_relative() uses 1e-4 relative tolerance
+- Implemented relaxed eigenvalue checking for extreme scale combinations
+  - With extreme scale differences (1e-6 to 1e5), f32 arithmetic can produce small negative eigenvalues
+  - Example: eigenvalue of -218 vs 9999993856 (relative error: 2.18e-8)
+  - verify_positive_semidefinite_relaxed() allows small negative eigenvalues if relative error < 1e-4
+  - This is a known limitation of f32 precision, not a correctness issue
+- Test demonstrates robust handling across 13+ orders of magnitude (1e-10 to 1e10)
+- Covariance inverses computable for reasonable scale ranges
+  - Very small scales (1e-7²=1e-14) → large inverse (1e14) ✓
+  - Very large scales (1e6²=1e12) → small inverse (1e-12) ✓
+- Test structure follows existing Phase 1 verification pattern for consistency
+
+### Suggestions for next tasks
+Continue with additional Phase 1/2 verification tests in priority order:
+1. TC-SH-002: Higher Degree SH Basis Functions (SplatRs-n3b)
+2. TC-RAS-010: 3D to 2D Covariance Projection (SplatRs-8vu)
+3. TC-RAS-011: Anisotropic Gaussian Projection (SplatRs-l77)
+
+Then proceed to Phase 3 optimization verification tasks:
+1. TC-OPT-001: L1 Loss Correctness (SplatRs-wyc)
+2. TC-OPT-002: L2 (MSE) Loss Correctness (SplatRs-gew)
+3. TC-OPT-003: SSIM Loss Correctness (SplatRs-fqa)
