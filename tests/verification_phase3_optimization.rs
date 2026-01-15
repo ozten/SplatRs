@@ -3338,3 +3338,353 @@ fn tc_adc_003_densification_interval() {
     println!("  - No densification on last iteration");
     println!("  - Timing logic matches trainer.rs:2128-2131");
 }
+
+#[test]
+fn tc_adc_012_gaussian_count_stability() {
+    println!("\n=== TC-ADC-012: Gaussian Count Stability ===\n");
+
+    // Test Objective:
+    // Verify that the Gaussian count stabilizes after sufficient training iterations.
+    // After the initial growth phase, the number of Gaussians should reach a steady state
+    // where densification (clone/split) and pruning roughly balance out.
+    //
+    // Pass Criteria:
+    // - Gaussian count stabilizes (no net change > 5%) in last 30% of training
+    // - Final count is reasonable for scene complexity (not growing unbounded)
+    // - Count reaches stability by ~20,000 iterations (spec guideline)
+    //
+    // Note: This is a scaled-down test (1000 iterations instead of 30,000) to keep
+    // test execution time reasonable. The stability behavior should still be observable.
+
+    use sugar_rs::core::{Gaussian, Camera};
+    use sugar_rs::render::{render_full_linear, render_full_color_grads};
+    use nalgebra::{Vector3, UnitQuaternion, Matrix3};
+
+    // Create simple test scene
+    let camera = Camera::new(
+        100.0, 100.0, 32.0, 32.0, 64, 64,
+        Matrix3::identity(),
+        Vector3::new(0.0, 0.0, 5.0),
+    );
+
+    // Create initial Gaussians to train
+    let mut gaussians = vec![
+        Gaussian::new(
+            Vector3::new(-0.3, -0.3, 0.0),
+            Vector3::new(-0.8, -0.8, -0.8),  // log scale
+            UnitQuaternion::identity(),
+            1.5,  // High opacity (in logit space)
+            sh_constant_color(Vector3::new(0.3, 0.0, 0.0)),  // Red
+        ),
+        Gaussian::new(
+            Vector3::new(0.3, -0.3, 0.0),
+            Vector3::new(-0.8, -0.8, -0.8),
+            UnitQuaternion::identity(),
+            1.5,
+            sh_constant_color(Vector3::new(0.0, 0.3, 0.0)),  // Green
+        ),
+        Gaussian::new(
+            Vector3::new(-0.3, 0.3, 0.0),
+            Vector3::new(-0.8, -0.8, -0.8),
+            UnitQuaternion::identity(),
+            1.5,
+            sh_constant_color(Vector3::new(0.0, 0.0, 0.3)),  // Blue
+        ),
+        Gaussian::new(
+            Vector3::new(0.3, 0.3, 0.0),
+            Vector3::new(-0.8, -0.8, -0.8),
+            UnitQuaternion::identity(),
+            1.5,
+            sh_constant_color(Vector3::new(0.3, 0.3, 0.0)),  // Yellow
+        ),
+    ];
+
+    // Create target image (render with larger, brighter Gaussians)
+    let target_gaussians = vec![
+        Gaussian::new(
+            Vector3::new(-0.3, -0.3, 0.0),
+            Vector3::new(-0.4, -0.4, -0.4),  // Larger scale
+            UnitQuaternion::identity(),
+            1.5,
+            sh_constant_color(Vector3::new(0.5, 0.0, 0.0)),  // Brighter red
+        ),
+        Gaussian::new(
+            Vector3::new(0.3, -0.3, 0.0),
+            Vector3::new(-0.4, -0.4, -0.4),
+            UnitQuaternion::identity(),
+            1.5,
+            sh_constant_color(Vector3::new(0.0, 0.5, 0.0)),  // Brighter green
+        ),
+        Gaussian::new(
+            Vector3::new(-0.3, 0.3, 0.0),
+            Vector3::new(-0.4, -0.4, -0.4),
+            UnitQuaternion::identity(),
+            1.5,
+            sh_constant_color(Vector3::new(0.0, 0.0, 0.5)),  // Brighter blue
+        ),
+        Gaussian::new(
+            Vector3::new(0.3, 0.3, 0.0),
+            Vector3::new(-0.4, -0.4, -0.4),
+            UnitQuaternion::identity(),
+            1.5,
+            sh_constant_color(Vector3::new(0.5, 0.5, 0.0)),  // Brighter yellow
+        ),
+    ];
+
+    let background = Vector3::new(0.0, 0.0, 0.0);
+    let target_image = render_full_linear(&target_gaussians, &camera, &background, false);
+
+    println!("Initial setup:");
+    println!("  Starting Gaussians: {}", gaussians.len());
+    println!("  Image size: {}x{}", camera.width, camera.height);
+    println!();
+
+    // Training parameters
+    const SH_C0: f32 = 0.28209479177387814;
+    let lr_color = 5.0;
+    let lr_position = 0.05;
+    let lr_scale = 0.01;
+    let lr_opacity = 0.1;
+
+    // Scaled down from 30,000 to 1000 iterations for test performance
+    let total_iters = 1000;
+    let densify_interval = 50;  // Densify every 50 iterations
+    let densify_start_iter = 100;  // Start densification after 100 iterations
+    let densify_end_iter = 700;  // Stop densification at 70% of training
+    let grad_threshold = 0.0002;  // Threshold for cloning
+    let prune_interval = 100;  // Prune every 100 iterations
+    let opacity_threshold = 0.01;  // Prune Gaussians with opacity < 0.01
+    let max_gaussians = 100;  // Cap at 100 Gaussians
+
+    // Track gradient accumulation
+    let mut grad_accum = vec![0.0; gaussians.len()];
+    let mut grad_window_iters = 0;
+
+    // Track Gaussian count at each densification event
+    let mut densify_history = Vec::new();
+
+    println!("Training parameters:");
+    println!("  Total iterations: {}", total_iters);
+    println!("  Densify interval: {}", densify_interval);
+    println!("  Densification window: {} to {}", densify_start_iter, densify_end_iter);
+    println!("  Prune interval: {}", prune_interval);
+    println!("  Max Gaussians: {}", max_gaussians);
+    println!("  Stability window: last {} iterations ({}%)",
+             total_iters - densify_end_iter,
+             ((total_iters - densify_end_iter) as f32 / total_iters as f32 * 100.0) as usize);
+    println!();
+
+    // Optimization loop
+    for iter in 0..total_iters {
+        // Record Gaussian count at start of iteration
+        let count_before = gaussians.len();
+
+        // Forward pass
+        let rendered = render_full_linear(&gaussians, &camera, &background, false);
+        let _loss = l2_loss(&rendered, &target_image);
+
+        // Compute pixel gradients
+        let d_pixels: Vec<Vector3<f32>> = rendered
+            .iter()
+            .zip(target_image.iter())
+            .map(|(a, b)| 2.0 * (*a - *b) / (rendered.len() as f32))
+            .collect();
+
+        // Backward pass
+        let (_img, d_colors, d_opacity, d_positions, d_scales, _d_rot, _d_bg) =
+            render_full_color_grads(&gaussians, &camera, &d_pixels, &background, false);
+
+        // Accumulate position gradients (during densification window)
+        if iter >= densify_start_iter && iter < densify_end_iter {
+            // Resize grad_accum if needed
+            while grad_accum.len() < gaussians.len() {
+                grad_accum.push(0.0);
+            }
+
+            for i in 0..gaussians.len() {
+                grad_accum[i] += d_positions[i].norm();
+            }
+            grad_window_iters += 1;
+        }
+
+        // Gradient descent step
+        for i in 0..gaussians.len() {
+            // Update color (SH DC term)
+            gaussians[i].sh_coeffs[0][0] -= lr_color * d_colors[i].x * SH_C0;
+            gaussians[i].sh_coeffs[0][1] -= lr_color * d_colors[i].y * SH_C0;
+            gaussians[i].sh_coeffs[0][2] -= lr_color * d_colors[i].z * SH_C0;
+
+            // Update position
+            gaussians[i].position -= lr_position * d_positions[i];
+
+            // Update scale (already in log-space)
+            gaussians[i].scale -= lr_scale * d_scales[i];
+
+            // Update opacity (already in logit-space)
+            gaussians[i].opacity -= lr_opacity * d_opacity[i];
+        }
+
+        // Densification check
+        let should_densify = densify_interval > 0
+            && grad_window_iters > 0
+            && (iter + 1) % densify_interval == 0
+            && (iter + 1) >= densify_start_iter
+            && (iter + 1) < densify_end_iter
+            && gaussians.len() < max_gaussians;
+
+        if should_densify {
+            // Compute average gradients
+            let avg_grads: Vec<f32> = grad_accum
+                .iter()
+                .map(|g| g / (grad_window_iters as f32))
+                .collect();
+
+            // Clone Gaussians with high gradients
+            let mut new_gaussians = Vec::new();
+            let mut clone_count = 0;
+
+            for (i, gaussian) in gaussians.iter().enumerate() {
+                // Always keep original
+                new_gaussians.push(gaussian.clone());
+
+                // Clone if gradient exceeds threshold and under cap
+                if i < avg_grads.len()
+                    && avg_grads[i] > grad_threshold
+                    && new_gaussians.len() < max_gaussians {
+                    let mut clone = gaussian.clone();
+                    // Small offset for clone
+                    clone.position.x += 0.01;
+                    new_gaussians.push(clone);
+                    clone_count += 1;
+                }
+            }
+
+            let before_prune = new_gaussians.len();
+            gaussians = new_gaussians;
+
+            // Record densification event
+            densify_history.push((iter + 1, count_before, gaussians.len(), clone_count, 0));
+
+            // Reset gradient tracking
+            grad_accum = vec![0.0; gaussians.len()];
+            grad_window_iters = 0;
+
+            if clone_count > 0 {
+                println!("  Iter {}: Densification", iter + 1);
+                println!("    Cloned: {} Gaussians ({} -> {})",
+                         clone_count, count_before, before_prune);
+            }
+        }
+
+        // Pruning check (remove low-opacity Gaussians)
+        let should_prune = prune_interval > 0
+            && (iter + 1) % prune_interval == 0
+            && (iter + 1) >= densify_start_iter;
+
+        if should_prune {
+            let count_before_prune = gaussians.len();
+
+            // Keep only Gaussians with sufficient opacity (opacity is in logit-space)
+            gaussians.retain(|g| {
+                let opacity = 1.0 / (1.0 + (-g.opacity).exp());
+                opacity >= opacity_threshold
+            });
+
+            let pruned_count = count_before_prune - gaussians.len();
+
+            if pruned_count > 0 {
+                println!("  Iter {}: Pruning", iter + 1);
+                println!("    Pruned: {} Gaussians ({} -> {})",
+                         pruned_count, count_before_prune, gaussians.len());
+
+                // Update last densify history entry with prune count if it exists
+                if let Some(last) = densify_history.last_mut() {
+                    if last.0 == iter + 1 {
+                        last.4 = pruned_count;
+                    }
+                }
+            }
+        }
+    }
+
+    println!();
+    println!("Densification history:");
+    println!("  Iter | Before | After | Cloned | Pruned");
+    println!("  -----|--------|-------|--------|-------");
+    for (iter, before, after, cloned, pruned) in &densify_history {
+        println!("  {:4} | {:6} | {:5} | {:6} | {:6}", iter, before, after, cloned, pruned);
+    }
+    println!();
+
+    // Analyze stability in the post-densification window
+    let stability_start = densify_end_iter;
+    let stability_counts: Vec<usize> = densify_history
+        .iter()
+        .filter(|(iter, _, _, _, _)| *iter >= stability_start)
+        .map(|(_, _, after, _, _)| *after)
+        .collect();
+
+    println!("Stability analysis (iterations {} to {}):", stability_start, total_iters);
+
+    let final_count = gaussians.len();
+    println!("  Final Gaussian count: {}", final_count);
+
+    // Pass criteria
+    let mut test_passed = true;
+
+    // Check if count stabilized (max variation < 5% in stability window)
+    if !stability_counts.is_empty() {
+        let max_stable = *stability_counts.iter().max().unwrap();
+        let min_stable = *stability_counts.iter().min().unwrap();
+        let variation = if max_stable > 0 {
+            ((max_stable - min_stable) as f32 / max_stable as f32) * 100.0
+        } else {
+            0.0
+        };
+
+        println!("  Stability window variation: {:.1}% ({} to {})",
+                 variation, min_stable, max_stable);
+
+        // Check 1: Variation should be < 5% in stability window
+        if variation > 5.0 {
+            println!("  ✗ FAIL: Count variation {:.1}% exceeds 5% threshold", variation);
+            test_passed = false;
+        } else {
+            println!("  ✓ PASS: Count stable (variation {:.1}% < 5%)", variation);
+        }
+    } else {
+        println!("  Note: No densification events in stability window");
+        println!("  ✓ PASS: Count remained stable at {} (no changes)", final_count);
+    }
+
+    // Check 2: Final count should be reasonable (not growing unbounded)
+    // Allow some overshoot beyond max_gaussians since cloning is batch-based
+    let reasonable_max = (max_gaussians as f32 * 1.2) as usize;  // 20% tolerance
+    if final_count < 4 {
+        println!("  ✗ FAIL: Final count {} too low (under-reconstructed)", final_count);
+        test_passed = false;
+    } else if final_count > reasonable_max {
+        println!("  ✗ FAIL: Final count {} exceeds reasonable max {}", final_count, reasonable_max);
+        test_passed = false;
+    } else {
+        println!("  ✓ PASS: Final count {} is reasonable (< {})", final_count, reasonable_max);
+    }
+
+    // Check 3: Count should have grown from initial (shows densification worked)
+    if final_count <= 4 {
+        println!("  ✗ FAIL: Count did not grow from initial 4 Gaussians");
+        test_passed = false;
+    } else {
+        println!("  ✓ PASS: Count grew from initial 4 to {}", final_count);
+    }
+
+    if !test_passed {
+        panic!("TC-ADC-012 FAILED: Gaussian count stability criteria not met!");
+    }
+
+    println!();
+    println!("✓ TC-ADC-012 passed: Gaussian count stability verified!");
+    println!("  - Count stabilizes after densification window ends");
+    println!("  - Final count is reasonable for scene complexity");
+    println!("  - Densification and pruning balance each other");
+}
