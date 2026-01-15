@@ -1033,6 +1033,376 @@ fn tc_sh_001_degree_0_view_independence() {
     println!("   Maximum deviation: < 1e-6 per channel");
 }
 
+/// TC-SH-002: Verify SH basis functions correctly implemented for degrees 1, 2, 3.
+///
+/// Pass Criteria:
+/// - Evaluated values match reference SH basis within 1e-5
+///
+/// Reference: Wikipedia table of spherical harmonics (real form)
+/// https://en.wikipedia.org/wiki/Table_of_spherical_harmonics#Real_spherical_harmonics
+#[test]
+fn tc_sh_002_higher_degree_sh_basis() {
+    use sugar_rs::core::sh_basis;
+    use nalgebra::Vector3;
+
+    const TOLERANCE: f32 = 1e-5;
+
+    println!("\n=== TC-SH-002: Higher Degree SH Basis Functions ===\n");
+
+    // Test with several canonical directions and verify all basis functions
+    // We'll compute reference values using the Wikipedia formulas
+
+    // Test Case 1: Direction along +Z axis (0, 0, 1)
+    {
+        println!("Test 1 - Direction along +Z axis (0, 0, 1):");
+
+        let dir = Vector3::new(0.0, 0.0, 1.0);
+        let basis = sh_basis(&dir);
+
+        // Reference values for (x=0, y=0, z=1):
+        // l=0, m=0: Y_0^0 = 0.282095 (constant)
+        let ref_basis_0_0 = 0.282_094_791_773_878_14;
+
+        // l=1: Y_1^{-1} = C1*y = 0, Y_1^0 = C1*z = 0.488603, Y_1^1 = C1*x = 0
+        let ref_basis_1_n1 = 0.0; // Y_1^{-1} = 0.488603 * 0
+        let ref_basis_1_0 = 0.488_602_511_902_919_9; // Y_1^0 = 0.488603 * 1
+        let ref_basis_1_1 = 0.0; // Y_1^1 = 0.488603 * 0
+
+        // l=2: Y_2^{-2} = C2_0*xy = 0, Y_2^{-1} = C2_0*yz = 0
+        //      Y_2^0 = C2_1*(3z^2-1) = 0.315392 * (3*1 - 1) = 0.630783
+        //      Y_2^1 = C2_0*xz = 0, Y_2^2 = C2_2*(x^2-y^2) = 0
+        let ref_basis_2_n2 = 0.0;
+        let ref_basis_2_n1 = 0.0;
+        let ref_basis_2_0 = 0.315_391_565_252_520_05 * 2.0; // = 0.63078313
+        let ref_basis_2_1 = 0.0;
+        let ref_basis_2_2 = 0.0;
+
+        // l=3: Most terms with x or y are zero
+        //      Y_3^{-3} = C3_0*y*(3x^2-y^2) = 0
+        //      Y_3^{-2} = C3_1*xyz = 0
+        //      Y_3^{-1} = C3_2*y*(5z^2-1) = 0
+        //      Y_3^0 = C3_3*z*(5z^2-3) = 0.373176 * 1 * (5*1 - 3) = 0.746353
+        //      Y_3^1 = C3_2*x*(5z^2-1) = 0
+        //      Y_3^2 = C3_4*z*(x^2-y^2) = 0
+        //      Y_3^3 = C3_5*x*(x^2-3y^2) = 0
+        let ref_basis_3_n3 = 0.0;
+        let ref_basis_3_n2 = 0.0;
+        let ref_basis_3_n1 = 0.0;
+        let ref_basis_3_0 = 0.373_176_332_590_115_4 * 2.0; // = 0.746352665
+        let ref_basis_3_1 = 0.0;
+        let ref_basis_3_2 = 0.0;
+        let ref_basis_3_3 = 0.0;
+
+        // Verify all basis functions
+        assert!((basis[0] - ref_basis_0_0).abs() < TOLERANCE,
+            "Y_0^0 mismatch: {} vs {}", basis[0], ref_basis_0_0);
+
+        assert!((basis[1] - ref_basis_1_n1).abs() < TOLERANCE,
+            "Y_1^{{-1}} mismatch: {} vs {}", basis[1], ref_basis_1_n1);
+        assert!((basis[2] - ref_basis_1_0).abs() < TOLERANCE,
+            "Y_1^0 mismatch: {} vs {}", basis[2], ref_basis_1_0);
+        assert!((basis[3] - ref_basis_1_1).abs() < TOLERANCE,
+            "Y_1^1 mismatch: {} vs {}", basis[3], ref_basis_1_1);
+
+        assert!((basis[4] - ref_basis_2_n2).abs() < TOLERANCE,
+            "Y_2^{{-2}} mismatch: {} vs {}", basis[4], ref_basis_2_n2);
+        assert!((basis[5] - ref_basis_2_n1).abs() < TOLERANCE,
+            "Y_2^{{-1}} mismatch: {} vs {}", basis[5], ref_basis_2_n1);
+        assert!((basis[6] - ref_basis_2_0).abs() < TOLERANCE,
+            "Y_2^0 mismatch: {} vs {}", basis[6], ref_basis_2_0);
+        assert!((basis[7] - ref_basis_2_1).abs() < TOLERANCE,
+            "Y_2^1 mismatch: {} vs {}", basis[7], ref_basis_2_1);
+        assert!((basis[8] - ref_basis_2_2).abs() < TOLERANCE,
+            "Y_2^2 mismatch: {} vs {}", basis[8], ref_basis_2_2);
+
+        assert!((basis[9] - ref_basis_3_n3).abs() < TOLERANCE,
+            "Y_3^{{-3}} mismatch: {} vs {}", basis[9], ref_basis_3_n3);
+        assert!((basis[10] - ref_basis_3_n2).abs() < TOLERANCE,
+            "Y_3^{{-2}} mismatch: {} vs {}", basis[10], ref_basis_3_n2);
+        assert!((basis[11] - ref_basis_3_n1).abs() < TOLERANCE,
+            "Y_3^{{-1}} mismatch: {} vs {}", basis[11], ref_basis_3_n1);
+        assert!((basis[12] - ref_basis_3_0).abs() < TOLERANCE,
+            "Y_3^0 mismatch: {} vs {}", basis[12], ref_basis_3_0);
+        assert!((basis[13] - ref_basis_3_1).abs() < TOLERANCE,
+            "Y_3^1 mismatch: {} vs {}", basis[13], ref_basis_3_1);
+        assert!((basis[14] - ref_basis_3_2).abs() < TOLERANCE,
+            "Y_3^2 mismatch: {} vs {}", basis[14], ref_basis_3_2);
+        assert!((basis[15] - ref_basis_3_3).abs() < TOLERANCE,
+            "Y_3^3 mismatch: {} vs {}", basis[15], ref_basis_3_3);
+
+        println!("  All 16 basis functions match reference values");
+        println!("  Non-zero values: Y_0^0={:.6}, Y_1^0={:.6}, Y_2^0={:.6}, Y_3^0={:.6}",
+            basis[0], basis[2], basis[6], basis[12]);
+        println!("  ✓ +Z axis verified\n");
+    }
+
+    // Test Case 2: Direction along +X axis (1, 0, 0)
+    {
+        println!("Test 2 - Direction along +X axis (1, 0, 0):");
+
+        let dir = Vector3::new(1.0, 0.0, 0.0);
+        let basis = sh_basis(&dir);
+
+        // Reference values for (x=1, y=0, z=0):
+        // l=0, m=0: Y_0^0 = 0.282095 (constant)
+        let ref_basis_0_0 = 0.282_094_791_773_878_14;
+
+        // l=1: Y_1^{-1} = C1*y = 0, Y_1^0 = C1*z = 0, Y_1^1 = C1*x = 0.488603
+        let ref_basis_1_n1 = 0.0;
+        let ref_basis_1_0 = 0.0;
+        let ref_basis_1_1 = 0.488_602_511_902_919_9;
+
+        // l=2: Y_2^{-2} = C2_0*xy = 0, Y_2^{-1} = C2_0*yz = 0
+        //      Y_2^0 = C2_1*(3z^2-1) = 0.315392 * (-1) = -0.315392
+        //      Y_2^1 = C2_0*xz = 0
+        //      Y_2^2 = C2_2*(x^2-y^2) = 0.546274 * 1 = 0.546274
+        let ref_basis_2_n2 = 0.0;
+        let ref_basis_2_n1 = 0.0;
+        let ref_basis_2_0 = -0.315_391_565_252_520_05;
+        let ref_basis_2_1 = 0.0;
+        let ref_basis_2_2 = 0.546_274_215_296_039_6;
+
+        // l=3: Y_3^{-3} = C3_0*y*(3x^2-y^2) = 0
+        //      Y_3^{-2} = C3_1*xyz = 0
+        //      Y_3^{-1} = C3_2*y*(5z^2-1) = 0
+        //      Y_3^0 = C3_3*z*(5z^2-3) = 0
+        //      Y_3^1 = C3_2*x*(5z^2-1) = 0.457046 * 1 * (-1) = -0.457046
+        //      Y_3^2 = C3_4*z*(x^2-y^2) = 0
+        //      Y_3^3 = C3_5*x*(x^2-3y^2) = 0.590044 * 1 * 1 = 0.590044
+        let ref_basis_3_n3 = 0.0;
+        let ref_basis_3_n2 = 0.0;
+        let ref_basis_3_n1 = 0.0;
+        let ref_basis_3_0 = 0.0;
+        let ref_basis_3_1 = -0.457_045_799_464_465_8;
+        let ref_basis_3_2 = 0.0;
+        let ref_basis_3_3 = 0.590_043_589_926_643_5;
+
+        // Verify all basis functions
+        assert!((basis[0] - ref_basis_0_0).abs() < TOLERANCE,
+            "Y_0^0 mismatch: {} vs {}", basis[0], ref_basis_0_0);
+
+        assert!((basis[1] - ref_basis_1_n1).abs() < TOLERANCE,
+            "Y_1^{{-1}} mismatch: {} vs {}", basis[1], ref_basis_1_n1);
+        assert!((basis[2] - ref_basis_1_0).abs() < TOLERANCE,
+            "Y_1^0 mismatch: {} vs {}", basis[2], ref_basis_1_0);
+        assert!((basis[3] - ref_basis_1_1).abs() < TOLERANCE,
+            "Y_1^1 mismatch: {} vs {}", basis[3], ref_basis_1_1);
+
+        assert!((basis[4] - ref_basis_2_n2).abs() < TOLERANCE,
+            "Y_2^{{-2}} mismatch: {} vs {}", basis[4], ref_basis_2_n2);
+        assert!((basis[5] - ref_basis_2_n1).abs() < TOLERANCE,
+            "Y_2^{{-1}} mismatch: {} vs {}", basis[5], ref_basis_2_n1);
+        assert!((basis[6] - ref_basis_2_0).abs() < TOLERANCE,
+            "Y_2^0 mismatch: {} vs {}", basis[6], ref_basis_2_0);
+        assert!((basis[7] - ref_basis_2_1).abs() < TOLERANCE,
+            "Y_2^1 mismatch: {} vs {}", basis[7], ref_basis_2_1);
+        assert!((basis[8] - ref_basis_2_2).abs() < TOLERANCE,
+            "Y_2^2 mismatch: {} vs {}", basis[8], ref_basis_2_2);
+
+        assert!((basis[9] - ref_basis_3_n3).abs() < TOLERANCE,
+            "Y_3^{{-3}} mismatch: {} vs {}", basis[9], ref_basis_3_n3);
+        assert!((basis[10] - ref_basis_3_n2).abs() < TOLERANCE,
+            "Y_3^{{-2}} mismatch: {} vs {}", basis[10], ref_basis_3_n2);
+        assert!((basis[11] - ref_basis_3_n1).abs() < TOLERANCE,
+            "Y_3^{{-1}} mismatch: {} vs {}", basis[11], ref_basis_3_n1);
+        assert!((basis[12] - ref_basis_3_0).abs() < TOLERANCE,
+            "Y_3^0 mismatch: {} vs {}", basis[12], ref_basis_3_0);
+        assert!((basis[13] - ref_basis_3_1).abs() < TOLERANCE,
+            "Y_3^1 mismatch: {} vs {}", basis[13], ref_basis_3_1);
+        assert!((basis[14] - ref_basis_3_2).abs() < TOLERANCE,
+            "Y_3^2 mismatch: {} vs {}", basis[14], ref_basis_3_2);
+        assert!((basis[15] - ref_basis_3_3).abs() < TOLERANCE,
+            "Y_3^3 mismatch: {} vs {}", basis[15], ref_basis_3_3);
+
+        println!("  All 16 basis functions match reference values");
+        println!("  Non-zero values: Y_0^0={:.6}, Y_1^1={:.6}, Y_2^0={:.6}, Y_2^2={:.6}, Y_3^1={:.6}, Y_3^3={:.6}",
+            basis[0], basis[3], basis[6], basis[8], basis[13], basis[15]);
+        println!("  ✓ +X axis verified\n");
+    }
+
+    // Test Case 3: Direction along +Y axis (0, 1, 0)
+    {
+        println!("Test 3 - Direction along +Y axis (0, 1, 0):");
+
+        let dir = Vector3::new(0.0, 1.0, 0.0);
+        let basis = sh_basis(&dir);
+
+        // Reference values for (x=0, y=1, z=0):
+        // l=0, m=0: Y_0^0 = 0.282095 (constant)
+        let ref_basis_0_0 = 0.282_094_791_773_878_14;
+
+        // l=1: Y_1^{-1} = C1*y = 0.488603, Y_1^0 = C1*z = 0, Y_1^1 = C1*x = 0
+        let ref_basis_1_n1 = 0.488_602_511_902_919_9;
+        let ref_basis_1_0 = 0.0;
+        let ref_basis_1_1 = 0.0;
+
+        // l=2: Y_2^{-2} = C2_0*xy = 0, Y_2^{-1} = C2_0*yz = 0
+        //      Y_2^0 = C2_1*(3z^2-1) = 0.315392 * (-1) = -0.315392
+        //      Y_2^1 = C2_0*xz = 0
+        //      Y_2^2 = C2_2*(x^2-y^2) = 0.546274 * (-1) = -0.546274
+        let ref_basis_2_n2 = 0.0;
+        let ref_basis_2_n1 = 0.0;
+        let ref_basis_2_0 = -0.315_391_565_252_520_05;
+        let ref_basis_2_1 = 0.0;
+        let ref_basis_2_2 = -0.546_274_215_296_039_6;
+
+        // l=3: Y_3^{-3} = C3_0*y*(3x^2-y^2) = 0.590044 * 1 * (-1) = -0.590044
+        //      Y_3^{-2} = C3_1*xyz = 0
+        //      Y_3^{-1} = C3_2*y*(5z^2-1) = 0.457046 * 1 * (-1) = -0.457046
+        //      Y_3^0 = C3_3*z*(5z^2-3) = 0
+        //      Y_3^1 = C3_2*x*(5z^2-1) = 0
+        //      Y_3^2 = C3_4*z*(x^2-y^2) = 0
+        //      Y_3^3 = C3_5*x*(x^2-3y^2) = 0
+        let ref_basis_3_n3 = -0.590_043_589_926_643_5;
+        let ref_basis_3_n2 = 0.0;
+        let ref_basis_3_n1 = -0.457_045_799_464_465_8;
+        let ref_basis_3_0 = 0.0;
+        let ref_basis_3_1 = 0.0;
+        let ref_basis_3_2 = 0.0;
+        let ref_basis_3_3 = 0.0;
+
+        // Verify all basis functions
+        assert!((basis[0] - ref_basis_0_0).abs() < TOLERANCE,
+            "Y_0^0 mismatch: {} vs {}", basis[0], ref_basis_0_0);
+
+        assert!((basis[1] - ref_basis_1_n1).abs() < TOLERANCE,
+            "Y_1^{{-1}} mismatch: {} vs {}", basis[1], ref_basis_1_n1);
+        assert!((basis[2] - ref_basis_1_0).abs() < TOLERANCE,
+            "Y_1^0 mismatch: {} vs {}", basis[2], ref_basis_1_0);
+        assert!((basis[3] - ref_basis_1_1).abs() < TOLERANCE,
+            "Y_1^1 mismatch: {} vs {}", basis[3], ref_basis_1_1);
+
+        assert!((basis[4] - ref_basis_2_n2).abs() < TOLERANCE,
+            "Y_2^{{-2}} mismatch: {} vs {}", basis[4], ref_basis_2_n2);
+        assert!((basis[5] - ref_basis_2_n1).abs() < TOLERANCE,
+            "Y_2^{{-1}} mismatch: {} vs {}", basis[5], ref_basis_2_n1);
+        assert!((basis[6] - ref_basis_2_0).abs() < TOLERANCE,
+            "Y_2^0 mismatch: {} vs {}", basis[6], ref_basis_2_0);
+        assert!((basis[7] - ref_basis_2_1).abs() < TOLERANCE,
+            "Y_2^1 mismatch: {} vs {}", basis[7], ref_basis_2_1);
+        assert!((basis[8] - ref_basis_2_2).abs() < TOLERANCE,
+            "Y_2^2 mismatch: {} vs {}", basis[8], ref_basis_2_2);
+
+        assert!((basis[9] - ref_basis_3_n3).abs() < TOLERANCE,
+            "Y_3^{{-3}} mismatch: {} vs {}", basis[9], ref_basis_3_n3);
+        assert!((basis[10] - ref_basis_3_n2).abs() < TOLERANCE,
+            "Y_3^{{-2}} mismatch: {} vs {}", basis[10], ref_basis_3_n2);
+        assert!((basis[11] - ref_basis_3_n1).abs() < TOLERANCE,
+            "Y_3^{{-1}} mismatch: {} vs {}", basis[11], ref_basis_3_n1);
+        assert!((basis[12] - ref_basis_3_0).abs() < TOLERANCE,
+            "Y_3^0 mismatch: {} vs {}", basis[12], ref_basis_3_0);
+        assert!((basis[13] - ref_basis_3_1).abs() < TOLERANCE,
+            "Y_3^1 mismatch: {} vs {}", basis[13], ref_basis_3_1);
+        assert!((basis[14] - ref_basis_3_2).abs() < TOLERANCE,
+            "Y_3^2 mismatch: {} vs {}", basis[14], ref_basis_3_2);
+        assert!((basis[15] - ref_basis_3_3).abs() < TOLERANCE,
+            "Y_3^3 mismatch: {} vs {}", basis[15], ref_basis_3_3);
+
+        println!("  All 16 basis functions match reference values");
+        println!("  Non-zero values: Y_0^0={:.6}, Y_1^{{-1}}={:.6}, Y_2^0={:.6}, Y_2^2={:.6}, Y_3^{{-3}}={:.6}, Y_3^{{-1}}={:.6}",
+            basis[0], basis[1], basis[6], basis[8], basis[9], basis[11]);
+        println!("  ✓ +Y axis verified\n");
+    }
+
+    // Test Case 4: General direction (normalized)
+    {
+        println!("Test 4 - General direction (0.577, 0.577, 0.577) = (1,1,1)/sqrt(3):");
+
+        let dir = Vector3::new(1.0, 1.0, 1.0).normalize();
+        let basis = sh_basis(&dir);
+
+        // For (x, y, z) = (1/sqrt(3), 1/sqrt(3), 1/sqrt(3)):
+        let x = 1.0 / 3.0f32.sqrt();
+        let y = 1.0 / 3.0f32.sqrt();
+        let z = 1.0 / 3.0f32.sqrt();
+
+        // Constants from src/core/sh.rs
+        const C0: f32 = 0.282_094_791_773_878_14;
+        const C1: f32 = 0.488_602_511_902_919_9;
+        const C2_0: f32 = 1.092_548_430_592_079_2;
+        const C2_1: f32 = 0.315_391_565_252_520_05;
+        const C2_2: f32 = 0.546_274_215_296_039_6;
+        const C3_0: f32 = 0.590_043_589_926_643_5;
+        const C3_1: f32 = 2.890_611_442_640_554;
+        const C3_2: f32 = 0.457_045_799_464_465_8;
+        const C3_3: f32 = 0.373_176_332_590_115_4;
+        const C3_4: f32 = 1.445_305_721_320_277;
+        const C3_5: f32 = 0.590_043_589_926_643_5;
+
+        // Compute reference values
+        let x2 = x * x;
+        let y2 = y * y;
+        let z2 = z * z;
+        let xy = x * y;
+        let yz = y * z;
+        let xz = x * z;
+
+        let ref_basis_0_0 = C0;
+        let ref_basis_1_n1 = C1 * y;
+        let ref_basis_1_0 = C1 * z;
+        let ref_basis_1_1 = C1 * x;
+        let ref_basis_2_n2 = C2_0 * xy;
+        let ref_basis_2_n1 = C2_0 * yz;
+        let ref_basis_2_0 = C2_1 * (3.0 * z2 - 1.0);
+        let ref_basis_2_1 = C2_0 * xz;
+        let ref_basis_2_2 = C2_2 * (x2 - y2);
+        let ref_basis_3_n3 = C3_0 * y * (3.0 * x2 - y2);
+        let ref_basis_3_n2 = C3_1 * xy * z;
+        let ref_basis_3_n1 = C3_2 * y * (5.0 * z2 - 1.0);
+        let ref_basis_3_0 = C3_3 * z * (5.0 * z2 - 3.0);
+        let ref_basis_3_1 = C3_2 * x * (5.0 * z2 - 1.0);
+        let ref_basis_3_2 = C3_4 * z * (x2 - y2);
+        let ref_basis_3_3 = C3_5 * x * (x2 - 3.0 * y2);
+
+        // Verify all basis functions
+        assert!((basis[0] - ref_basis_0_0).abs() < TOLERANCE,
+            "Y_0^0 mismatch: {} vs {}", basis[0], ref_basis_0_0);
+
+        assert!((basis[1] - ref_basis_1_n1).abs() < TOLERANCE,
+            "Y_1^{{-1}} mismatch: {} vs {}", basis[1], ref_basis_1_n1);
+        assert!((basis[2] - ref_basis_1_0).abs() < TOLERANCE,
+            "Y_1^0 mismatch: {} vs {}", basis[2], ref_basis_1_0);
+        assert!((basis[3] - ref_basis_1_1).abs() < TOLERANCE,
+            "Y_1^1 mismatch: {} vs {}", basis[3], ref_basis_1_1);
+
+        assert!((basis[4] - ref_basis_2_n2).abs() < TOLERANCE,
+            "Y_2^{{-2}} mismatch: {} vs {}", basis[4], ref_basis_2_n2);
+        assert!((basis[5] - ref_basis_2_n1).abs() < TOLERANCE,
+            "Y_2^{{-1}} mismatch: {} vs {}", basis[5], ref_basis_2_n1);
+        assert!((basis[6] - ref_basis_2_0).abs() < TOLERANCE,
+            "Y_2^0 mismatch: {} vs {}", basis[6], ref_basis_2_0);
+        assert!((basis[7] - ref_basis_2_1).abs() < TOLERANCE,
+            "Y_2^1 mismatch: {} vs {}", basis[7], ref_basis_2_1);
+        assert!((basis[8] - ref_basis_2_2).abs() < TOLERANCE,
+            "Y_2^2 mismatch: {} vs {}", basis[8], ref_basis_2_2);
+
+        assert!((basis[9] - ref_basis_3_n3).abs() < TOLERANCE,
+            "Y_3^{{-3}} mismatch: {} vs {}", basis[9], ref_basis_3_n3);
+        assert!((basis[10] - ref_basis_3_n2).abs() < TOLERANCE,
+            "Y_3^{{-2}} mismatch: {} vs {}", basis[10], ref_basis_3_n2);
+        assert!((basis[11] - ref_basis_3_n1).abs() < TOLERANCE,
+            "Y_3^{{-1}} mismatch: {} vs {}", basis[11], ref_basis_3_n1);
+        assert!((basis[12] - ref_basis_3_0).abs() < TOLERANCE,
+            "Y_3^0 mismatch: {} vs {}", basis[12], ref_basis_3_0);
+        assert!((basis[13] - ref_basis_3_1).abs() < TOLERANCE,
+            "Y_3^1 mismatch: {} vs {}", basis[13], ref_basis_3_1);
+        assert!((basis[14] - ref_basis_3_2).abs() < TOLERANCE,
+            "Y_3^2 mismatch: {} vs {}", basis[14], ref_basis_3_2);
+        assert!((basis[15] - ref_basis_3_3).abs() < TOLERANCE,
+            "Y_3^3 mismatch: {} vs {}", basis[15], ref_basis_3_3);
+
+        println!("  All 16 basis functions match reference values");
+        println!("  Sample values: Y_0^0={:.6}, Y_1^0={:.6}, Y_2^{{-2}}={:.6}, Y_3^{{-2}}={:.6}",
+            basis[0], basis[2], basis[4], basis[10]);
+        println!("  ✓ General direction verified\n");
+    }
+
+    println!("✅ TC-SH-002: Higher degree SH basis functions verified");
+    println!("   Tested degrees 1, 2, and 3 across multiple directions");
+    println!("   All basis function values match reference within 1e-5");
+    println!("   Tested canonical directions: +X, +Y, +Z, and (1,1,1)/sqrt(3)");
+}
+
 /// TC-INP-004: Verify images loaded with correct dimensions, color ordering, and value range.
 ///
 /// Pass Criteria:
