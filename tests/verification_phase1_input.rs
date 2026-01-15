@@ -1447,3 +1447,155 @@ mod reference_implementation {
         true
     }
 }
+
+/// TC-INP-011: Verify initial Gaussian parameters are within valid ranges.
+///
+/// Pass Criteria:
+/// - No scale values ≤ 0 or > reasonable bound
+/// - Opacity in valid range
+/// - Quaternion norm = 1.0 ± 1e-6
+/// - No NaN or Inf values
+#[test]
+fn tc_inp_011_initial_gaussian_parameter_bounds() {
+    use sugar_rs::io::load_colmap_scene;
+    use sugar_rs::core::init::init_from_colmap_points;
+    use std::path::PathBuf;
+
+    println!("\n=== TC-INP-011: Initial Gaussian Parameter Bounds ===\n");
+
+    // Use a known dataset
+    let dataset_path = PathBuf::from("datasets/garden/sparse/0");
+
+    if !dataset_path.exists() {
+        eprintln!("Skipping test - dataset not found at {:?}", dataset_path);
+        eprintln!("Run setup to download datasets first");
+        return;
+    }
+
+    // Load the scene
+    let scene = load_colmap_scene(&dataset_path)
+        .expect("Failed to load COLMAP scene");
+
+    assert!(scene.points.len() > 0, "No 3D points loaded");
+
+    // Initialize Gaussians from COLMAP points
+    let cloud = init_from_colmap_points(&scene.points);
+
+    println!("Initialized {} Gaussians from COLMAP points\n", cloud.len());
+
+    // Validation criteria
+    const QUATERNION_TOLERANCE: f32 = 1e-6;
+    const MIN_SCALE: f32 = 1e-8;  // Very small but positive
+    const MAX_SCALE: f32 = 1000.0; // Reasonable upper bound
+    const MIN_OPACITY: f32 = 0.0;
+    const MAX_OPACITY: f32 = 1.0;
+
+    let mut scale_errors = 0;
+    let mut opacity_errors = 0;
+    let mut quaternion_errors = 0;
+    let mut nan_inf_errors = 0;
+
+    let mut min_scale = f32::MAX;
+    let mut max_scale = f32::MIN;
+    let mut min_opacity = f32::MAX;
+    let mut max_opacity = f32::MIN;
+    let mut max_quaternion_norm_error = 0.0f32;
+
+    for (i, gaussian) in cloud.gaussians.iter().enumerate() {
+        // 1. Check for NaN or Inf values
+        let has_nan_inf =
+            !gaussian.position.x.is_finite() ||
+            !gaussian.position.y.is_finite() ||
+            !gaussian.position.z.is_finite() ||
+            !gaussian.scale.x.is_finite() ||
+            !gaussian.scale.y.is_finite() ||
+            !gaussian.scale.z.is_finite() ||
+            !gaussian.opacity.is_finite() ||
+            !gaussian.rotation.quaternion().w.is_finite() ||
+            !gaussian.rotation.quaternion().i.is_finite() ||
+            !gaussian.rotation.quaternion().j.is_finite() ||
+            !gaussian.rotation.quaternion().k.is_finite() ||
+            gaussian.sh_coeffs.iter().any(|c| !c[0].is_finite() || !c[1].is_finite() || !c[2].is_finite());
+
+        if has_nan_inf {
+            nan_inf_errors += 1;
+            if nan_inf_errors <= 5 {
+                println!("Gaussian {}: Contains NaN or Inf values", i);
+            }
+            continue; // Skip further checks for this Gaussian
+        }
+
+        // 2. Check scale values (convert from log-space)
+        let actual_scale = gaussian.actual_scale();
+        min_scale = min_scale.min(actual_scale.x.min(actual_scale.y.min(actual_scale.z)));
+        max_scale = max_scale.max(actual_scale.x.max(actual_scale.y.max(actual_scale.z)));
+
+        if actual_scale.x <= 0.0 || actual_scale.y <= 0.0 || actual_scale.z <= 0.0 ||
+           actual_scale.x < MIN_SCALE || actual_scale.y < MIN_SCALE || actual_scale.z < MIN_SCALE ||
+           actual_scale.x > MAX_SCALE || actual_scale.y > MAX_SCALE || actual_scale.z > MAX_SCALE {
+            scale_errors += 1;
+            if scale_errors <= 5 {
+                println!("Gaussian {}: Invalid scale ({}, {}, {})",
+                    i, actual_scale.x, actual_scale.y, actual_scale.z);
+            }
+        }
+
+        // 3. Check opacity (convert from logit-space)
+        let actual_opacity = gaussian.actual_opacity();
+        min_opacity = min_opacity.min(actual_opacity);
+        max_opacity = max_opacity.max(actual_opacity);
+
+        if actual_opacity < MIN_OPACITY || actual_opacity > MAX_OPACITY {
+            opacity_errors += 1;
+            if opacity_errors <= 5 {
+                println!("Gaussian {}: Opacity out of range: {}", i, actual_opacity);
+            }
+        }
+
+        // 4. Check quaternion normalization
+        let quat = gaussian.rotation.quaternion();
+        let norm = (quat.w * quat.w + quat.i * quat.i + quat.j * quat.j + quat.k * quat.k).sqrt();
+        let norm_error = (norm - 1.0).abs();
+        max_quaternion_norm_error = max_quaternion_norm_error.max(norm_error);
+
+        if norm_error > QUATERNION_TOLERANCE {
+            quaternion_errors += 1;
+            if quaternion_errors <= 5 {
+                println!("Gaussian {}: Quaternion not normalized (norm = {}, error = {})",
+                    i, norm, norm_error);
+            }
+        }
+    }
+
+    // Print summary
+    println!("\n--- Validation Summary ---");
+    println!("Total Gaussians: {}", cloud.len());
+    println!("\nScale values (actual, not log-space):");
+    println!("   Min: {:.6e}", min_scale);
+    println!("   Max: {:.6e}", max_scale);
+    println!("   Expected range: [{}, {}]", MIN_SCALE, MAX_SCALE);
+    println!("   Scale errors: {}", scale_errors);
+
+    println!("\nOpacity values (actual, not logit-space):");
+    println!("   Min: {:.6}", min_opacity);
+    println!("   Max: {:.6}", max_opacity);
+    println!("   Expected range: [{}, {}]", MIN_OPACITY, MAX_OPACITY);
+    println!("   Opacity errors: {}", opacity_errors);
+
+    println!("\nQuaternion normalization:");
+    println!("   Max norm error: {:.6e}", max_quaternion_norm_error);
+    println!("   Tolerance: {:.6e}", QUATERNION_TOLERANCE);
+    println!("   Quaternion errors: {}", quaternion_errors);
+
+    println!("\nNaN/Inf check:");
+    println!("   NaN/Inf errors: {}", nan_inf_errors);
+
+    // Assert all criteria are met
+    assert_eq!(nan_inf_errors, 0, "Found {} Gaussians with NaN or Inf values", nan_inf_errors);
+    assert_eq!(scale_errors, 0, "Found {} Gaussians with invalid scale values", scale_errors);
+    assert_eq!(opacity_errors, 0, "Found {} Gaussians with out-of-range opacity", opacity_errors);
+    assert_eq!(quaternion_errors, 0, "Found {} Gaussians with unnormalized quaternions", quaternion_errors);
+
+    println!("\n✓ All initial Gaussian parameters are within valid ranges");
+}
+
