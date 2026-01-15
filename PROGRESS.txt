@@ -675,3 +675,50 @@ Then proceed to Phase 3 optimization verification tasks:
 2. TC-OPT-002: L2 (MSE) Loss Correctness (SplatRs-gew)
 3. TC-OPT-003: SSIM Loss Correctness (SplatRs-fqa)
 
+## 2026-01-14 17:54 - Completed SplatRs-9z2 (TC-INP-011)
+
+### What was done
+- Implemented TC-INP-011: Initial Gaussian Parameter Bounds verification test
+- Added comprehensive test to tests/verification_phase1_input.rs
+- Test validates that Gaussians initialized from COLMAP points have valid parameter ranges
+- Test validates four critical criteria:
+  1. Scale values (actual, not log-space) are positive and within reasonable bounds [1e-8, 1000]
+  2. Opacity values (actual, not logit-space) are in valid range [0, 1]
+  3. Quaternions are normalized (norm = 1.0 ± 1e-6)
+  4. No NaN or Inf values in any parameters
+- Test passes successfully on garden dataset with 138,766 Gaussians
+- Results show perfect initialization:
+  - All scales: 0.01005 (exp(-4.6) ≈ 0.01)
+  - All opacities: 0.9003 (sigmoid(2.2) ≈ 0.9)
+  - All quaternions perfectly normalized (error = 0.0)
+  - Zero NaN/Inf errors
+
+### Key decisions made
+- Test validates actual parameter values, not log/logit-space representations
+  - Converts log-scale to actual scale using gaussian.actual_scale()
+  - Converts logit-opacity to actual opacity using gaussian.actual_opacity()
+- Used reasonable bounds for validation:
+  - MIN_SCALE: 1e-8 (very small but positive)
+  - MAX_SCALE: 1000.0 (reasonable upper bound for scene-scale Gaussians)
+  - QUATERNION_TOLERANCE: 1e-6 (matches other verification test tolerances)
+- Comprehensive validation of all 138K+ Gaussians from real COLMAP dataset
+- Test prints summary statistics for debugging and verification:
+  - Min/max scale and opacity values
+  - Maximum quaternion norm error
+  - Error counts by category
+- Error reporting limited to first 5 errors per category to avoid overwhelming output
+- Test is self-contained and works with garden dataset
+
+### Suggestions for next tasks
+Continue with additional Phase 1/2 verification tests in priority order:
+1. TC-COV-002: Quaternion Normalization Handling (SplatRs-en8)
+2. TC-COV-003: Numerical Stability with Extreme Scales (SplatRs-m2e)
+3. TC-SH-002: Higher Degree SH Basis Functions (SplatRs-n3b)
+4. TC-RAS-010: 3D to 2D Covariance Projection (SplatRs-8vu)
+5. TC-RAS-011: Anisotropic Gaussian Projection (SplatRs-l77)
+
+Then proceed to Phase 3 optimization verification tasks:
+1. TC-OPT-001: L1 Loss Correctness (SplatRs-wyc)
+2. TC-OPT-002: L2 (MSE) Loss Correctness (SplatRs-gew)
+3. TC-OPT-003: SSIM Loss Correctness (SplatRs-fqa)
+
