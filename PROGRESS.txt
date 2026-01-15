@@ -617,3 +617,61 @@ Then proceed to additional Phase 1/2 verification tests:
 5. TC-RAS-010: 3D to 2D Covariance Projection (SplatRs-8vu)
 6. TC-RAS-011: Anisotropic Gaussian Projection (SplatRs-l77)
 
+## 2026-01-14 17:50 - Completed SplatRs-8if (TC-INP-004)
+
+### What was done
+- Implemented TC-INP-004: Image Loading and Color Space verification test
+- Added comprehensive test to tests/verification_phase1_input.rs
+- Test validates image loading with correct dimensions, color ordering, and value range
+- Three test scenarios implemented:
+  1. PNG format (lossless): 4×4 test pattern with pure R/G/B rows and mixed colors
+  2. JPEG format (lossy): 16×16 quadrant pattern to test compression tolerance
+  3. Value range verification: Tests black/white/mid-gray extreme values
+- PNG test validates:
+  - Dimensions match exactly (4×4)
+  - Pixel values exact (lossless format)
+  - RGB color channel ordering correct (not BGR)
+  - All 16 pixels match ground truth
+- JPEG test validates:
+  - Dimensions match exactly (16×16)
+  - Pixel values within ±10 tolerance (lossy compression)
+  - Maximum difference: 1 (well within tolerance)
+  - RGB color channel ordering correct
+- Value range test validates:
+  - Black (0,0,0), White (255,255,255), Gray (127,128,129) preserved exactly
+  - Confirms [0,255] range (not normalized to [0,1])
+- All test cases pass successfully
+
+### Key decisions made
+- Used synthetic test images with known patterns for validation
+  - Avoids dependency on external test images
+  - Provides exact ground truth for comparison
+- PNG test uses small 4×4 image for fast execution
+  - Pure color rows (R/G/B) clearly validate channel ordering
+  - Lossless format allows exact pixel comparison
+- JPEG test uses 16×16 image aligned to 8×8 DCT blocks
+  - Solid color quadrants reduce compression artifacts
+  - Allows testing of lossy format with reasonable tolerance
+  - Verified tolerance is ±10 but actual max difference was only 1
+- Test creates temporary directory /tmp/tc_inp_004_test_images
+  - Cleaned up after test completion
+  - Avoids polluting repository with test files
+- Verified RGB ordering (not BGR) by checking pure color pixels
+  - Red pixel: (255, 0, 0) - red in first channel
+  - Green pixel: (0, 255, 0) - green in second channel
+  - Blue pixel: (0, 0, 255) - blue in third channel
+
+### Suggestions for next tasks
+Continue with additional Phase 1/2 verification tests:
+1. TC-INP-011: Initial Gaussian Parameter Bounds (SplatRs-9z2)
+2. TC-COV-002: Quaternion Normalization Handling (SplatRs-en8)
+3. TC-COV-003: Numerical Stability with Extreme Scales (SplatRs-m2e)
+4. TC-SH-002: Higher Degree SH Basis Functions (SplatRs-n3b)
+5. TC-RAS-010: 3D to 2D Covariance Projection (SplatRs-8vu)
+6. TC-RAS-011: Anisotropic Gaussian Projection (SplatRs-l77)
+
+Then proceed to Phase 3 optimization verification tasks:
+1. TC-OPT-001: L1 Loss Correctness (SplatRs-wyc)
+2. TC-OPT-002: L2 (MSE) Loss Correctness (SplatRs-gew)
+3. TC-OPT-003: SSIM Loss Correctness (SplatRs-fqa)
+
