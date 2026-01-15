@@ -2374,3 +2374,357 @@ fn tc_adc_010_opacity_based_pruning() {
     println!("  - All remaining Gaussians have opacity >= {:.3}", opacity_threshold);
     println!("  - Reconstruction quality maintained (PSNR = {:.2} dB)", final_psnr);
 }
+
+/// TC-ADC-011: Scale-Based Pruning
+///
+/// Verify that excessively large Gaussians are removed during pruning.
+///
+/// Pass Criteria:
+/// - Gaussians exceeding scale threshold are removed
+/// - Gaussian count reduced through pruning
+/// - No visual artifacts from pruning (quality maintained)
+///
+/// Severity: Medium
+#[test]
+fn tc_adc_011_scale_based_pruning() {
+    println!("\n=== TC-ADC-011: Scale-Based Pruning ===\n");
+
+    // Create synthetic target scene: 3 small colored regions (red, green, blue)
+    let target_gaussians = vec![
+        Gaussian {
+            position: Vector3::new(-1.5, 0.0, 5.0),
+            scale: Vector3::new(-2.0, -2.0, -2.0), // Small scale (exp(-2) ≈ 0.135)
+            rotation: UnitQuaternion::identity(),
+            opacity: 2.2, // sigmoid(2.2) ≈ 0.9
+            sh_coeffs: {
+                let mut coeffs = [[0.0f32; 3]; 16];
+                coeffs[0] = [0.7, 0.0, 0.0]; // Red DC
+                coeffs
+            },
+        },
+        Gaussian {
+            position: Vector3::new(0.0, 0.0, 5.0),
+            scale: Vector3::new(-2.0, -2.0, -2.0),
+            rotation: UnitQuaternion::identity(),
+            opacity: 2.2,
+            sh_coeffs: {
+                let mut coeffs = [[0.0f32; 3]; 16];
+                coeffs[0] = [0.0, 0.7, 0.0]; // Green DC
+                coeffs
+            },
+        },
+        Gaussian {
+            position: Vector3::new(1.5, 0.0, 5.0),
+            scale: Vector3::new(-2.0, -2.0, -2.0),
+            rotation: UnitQuaternion::identity(),
+            opacity: 2.2,
+            sh_coeffs: {
+                let mut coeffs = [[0.0f32; 3]; 16];
+                coeffs[0] = [0.0, 0.0, 0.7]; // Blue DC
+                coeffs
+            },
+        },
+    ];
+
+    // Camera setup: front view
+    let camera = Camera::new(
+        400.0, 400.0, 256.0, 192.0, 512, 384,
+        Matrix3::identity(),
+        Vector3::zeros(),
+    );
+    let background = Vector3::new(0.0, 0.0, 0.0);
+
+    // Render target image
+    let target_image = render_full_linear(&target_gaussians, &camera, &background, false);
+
+    // Initialize optimization scene with 10 Gaussians:
+    // - 3 useful Gaussians (positioned near target regions with moderate scale)
+    // - 7 excessively large Gaussians that should be pruned
+    let mut gaussians = vec![
+        // Useful Gaussians with reasonable scale
+        Gaussian {
+            position: Vector3::new(-1.6, 0.0, 5.0),
+            scale: Vector3::new(-1.5, -1.5, -1.5), // Moderate scale (exp(-1.5) ≈ 0.22)
+            rotation: UnitQuaternion::identity(),
+            opacity: 1.5,
+            sh_coeffs: {
+                let mut coeffs = [[0.0f32; 3]; 16];
+                coeffs[0] = [0.3, 0.3, 0.3]; // Gray
+                coeffs
+            },
+        },
+        Gaussian {
+            position: Vector3::new(0.1, 0.0, 5.0),
+            scale: Vector3::new(-1.5, -1.5, -1.5),
+            rotation: UnitQuaternion::identity(),
+            opacity: 1.5,
+            sh_coeffs: {
+                let mut coeffs = [[0.0f32; 3]; 16];
+                coeffs[0] = [0.3, 0.3, 0.3];
+                coeffs
+            },
+        },
+        Gaussian {
+            position: Vector3::new(1.6, 0.0, 5.0),
+            scale: Vector3::new(-1.5, -1.5, -1.5),
+            rotation: UnitQuaternion::identity(),
+            opacity: 1.5,
+            sh_coeffs: {
+                let mut coeffs = [[0.0f32; 3]; 16];
+                coeffs[0] = [0.3, 0.3, 0.3];
+                coeffs
+            },
+        },
+        // Excessively large Gaussians that should be pruned
+        // These start with very large scales and positions far from target regions
+        Gaussian {
+            position: Vector3::new(-3.0, 2.0, 5.0),
+            scale: Vector3::new(1.5, 1.5, 1.5), // Very large (exp(1.5) ≈ 4.48)
+            rotation: UnitQuaternion::identity(),
+            opacity: 1.0,
+            sh_coeffs: {
+                let mut coeffs = [[0.0f32; 3]; 16];
+                coeffs[0] = [0.2, 0.2, 0.2];
+                coeffs
+            },
+        },
+        Gaussian {
+            position: Vector3::new(3.0, 2.0, 5.0),
+            scale: Vector3::new(1.5, 1.5, 1.5),
+            rotation: UnitQuaternion::identity(),
+            opacity: 1.0,
+            sh_coeffs: {
+                let mut coeffs = [[0.0f32; 3]; 16];
+                coeffs[0] = [0.2, 0.2, 0.2];
+                coeffs
+            },
+        },
+        Gaussian {
+            position: Vector3::new(-3.0, -2.0, 5.0),
+            scale: Vector3::new(1.5, 1.5, 1.5),
+            rotation: UnitQuaternion::identity(),
+            opacity: 1.0,
+            sh_coeffs: {
+                let mut coeffs = [[0.0f32; 3]; 16];
+                coeffs[0] = [0.2, 0.2, 0.2];
+                coeffs
+            },
+        },
+        Gaussian {
+            position: Vector3::new(3.0, -2.0, 5.0),
+            scale: Vector3::new(1.5, 1.5, 1.5),
+            rotation: UnitQuaternion::identity(),
+            opacity: 1.0,
+            sh_coeffs: {
+                let mut coeffs = [[0.0f32; 3]; 16];
+                coeffs[0] = [0.2, 0.2, 0.2];
+                coeffs
+            },
+        },
+        Gaussian {
+            position: Vector3::new(0.0, 3.0, 5.0),
+            scale: Vector3::new(1.5, 1.5, 1.5),
+            rotation: UnitQuaternion::identity(),
+            opacity: 1.0,
+            sh_coeffs: {
+                let mut coeffs = [[0.0f32; 3]; 16];
+                coeffs[0] = [0.2, 0.2, 0.2];
+                coeffs
+            },
+        },
+        Gaussian {
+            position: Vector3::new(0.0, -3.0, 5.0),
+            scale: Vector3::new(1.5, 1.5, 1.5),
+            rotation: UnitQuaternion::identity(),
+            opacity: 1.0,
+            sh_coeffs: {
+                let mut coeffs = [[0.0f32; 3]; 16];
+                coeffs[0] = [0.2, 0.2, 0.2];
+                coeffs
+            },
+        },
+        Gaussian {
+            position: Vector3::new(-2.5, 2.5, 5.0),
+            scale: Vector3::new(1.5, 1.5, 1.5),
+            rotation: UnitQuaternion::identity(),
+            opacity: 1.0,
+            sh_coeffs: {
+                let mut coeffs = [[0.0f32; 3]; 16];
+                coeffs[0] = [0.2, 0.2, 0.2];
+                coeffs
+            },
+        },
+    ];
+
+    let initial_gaussian_count = gaussians.len();
+    println!("Initial Gaussian count: {}", initial_gaussian_count);
+
+    // Compute initial scale statistics
+    let initial_scale_stats: Vec<f32> = gaussians.iter()
+        .map(|g| g.scale.x.max(g.scale.y).max(g.scale.z))
+        .collect();
+    let initial_max_log_scale = initial_scale_stats.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let initial_avg_log_scale = initial_scale_stats.iter().sum::<f32>() / (initial_scale_stats.len() as f32);
+
+    println!("Initial scale statistics:");
+    println!("  Max log-scale: {:.3} (actual: {:.3})", initial_max_log_scale, initial_max_log_scale.exp());
+    println!("  Avg log-scale: {:.3} (actual: {:.3})", initial_avg_log_scale, initial_avg_log_scale.exp());
+
+    // Optimization parameters
+    let color_lr = 5.0;
+    let scale_lr = 0.05; // Small learning rate to prevent rapid scale changes
+    let iterations = 100;
+    let prune_interval = 25; // Prune every 25 iterations
+    let scale_threshold: f32 = 0.5; // Prune Gaussians with max log-scale > 0.5 (actual scale > exp(0.5) ≈ 1.65)
+
+    let mut prune_event_count = 0;
+    let mut total_pruned = 0;
+
+    println!("Training for {} iterations with pruning every {} iterations", iterations, prune_interval);
+    println!("Scale threshold for pruning: {:.3} log-space (actual: {:.3})", scale_threshold, scale_threshold.exp());
+    println!();
+
+    // Optimization loop
+    for iter in 1..=iterations {
+        // Render current state
+        let rendered = render_full_linear(&gaussians, &camera, &background, false);
+        let loss = l2_loss(&rendered, &target_image);
+
+        // Compute per-pixel gradients
+        let d_pixels: Vec<Vector3<f32>> = rendered
+            .iter()
+            .zip(target_image.iter())
+            .map(|(a, b)| 2.0 * (*a - *b) / (rendered.len() as f32))
+            .collect();
+
+        // Backward pass
+        let (_img, d_colors, _d_opacity_logits, _d_positions, d_scales, _d_rot, _d_bg) =
+            render_full_color_grads(&gaussians, &camera, &d_pixels, &background, false);
+
+        // Update parameters (gradient descent)
+        for (i, gaussian) in gaussians.iter_mut().enumerate() {
+            // Update color (SH DC coefficients)
+            for c in 0..3 {
+                gaussian.sh_coeffs[0][c] -= color_lr * d_colors[i][c];
+            }
+
+            // Update scale (log-space)
+            gaussian.scale -= scale_lr * d_scales[i];
+        }
+
+        // Pruning: Remove excessively large Gaussians
+        if iter % prune_interval == 0 {
+            let count_before = gaussians.len();
+
+            // Filter out Gaussians with max scale exceeding threshold
+            gaussians.retain(|g| {
+                let max_log_scale = g.scale.x.max(g.scale.y).max(g.scale.z);
+                max_log_scale <= scale_threshold
+            });
+
+            let count_after = gaussians.len();
+            let pruned_this_iteration = count_before - count_after;
+
+            if pruned_this_iteration > 0 {
+                prune_event_count += 1;
+                total_pruned += pruned_this_iteration;
+                println!("Iteration {}: Pruned {} Gaussians (max log-scale > {:.3}), {} remaining",
+                    iter, pruned_this_iteration, scale_threshold, count_after);
+            }
+        }
+
+        // Progress logging
+        if iter % 25 == 0 {
+            if !gaussians.is_empty() {
+                let scale_stats: Vec<f32> = gaussians.iter()
+                    .map(|g| g.scale.x.max(g.scale.y).max(g.scale.z))
+                    .collect();
+                let min_log_scale = scale_stats.iter().cloned().fold(f32::INFINITY, f32::min);
+                let max_log_scale = scale_stats.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+
+                println!("Iteration {}: loss = {:.6}, Gaussians = {}, scale range = [{:.3}, {:.3}] (actual: [{:.3}, {:.3}])",
+                    iter, loss, gaussians.len(), min_log_scale, max_log_scale, min_log_scale.exp(), max_log_scale.exp());
+            }
+        }
+    }
+
+    // Final render for quality check
+    let final_rendered = render_full_linear(&gaussians, &camera, &background, false);
+    let final_loss = l2_loss(&final_rendered, &target_image);
+
+    // Compute quality metrics
+    let final_psnr = compute_psnr(&final_rendered, &target_image);
+
+    // Final scale statistics
+    let final_scale_stats: Vec<f32> = gaussians.iter()
+        .map(|g| g.scale.x.max(g.scale.y).max(g.scale.z))
+        .collect();
+    let final_max_log_scale = final_scale_stats.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let final_avg_log_scale = final_scale_stats.iter().sum::<f32>() / (final_scale_stats.len() as f32);
+
+    println!();
+    println!("Final state:");
+    println!("  Initial Gaussian count: {}", initial_gaussian_count);
+    println!("  Final Gaussian count: {}", gaussians.len());
+    println!("  Total pruning events: {}", prune_event_count);
+    println!("  Total Gaussians pruned: {}", total_pruned);
+    println!("  Final loss: {:.6}", final_loss);
+    println!("  Final PSNR: {:.2} dB", final_psnr);
+    println!("  Final max log-scale: {:.3} (actual: {:.3})", final_max_log_scale, final_max_log_scale.exp());
+    println!("  Final avg log-scale: {:.3} (actual: {:.3})", final_avg_log_scale, final_avg_log_scale.exp());
+    println!();
+
+    // Verify pass criteria
+    println!("Pass Criteria Verification:");
+
+    // Criterion 1: Large Gaussians should have been removed
+    println!("  1. Large-scale Gaussians removed:");
+    println!("     Total pruned: {} out of {} initial Gaussians", total_pruned, initial_gaussian_count);
+    assert!(
+        total_pruned > 0,
+        "Expected at least one Gaussian to be pruned (got {})",
+        total_pruned
+    );
+    println!("     ✓ Passed (pruning occurred)");
+
+    // Criterion 2: Final Gaussian count should be less than initial
+    println!("  2. Gaussian count reduced through pruning:");
+    println!("     Initial count: {}", initial_gaussian_count);
+    println!("     Final count: {}", gaussians.len());
+    assert!(
+        gaussians.len() < initial_gaussian_count,
+        "Expected final count {} < initial count {}",
+        gaussians.len(), initial_gaussian_count
+    );
+    println!("     ✓ Passed");
+
+    // Criterion 3: All remaining Gaussians should have scale <= threshold
+    println!("  3. Remaining Gaussians meet scale threshold:");
+    println!("     Maximum log-scale of remaining Gaussians: {:.6}", final_max_log_scale);
+    println!("     Threshold: {:.6}", scale_threshold);
+    assert!(
+        final_max_log_scale <= scale_threshold,
+        "Maximum scale {:.6} should be <= threshold {:.6}",
+        final_max_log_scale, scale_threshold
+    );
+    println!("     ✓ Passed");
+
+    // Criterion 4: Reconstruction quality should be maintained
+    println!("  4. Reconstruction quality maintained:");
+    println!("     Final PSNR: {:.2} dB", final_psnr);
+    println!("     Final loss: {:.6}", final_loss);
+    // Quality should be reasonable (PSNR > 20 dB is acceptable after pruning)
+    assert!(
+        final_psnr > 20.0,
+        "Expected PSNR > 20 dB after pruning (got {:.2} dB)",
+        final_psnr
+    );
+    println!("     ✓ Passed (quality maintained)");
+
+    println!();
+    println!("✓ TC-ADC-011 passed: Scale-based pruning verified!");
+    println!("  - {} large-scale Gaussians pruned", total_pruned);
+    println!("  - Gaussian count reduced from {} to {}", initial_gaussian_count, gaussians.len());
+    println!("  - All remaining Gaussians have max log-scale <= {:.3}", scale_threshold);
+    println!("  - Reconstruction quality maintained (PSNR = {:.2} dB)", final_psnr);
+}
