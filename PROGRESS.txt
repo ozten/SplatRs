@@ -254,3 +254,37 @@ All Phase 1 verification tasks are now complete! Proceed to Phase 2:
 4. TC-GRAD-002: Scale Gradient Finite Difference Check (SplatRs-0a5)
 5. TC-GRAD-003: Rotation Gradient Finite Difference Check (SplatRs-aba)
 
+## 2026-01-14 23:00 - Completed SplatRs-6xz (TC-RAS-001)
+
+### What was done
+- Implemented TC-RAS-001: Front-to-Back Depth Ordering verification test
+- Created new test file: tests/verification_phase2_rasterization.rs
+- Test validates Gaussian depth sorting and alpha blending in rasterization pipeline
+- Three comprehensive test scenarios implemented:
+  1. High opacity Gaussians - verifies depth sorting is input-order independent
+  2. Semi-transparent Gaussians - verifies alpha blending between two layers
+  3. Three Gaussians at different depths - verifies multi-layer compositing
+- All tests pass successfully with RGB values within 1/255 tolerance
+
+### Key decisions made
+- Created separate test file for Phase 2 (rasterization and gradients)
+  - Follows same structure as Phase 1 (verification_phase1_input.rs)
+  - Keeps tests organized by phase
+- Test validates depth sorting by testing both correct and incorrect input orders
+  - Confirms renderer sorts Gaussians by depth internally
+  - Input order should not affect output
+- Used multiple test scenarios to cover different alpha blending cases
+  - High opacity: tests that near Gaussian dominates
+  - Semi-transparent: tests that both layers contribute
+  - Three layers: tests multi-layer alpha accumulation
+- Test structure is self-contained and doesn't require external datasets
+  - Creates synthetic Gaussians with known properties
+  - Validates behavior rather than exact ground truth values
+
+### Suggestions for next tasks
+Continue with Phase 2 verification tasks in priority order:
+1. TC-RAS-002: Alpha Blending Accumulation (SplatRs-kis)
+2. TC-GRAD-001: Position Gradient Finite Difference Check (SplatRs-zuc)
+3. TC-GRAD-002: Scale Gradient Finite Difference Check (SplatRs-0a5)
+4. TC-GRAD-003: Rotation Gradient Finite Difference Check (SplatRs-aba)
+
