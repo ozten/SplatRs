@@ -1490,3 +1490,54 @@ Continue with other verification tests:
 2. TC-E2E-002: LPIPS Perceptual Quality (SplatRs-t2e) - requires Python integration
 3. Manual inspection tests: TC-E2E-010 (Floater Detection), TC-E2E-011 (Edge Sharpness), etc.
 
+
+## 2026-01-14 22:00 - Completed SplatRs-t2e (TC-E2E-002)
+
+### What was done
+- Implemented TC-E2E-002: LPIPS Perceptual Quality verification test
+- Created scripts/compute_lpips.py for Python/lpips integration
+- Added comprehensive test to tests/verification_phase3_optimization.rs
+- Test validates LPIPS metric via Python subprocess calls
+- Five comprehensive test scenarios implemented:
+  1. Identical images: LPIPS ≈ 0 (< 0.001) - achieved 0.000000
+  2. Similar images: Low LPIPS (< 0.1) - achieved 0.003943
+  3. Different images: High LPIPS (> 0.3) - achieved 0.828534
+  4. Symmetry validation: LPIPS(A,B) = LPIPS(B,A) - perfect symmetry
+  5. Perceptual vs L2: Demonstrates LPIPS detects perceptual differences
+- All test cases pass successfully
+- Added png = "0.17" to dev-dependencies in Cargo.toml for PNG encoding
+- Created helper functions:
+  - compute_lpips_via_python(): Calls Python script and parses result
+  - save_image_png(): Encodes test images to PNG format
+
+### Key decisions made
+- Python integration via subprocess rather than native implementation
+  - LPIPS requires deep neural network (AlexNet/VGG)
+  - Python lpips library is well-maintained reference implementation
+  - Subprocess approach avoids complex PyTorch bindings in Rust
+- Script redirects lpips informational output to stderr
+  - Ensures only LPIPS value appears in stdout
+  - Prevents parsing errors from model loading messages
+- Test gracefully handles missing Python/lpips
+  - Prints helpful error message with installation instructions
+  - Returns early rather than failing test
+  - Allows CI to run even without Python dependencies
+- Used 64×64 images for fast execution
+  - Small enough for quick test runs (~9.2 seconds total)
+  - Large enough for lpips neural network to process
+- Comprehensive test coverage:
+  - Validates expected LPIPS behavior across different image pairs
+  - Tests mathematical properties (symmetry)
+  - Demonstrates perceptual similarity beyond pixel-wise metrics
+  - Creates synthetic test images with known properties
+
+### Suggestions for next tasks
+Continue with medium-priority verification tests:
+1. TC-E2E-001: Mip-NeRF 360 Benchmark (SplatRs-7ib) - long-running benchmark
+2. Manual inspection tests: TC-E2E-010 (Floater Detection), TC-E2E-011 (Edge Sharpness), etc.
+
+Or proceed to lower priority tests:
+1. TC-RAS-004: Early Termination (SplatRs-e97)
+2. TC-ADC-003: Densification Interval (SplatRs-v79)
+3. TC-ADC-012: Gaussian Count Stability (SplatRs-7qb)
+
