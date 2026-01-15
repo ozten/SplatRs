@@ -910,7 +910,8 @@ pub fn coverage_mask_bool(gaussians: &[Gaussian], camera: &Camera) -> Vec<bool> 
 /// where computing full-resolution coverage on CPU would be too slow.
 ///
 /// Returns a Vec<f32> with length width*height, row-major.
-/// Covered pixels get weight 1.0, uncovered pixels get weight 0.1.
+/// Covered pixels get weight 1.0, uncovered pixels get weight 0.5.
+/// (0.5 instead of 0.1 to prevent background gradient collapse)
 pub fn coverage_weights_downsampled(
     gaussians: &[Gaussian],
     camera: &Camera,
@@ -939,7 +940,8 @@ pub fn coverage_weights_downsampled(
     let ds_coverage = coverage_mask_bool(gaussians, &ds_camera);
 
     // Upsample to full resolution with nearest-neighbor
-    let mut weights = vec![0.1f32; (full_width * full_height) as usize];
+    // IMPORTANT: Use 0.5 for background pixels (not 0.1) to prevent background gradient vanishing
+    let mut weights = vec![0.5f32; (full_width * full_height) as usize];
 
     for py in 0..full_height {
         for px in 0..full_width {

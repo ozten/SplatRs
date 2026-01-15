@@ -471,9 +471,11 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
 
     // Loss weighting: emphasize covered pixels so Gaussian colors get a strong learning signal.
     // Otherwise the loss is dominated by background pixels and updates barely affect Gaussians.
+    // IMPORTANT: Background pixels need sufficient weight (0.5) to prevent background collapse.
+    // 0.1 was too small and caused background gradients to vanish as coverage increased.
     let weights: Vec<f32> = coverage_bool
         .iter()
-        .map(|&c| if c { 1.0 } else { 0.1 })
+        .map(|&c| if c { 1.0 } else { 0.5 })
         .collect();
 
     // Background color parameter (linear RGB).
@@ -1755,7 +1757,7 @@ pub fn train_multiview_color_only(
             let coverage_bool = coverage_mask_bool(&gaussians, &train_camera);
             coverage_bool
                 .iter()
-                .map(|&c| if c { 1.0 } else { 0.1 })
+                .map(|&c| if c { 1.0 } else { 0.5 })
                 .collect()
         };
 
@@ -1764,7 +1766,7 @@ pub fn train_multiview_color_only(
             let coverage_bool = coverage_mask_bool(&gaussians, &train_camera);
             coverage_bool
                 .iter()
-                .map(|&c| if c { 1.0 } else { 0.1 })
+                .map(|&c| if c { 1.0 } else { 0.5 })
                 .collect()
         };
 
