@@ -2,7 +2,7 @@
 
 ## Context Loading
 1. Read PROGRESS.txt if it exists to understand what has been accomplished
-2. Run `bd ready --label verify-2 --json` to see available tasks ordered by priority
+2. Run `bd ready --label TC-E2E-010 --json` to see available tasks ordered by priority
 
 ## Task Selection
 Pick ONE task from the ready queue. Prefer:

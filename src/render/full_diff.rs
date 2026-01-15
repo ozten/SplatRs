@@ -475,9 +475,21 @@ pub fn render_full_linear(
     bg: &Vector3<f32>,
     disable_sh: bool,
 ) -> Vec<Vector3<f32>> {
+    render_full_linear_with_depth(gaussians, camera, bg, disable_sh).0
+}
+
+/// Forward render that returns both linear RGB pixels and depth values.
+/// Returns (rgb_pixels, depth_pixels) where depth is in camera space Z coordinate.
+pub fn render_full_linear_with_depth(
+    gaussians: &[Gaussian],
+    camera: &Camera,
+    bg: &Vector3<f32>,
+    disable_sh: bool,
+) -> (Vec<Vector3<f32>>, Vec<f32>) {
     let width = camera.width as i32;
     let height = camera.height as i32;
-    let mut out = vec![Vector3::<f32>::zeros(); (width * height) as usize];
+    let mut out_rgb = vec![Vector3::<f32>::zeros(); (width * height) as usize];
+    let mut out_depth = vec![0.0f32; (width * height) as usize];
 
     let mut projected: Vec<Gaussian2D> = gaussians
         .iter()
@@ -507,8 +519,9 @@ pub fn render_full_linear(
 
             let mut alphas: Vec<f32> = Vec::new();
             let mut colors: Vec<Vector3<f32>> = Vec::new();
+            let mut depths: Vec<f32> = Vec::new();
 
-            for g in &prepared {
+            for (idx, g) in prepared.iter().enumerate() {
                 if px < g.min_x || px > g.max_x || py < g.min_y || py > g.max_y {
                     continue;
                 }
@@ -524,13 +537,25 @@ pub fn render_full_linear(
 
                 alphas.push(alpha);
                 colors.push(g.color);
+                // Use depth from projected Gaussians (camera space Z)
+                depths.push(projected[idx].mean.z);
             }
 
-            out[(py * width + px) as usize] = blend_forward_with_bg(&alphas, &colors, bg).out;
+            let pixel_idx = (py * width + px) as usize;
+            out_rgb[pixel_idx] = blend_forward_with_bg(&alphas, &colors, bg).out;
+
+            // Accumulate depth using same front-to-back alpha compositing as color
+            let mut depth_accum = 0.0f32;
+            let mut transmittance = 1.0f32;
+            for i in 0..alphas.len() {
+                depth_accum += transmittance * alphas[i] * depths[i];
+                transmittance *= 1.0 - alphas[i];
+            }
+            out_depth[pixel_idx] = depth_accum;
         }
     }
 
-    out
+    (out_rgb, out_depth)
 }
 
 /// Helper: compute L2 loss gradient w.r.t. rendered pixel colors.
@@ -583,6 +608,50 @@ pub fn linear_vec_to_rgb8_img(linear: &[Vector3<f32>], width: u32, height: u32) 
             ]),
         );
     }
+    img
+}
+
+/// Convert depth values to grayscale image for visualization.
+/// Normalizes depth to [0,1] range and encodes as sRGB grayscale.
+pub fn depth_to_grayscale_img(depth: &[f32], width: u32, height: u32) -> RgbImage {
+    use image::GrayImage;
+    assert_eq!(depth.len(), (width * height) as usize);
+
+    // Find min/max depth for normalization (exclude zero/background pixels)
+    let mut min_depth = f32::INFINITY;
+    let mut max_depth = f32::NEG_INFINITY;
+    for &d in depth.iter() {
+        if d > 0.0 {
+            min_depth = min_depth.min(d);
+            max_depth = max_depth.max(d);
+        }
+    }
+
+    // Handle edge case: all pixels are background
+    if !min_depth.is_finite() || !max_depth.is_finite() || min_depth >= max_depth {
+        min_depth = 0.0;
+        max_depth = 1.0;
+    }
+
+    let range = max_depth - min_depth;
+
+    // Create grayscale image (closer = brighter, farther = darker)
+    let mut img = RgbImage::new(width, height);
+    for (i, &d) in depth.iter().enumerate() {
+        let x = (i as u32) % width;
+        let y = (i as u32) / width;
+
+        // Normalize to [0,1] and invert (closer = brighter)
+        let normalized = if d <= 0.0 {
+            0.0 // Background pixels = black
+        } else {
+            1.0 - ((d - min_depth) / range)
+        };
+
+        let gray_u8 = linear_f32_to_srgb_u8(normalized);
+        img.put_pixel(x, y, image::Rgb([gray_u8, gray_u8, gray_u8]));
+    }
+
     img
 }
 

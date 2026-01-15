@@ -6,7 +6,7 @@
 
 use sugar_rs::core::{quaternion_to_matrix, Camera};
 use sugar_rs::io::{load_colmap_scene, load_model};
-use sugar_rs::render::full_diff::{linear_vec_to_rgb8_img, render_full_linear};
+use sugar_rs::render::full_diff::{depth_to_grayscale_img, linear_vec_to_rgb8_img, render_full_linear_with_depth};
 use nalgebra::Vector3;
 use std::path::PathBuf;
 
@@ -20,6 +20,7 @@ fn main() {
     let mut camera_json: Option<PathBuf> = None;
     let mut dataset_root: Option<PathBuf> = None;
     let mut out_path: PathBuf = PathBuf::from("render.png");
+    let mut depth_out_path: Option<PathBuf> = None;
     let mut background: Vector3<f32> = Vector3::new(0.0, 0.0, 0.0);
     let mut width_override: Option<u32> = None;
     let mut height_override: Option<u32> = None;
@@ -45,6 +46,9 @@ fn main() {
             }
             "--out" => {
                 out_path = PathBuf::from(args.next().expect("Missing --out argument"));
+            }
+            "--depth-out" => {
+                depth_out_path = Some(PathBuf::from(args.next().expect("Missing --depth-out argument")));
             }
             "--background" => {
                 let bg_str = args.next().expect("Missing --background argument");
@@ -229,14 +233,21 @@ fn main() {
     );
 
     // Render (use full SH for final rendering)
-    let pixels = render_full_linear(&cloud.gaussians, &camera, &background, false);
+    let (pixels, depth) = render_full_linear_with_depth(&cloud.gaussians, &camera, &background, false);
 
     // Convert to RGB8 image
     let img = linear_vec_to_rgb8_img(&pixels, camera.width, camera.height);
 
-    // Save
-    println!("Saving to {:?}...", out_path);
+    // Save RGB
+    println!("Saving RGB to {:?}...", out_path);
     img.save(&out_path).expect("Failed to save image");
+
+    // Save depth if requested
+    if let Some(depth_path) = depth_out_path {
+        println!("Saving depth map to {:?}...", depth_path);
+        let depth_img = depth_to_grayscale_img(&depth, camera.width, camera.height);
+        depth_img.save(&depth_path).expect("Failed to save depth map");
+    }
 
     println!("Done!");
 }
@@ -258,6 +269,7 @@ CAMERA (choose one):
 OPTIONS:
     --dataset-root PATH      Path to COLMAP dataset root (needed for --camera-id)
     --out PATH               Output image path [default: render.png]
+    --depth-out PATH         Output depth map path (optional, saves grayscale depth visualization)
     --background R,G,B       Background color as comma-separated floats [default: 0,0,0]
     --width WIDTH            Override render width (default: use training resolution)
     --height HEIGHT          Override render height (default: use training resolution)
@@ -277,6 +289,9 @@ EXAMPLES:
 
     # Render with white background
     sugar-render --model trained.gs --camera-id 0 --dataset-root data/ --background 1.0,1.0,1.0
+
+    # Render with depth map output
+    sugar-render --model trained.gs --camera-id 0 --dataset-root data/ --out render.png --depth-out depth.png
 
 CAMERA JSON FORMAT:
     {{
