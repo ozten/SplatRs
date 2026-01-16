@@ -2599,3 +2599,74 @@ This completes the TC-E2E-010 floater detection epic. The workflow is ready for 
 - Research into floater causes and mitigation
 
 Continue with other end-to-end test cases (TC-E2E-011, etc.) or quality improvement tasks.
+
+## [2026-01-15 18:00] Completed SplatRs-1bj: TC-E2E-011-1: Add COLMAP image-to-camera-ID mapping in Python
+
+### What was done
+- Created comprehensive COLMAP utilities module `scripts/colmap_utils.py`
+- Implemented functions to read COLMAP binary files:
+  - `read_colmap_cameras()`: Read cameras.bin with all standard camera models
+  - `read_colmap_images()`: Read images.bin with poses and camera ID mappings
+  - `read_colmap_points3d()`: Read points3D.bin for 3D point cloud data
+  - `get_image_to_camera_mapping()`: Convenience function for image→camera_id mapping
+  - `load_colmap_reconstruction()`: Load complete reconstruction in one call
+- Supports SIMPLE_PINHOLE, PINHOLE, SIMPLE_RADIAL, RADIAL camera models
+- Binary format follows COLMAP specification exactly as implemented in Rust code
+- Created comprehensive test suite `scripts/test_colmap_utils.py`
+- Updated `scripts/compare_edge_sharpness.py` to use colmap_utils
+- Created integration test `scripts/test_edge_sharpness_colmap.py`
+
+### Implementation details
+- Binary parsing uses struct module with little-endian format
+- Quaternion reading: (qw, qx, qy, qz) as f64
+- Translation reading: (tx, ty, tz) as f64
+- Camera parameters vary by model_id (1=SIMPLE_PINHOLE, 2=PINHOLE, etc.)
+- Null-terminated strings handled correctly
+- 2D keypoint data skipped but file pointer advanced correctly
+- Track data in points3D.bin skipped but parsed correctly
+- Returns dictionaries for easy lookup by camera_id or image_name
+
+### Testing
+- Tested with bicycle dataset (194 images, 1 camera, 54275 points)
+- Verified correct parsing of all COLMAP binary formats
+- Validated consistency between images and cameras
+- Confirmed all test views (25 views, every 8th image) have camera mappings
+- Integration test verifies edge sharpness script can load and display camera info
+
+### Camera mapping output example
+```
+_DSC8679.JPG -> camera 1 (4946x3286, fx=4649.5, fy=4649.5)
+_DSC8680.JPG -> camera 1 (4946x3286, fx=4649.5, fy=4649.5)
+...
+```
+
+### Why this is needed
+TC-E2E-011 (Edge Sharpness) requires rendering specific test views from the dataset
+to compare against ground truth. To render a view correctly, we need:
+1. Which camera was used for each image (camera_id)
+2. Camera intrinsics (focal length, principal point, resolution)
+3. Camera pose (rotation and translation) from images.bin
+
+The colmap_utils module provides this data in a reusable way for all Python scripts.
+
+### Files created
+- `scripts/colmap_utils.py`: Main utilities module (350 lines)
+- `scripts/test_colmap_utils.py`: Comprehensive tests (150 lines)
+- `scripts/test_edge_sharpness_colmap.py`: Integration test (100 lines)
+- `scripts/compare_edge_sharpness.py`: Updated to use colmap_utils
+
+### Suggestions for next tasks
+This completes the first subtask of TC-E2E-011 edge sharpness verification.
+The COLMAP utilities can now be reused by other Python scripts that need to
+access camera parameters or image poses.
+
+Next steps for TC-E2E-011:
+- Implement actual rendering in compare_edge_sharpness.py
+- Add edge detection and comparison logic
+- Create visualization and metrics output
+- Document manual inspection workflow
+
+The colmap_utils module also benefits:
+- scripts/render_orbit_floater_detection.py (can use camera reading)
+- scripts/render_orbit_depth.py (can use camera reading)
+- Any future scripts needing COLMAP reconstruction data
