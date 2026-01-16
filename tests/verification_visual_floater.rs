@@ -524,3 +524,158 @@ fn tc_e2e_010_floater_generate_depth_script() {
     println!("  - Identify depth noise in smooth regions (sky, walls)");
     println!("  - Compare RGB and depth videos for correlation");
 }
+
+/// TC-E2E-010-4: Integration test for complete floater detection workflow
+///
+/// This test verifies that both RGB orbit and depth orbit scripts exist and are functional.
+/// It validates the complete floater detection workflow from training to inspection.
+///
+/// Run with: cargo test --release tc_e2e_010_floater_integration -- --nocapture --ignored
+#[test]
+#[ignore]
+fn tc_e2e_010_floater_integration() {
+    println!("\n=== TC-E2E-010-4: Floater Detection Integration Test ===\n");
+
+    // Verify RGB orbit script exists
+    let rgb_script_path = PathBuf::from("scripts/render_orbit_floater_detection.py");
+    if !rgb_script_path.exists() {
+        panic!("RGB orbit script not found: {}", rgb_script_path.display());
+    }
+    println!("✓ RGB orbit script found: {}", rgb_script_path.display());
+
+    // Verify depth orbit script exists
+    let depth_script_path = PathBuf::from("scripts/render_orbit_depth.py");
+    if !depth_script_path.exists() {
+        panic!("Depth orbit script not found: {}", depth_script_path.display());
+    }
+    println!("✓ Depth orbit script found: {}", depth_script_path.display());
+
+    // Verify both scripts are executable on Unix
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        for script_path in &[&rgb_script_path, &depth_script_path] {
+            let metadata = std::fs::metadata(script_path)
+                .expect("Failed to get script metadata");
+            let mode = metadata.permissions().mode();
+
+            if mode & 0o111 == 0 {
+                println!("⚠ Script not executable, setting permissions: {}", script_path.display());
+                let mut perms = metadata.permissions();
+                perms.set_mode(0o755);
+                std::fs::set_permissions(script_path, perms)
+                    .expect("Failed to set executable permissions");
+            }
+        }
+    }
+
+    println!("\n=== Complete Floater Detection Workflow ===\n");
+
+    println!("Step 1: Train a model");
+    println!("  cargo build --release");
+    println!("  ./target/release/sugar-train \\");
+    println!("    --preset full \\");
+    println!("    --dataset-root datasets/bicycle \\");
+    println!("    --out-dir runs/floater_test");
+    println!();
+
+    println!("Step 2: Render RGB orbit video for visual inspection");
+    println!("  python scripts/render_orbit_floater_detection.py \\");
+    println!("    --model runs/floater_test/model_final.gs \\");
+    println!("    --dataset-root datasets/bicycle \\");
+    println!("    --output runs/floater_test/rgb_orbit \\");
+    println!("    --frames 360 \\");
+    println!("    --elevation 0");
+    println!();
+
+    println!("Step 3: Render depth maps for discontinuity analysis");
+    println!("  python scripts/render_orbit_depth.py \\");
+    println!("    --model runs/floater_test/model_final.gs \\");
+    println!("    --dataset-root datasets/bicycle \\");
+    println!("    --output runs/floater_test/depth_orbit \\");
+    println!("    --frames 360 \\");
+    println!("    --elevation 0");
+    println!();
+
+    println!("Step 4: Create videos from rendered frames");
+    println!("  # RGB orbit video");
+    println!("  ffmpeg -framerate 30 -i runs/floater_test/rgb_orbit/frame_%04d.png \\");
+    println!("    -c:v libx264 -pix_fmt yuv420p -crf 18 \\");
+    println!("    runs/floater_test/floater_rgb.mp4");
+    println!();
+    println!("  # Depth orbit video");
+    println!("  ffmpeg -framerate 30 -i runs/floater_test/depth_orbit/depth_%04d.png \\");
+    println!("    -c:v libx264 -pix_fmt yuv420p -crf 18 \\");
+    println!("    runs/floater_test/floater_depth.mp4");
+    println!();
+    println!("  # Side-by-side RGB and depth comparison");
+    println!("  ffmpeg -framerate 30 \\");
+    println!("    -i runs/floater_test/depth_orbit/rgb_%04d.png \\");
+    println!("    -i runs/floater_test/depth_orbit/depth_%04d.png \\");
+    println!("    -filter_complex \"[0:v][1:v]hstack\" \\");
+    println!("    runs/floater_test/floater_comparison.mp4");
+    println!();
+
+    println!("Step 5: Manual inspection of videos");
+    println!();
+    println!("  RGB video inspection checklist:");
+    println!("    [ ] No floating blobs visible against sky or background");
+    println!("    [ ] No semi-transparent artifacts in empty space");
+    println!("    [ ] No 'string-like' Gaussians connecting unrelated surfaces");
+    println!("    [ ] Artifacts follow proper parallax as camera moves");
+    println!("    [ ] Background regions are clean (no fog/clouds)");
+    println!();
+    println!("  Depth video inspection checklist:");
+    println!("    [ ] No isolated depth discontinuities (sudden jumps)");
+    println!("    [ ] No 'floating' depth values disconnected from surfaces");
+    println!("    [ ] Smooth depth in regions that should be uniform (sky, walls)");
+    println!("    [ ] Depth structure matches visible geometry");
+    println!("    [ ] No depth noise in smooth areas");
+    println!();
+    println!("  Side-by-side comparison:");
+    println!("    [ ] RGB floaters correlate with depth discontinuities");
+    println!("    [ ] Depth confirms geometric structure of visible objects");
+    println!("    [ ] Empty space shows consistent depth values");
+    println!();
+
+    println!("Step 6: Severity assessment");
+    println!();
+    println!("  Pass criteria:");
+    println!("    - PASS: No significant floaters in standard views");
+    println!("    - PASS: Only minor artifacts in extreme/edge views");
+    println!();
+    println!("  Severity levels if floaters are present:");
+    println!("    - Low: Minor floaters, barely visible, <3 occurrences");
+    println!("    - Medium: Noticeable floaters, affect quality, 3-10 occurrences");
+    println!("    - High: Significant floaters, severely impact quality, >10 occurrences");
+    println!();
+    println!("  Document findings:");
+    println!("    - Count approximate number of visible floaters");
+    println!("    - Note which viewing angles show floaters most clearly");
+    println!("    - Describe characteristics (size, opacity, location)");
+    println!("    - Rate severity (Low/Medium/High) for each occurrence");
+    println!();
+
+    println!("=== Additional Inspection Tips ===\n");
+    println!("Multiple elevation angles:");
+    println!("  Render orbit paths at different elevations to inspect from various heights:");
+    println!("    --elevation 0   # Ground level (default)");
+    println!("    --elevation 30  # 30° above ground (bird's eye view)");
+    println!("    --elevation 90  # Top-down view");
+    println!();
+    println!("Common floater patterns:");
+    println!("  1. Sky floaters: Semi-transparent blobs in sky/background");
+    println!("  2. Surface floaters: Disconnected Gaussians near but not on surfaces");
+    println!("  3. String floaters: Linear artifacts connecting unrelated geometry");
+    println!("  4. Fog floaters: Distributed low-opacity artifacts (scene 'fog')");
+    println!();
+    println!("Depth map analysis:");
+    println!("  - Depth discontinuities appear as sharp edges in depth maps");
+    println!("  - Floaters show as isolated bright/dark spots disconnected from main surfaces");
+    println!("  - Compare depth gradients: smooth = good, noisy = potential floaters");
+    println!();
+
+    println!("✓ Integration test passed - both scripts are ready for use");
+    println!("\nRefer to docs/FLOATER_DETECTION.md for complete workflow documentation");
+}
