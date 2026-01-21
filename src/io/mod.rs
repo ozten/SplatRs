@@ -6,9 +6,11 @@
 //! - OBJ format (mesh export)
 //! - Model format (.gs files for trained Gaussian Splatting models)
 //! - Checkpoints (training state)
+//! - Training metadata (JSONL format for tracking progress)
 
 mod colmap;
 mod color_management;
+pub mod metadata;
 mod model;
 mod obj;
 mod ply;
@@ -16,6 +18,7 @@ mod ply;
 // Re-export public types and functions
 pub use colmap::{load_colmap_scene, ColmapScene, ImageInfo, LoadError, Point3D};
 pub use color_management::load_image_to_srgb;
+pub use metadata::{append_checkpoint_metadata, CheckpointMetadata, MetadataError};
 pub use model::{
     compute_bounds, load_model, save_model, Compression, ModelError, ModelMetadata,
 };
