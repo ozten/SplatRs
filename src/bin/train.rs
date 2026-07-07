@@ -704,6 +704,7 @@ fn main() {
             densify_grad_threshold,
             prune_opacity_threshold,
             split_sigma_threshold,
+            opacity_reset_interval: 3000,
             use_gpu,
             csv_output_path: Some(final_out_dir.join("metrics.csv")),
             out_dir: final_out_dir.clone(),

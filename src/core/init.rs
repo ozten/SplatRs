@@ -21,8 +21,11 @@ fn gaussian_from_colmap_point(point: &Point3D) -> Gaussian {
     // Identity rotation
     let rotation = UnitQuaternion::identity();
 
-    // Full opacity in logit space: inverse_sigmoid(0.9) ≈ 2.2
-    let opacity = 2.2;
+    // Initial opacity ~0.1 in logit space (reference 3DGS convention: inverse_sigmoid(0.1) ≈ -2.197).
+    // Starting near-transparent lets the optimizer add opacity only where the scene needs it, and
+    // lets gradient/densification signal reach Gaussians occluded behind the first surface.
+    // (Was 2.2 ≈ sigmoid 0.9 — near-opaque, which saturated alpha-compositing from iteration 0.)
+    let opacity = crate::core::inverse_sigmoid(0.1);
 
     // Convert RGB color (0-255) to SH DC coefficient (0-1)
     // COLMAP colors are in sRGB space, so we must convert to linear before

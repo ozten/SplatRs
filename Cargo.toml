@@ -28,6 +28,11 @@ path = "src/bin/extract.rs"
 required-features = []
 
 [[bin]]
+name = "sugar-eval-reference"
+path = "src/bin/eval_reference.rs"
+required-features = []
+
+[[bin]]
 name = "viewer"
 path = "src/bin/viewer.rs"
 required-features = ["viewer"]

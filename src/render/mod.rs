@@ -13,7 +13,7 @@ pub mod simple;
 
 // Re-export
 pub use full::FullRenderer;
-pub use full_diff::{render_full_color_grads, render_full_linear};
+pub use full_diff::{render_full_color_grads, render_full_color_grads_ext, render_full_linear};
 pub use simple::SimpleRenderer;
 
 // TODO: Implement full renderer for M4-M5

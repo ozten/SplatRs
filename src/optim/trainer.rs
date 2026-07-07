@@ -26,10 +26,11 @@ use crate::core::sigmoid;
 use crate::render::full_diff::{
     coverage_mask_bool, coverage_weights_downsampled, debug_contrib_count, debug_coverage_mask,
     debug_final_transmittance, debug_overlay_means, downsample_rgb_bilinear, downsample_rgb_box,
-    linear_vec_to_rgb8_img, render_full_color_grads, render_full_linear, rgb8_to_linear_vec,
+    linear_vec_to_rgb8_img, render_full_color_grads, render_full_color_grads_ext,
+    render_full_linear, rgb8_to_linear_vec,
 };
 use image::RgbImage;
-use nalgebra::{Matrix3, Vector3};
+use nalgebra::{Matrix3, Vector2, Vector3};
 use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -930,6 +931,8 @@ pub struct MultiViewTrainConfig {
     pub prune_opacity_threshold: f32,
     /// If average world sigma (exp(log_scale)) is above this, SPLIT; otherwise CLONE.
     pub split_sigma_threshold: f32,
+    /// Reset (cap-down) opacities every N iterations; 0 disables. Reference default: 3000.
+    pub opacity_reset_interval: usize,
     /// Use GPU for forward rendering.
     pub use_gpu: bool,
     /// Optional CSV output path for metrics logging.
@@ -996,6 +999,7 @@ struct DensifyStats {
     pruned: usize,
     pruned_outliers: usize,
     pruned_needles: usize,
+    pruned_oversize: usize,
     split: usize,
     cloned: usize,
     cap_hit: bool,
@@ -1038,12 +1042,14 @@ fn densify_and_prune<R: Rng + ?Sized>(
     log_scales: &mut Vec<Vector3<f32>>,
     rotations: &mut Vec<nalgebra::UnitQuaternion<f32>>,
     grad_accum: &mut Vec<f32>,
+    denom: &mut Vec<f32>,
     rng: &mut R,
     iters_in_window: usize,
     max_gaussians: usize,
     grad_threshold: f32,
     prune_opacity_threshold: f32,
-    split_sigma_threshold: f32,
+    _split_sigma_threshold: f32,
+    scene_extent: f32,
 ) -> DensifyStats {
     let before = gaussians.len();
     if iters_in_window == 0 || gaussians.is_empty() {
@@ -1054,6 +1060,7 @@ fn densify_and_prune<R: Rng + ?Sized>(
             pruned: 0,
             pruned_outliers: 0,
             pruned_needles: 0,
+            pruned_oversize: 0,
             split: 0,
             cloned: 0,
             cap_hit: false,
@@ -1061,6 +1068,13 @@ fn densify_and_prune<R: Rng + ?Sized>(
             grad_p90: f32::NAN,
         };
     }
+
+    // B5: clone vs split boundary is scene-relative (percent_dense · scene_extent), matching
+    // reference 3DGS, so it adapts to the dataset's spatial scale instead of a fixed constant.
+    const PERCENT_DENSE: f32 = 0.01;
+    let split_size_threshold = PERCENT_DENSE * scene_extent;
+    // B6: prune Gaussians whose world-space size exceeds this fraction of the scene extent.
+    let oversize_threshold = 0.1 * scene_extent;
 
     // Compute scene center for outlier detection
     let scene_center = {
@@ -1088,11 +1102,13 @@ fn densify_and_prune<R: Rng + ?Sized>(
     let mut new_log_scales = Vec::with_capacity(log_scales.len());
     let mut new_rotations = Vec::with_capacity(rotations.len());
     let mut new_grad_accum = Vec::with_capacity(grad_accum.len());
+    let mut new_denom = Vec::with_capacity(denom.len());
 
     let mut kept = 0usize;
     let mut pruned = 0usize;
     let mut pruned_outliers = 0usize;
     let mut pruned_needles = 0usize;
+    let mut pruned_oversize = 0usize;
     let mut split = 0usize;
     let mut cloned = 0usize;
     let mut cap_hit = false;
@@ -1127,7 +1143,16 @@ fn densify_and_prune<R: Rng + ?Sized>(
             continue;
         }
 
-        let avg_grad = grad_accum[i] / (iters_in_window as f32);
+        // B6: prune Gaussians grown too large for the scene (world-space size > 0.1·scene_extent).
+        if max_s.exp() > oversize_threshold {
+            pruned_oversize += 1;
+            pruned += 1;
+            continue;
+        }
+
+        // B2: average the accumulated view-space gradient over the number of iterations this
+        // Gaussian was actually visible (its own denom), not over the global window length.
+        let avg_grad = grad_accum[i] / denom[i].max(1.0);
         kept_avg_grads.push(avg_grad);
 
         // Always keep the original (but ensure it matches our parameter vectors).
@@ -1149,6 +1174,7 @@ fn densify_and_prune<R: Rng + ?Sized>(
         new_log_scales.push(log_scales[i]);
         new_rotations.push(rotations[i]);
         new_grad_accum.push(0.0);
+        new_denom.push(0.0);
         kept += 1;
 
         let can_add = new_gaussians.len() < cap;
@@ -1179,10 +1205,14 @@ fn densify_and_prune<R: Rng + ?Sized>(
         new_opacity_logits[keep_idx] = child_opacity_logit;
         new_gaussians[keep_idx].opacity = child_opacity_logit;
 
-        if sigma > split_sigma_threshold {
-            // SPLIT: shrink BOTH parent and child by 0.2 in log-space (factor ~0.82)
-            // This prevents needles from persisting through splits
-            let scale_reduction = Vector3::new(0.2, 0.2, 0.2);
+        // B5: split when the Gaussian's LARGEST axis exceeds the scene-relative size threshold
+        // (over-reconstruction), otherwise clone (under-reconstruction). Uses max axis, not mean,
+        // so elongated Gaussians are correctly caught.
+        let max_scale_world = log_scales[i].x.max(log_scales[i].y).max(log_scales[i].z).exp();
+        if max_scale_world > split_size_threshold {
+            // SPLIT: shrink BOTH parent and child so world scale divides by 1.6 (reference /(0.8·N),
+            // N=2). In log-space that is subtracting ln(1.6) ≈ 0.470.
+            let scale_reduction = Vector3::new(1.6f32.ln(), 1.6f32.ln(), 1.6f32.ln());
             let shrunk_scale = log_scales[i] - scale_reduction;
 
             // Shrink the parent (kept Gaussian) - CRITICAL FIX
@@ -1207,6 +1237,7 @@ fn densify_and_prune<R: Rng + ?Sized>(
             new_log_scales.push(shrunk_scale);
             new_rotations.push(rotations[i]);
             new_grad_accum.push(0.0);
+            new_denom.push(0.0);
             split += 1;
         } else {
             // CLONE: same scale, slight offset.
@@ -1227,6 +1258,7 @@ fn densify_and_prune<R: Rng + ?Sized>(
             new_log_scales.push(log_scales[i]);
             new_rotations.push(rotations[i]);
             new_grad_accum.push(0.0);
+            new_denom.push(0.0);
             cloned += 1;
         }
     }
@@ -1238,6 +1270,7 @@ fn densify_and_prune<R: Rng + ?Sized>(
     *log_scales = new_log_scales;
     *rotations = new_rotations;
     *grad_accum = new_grad_accum;
+    *denom = new_denom;
 
     kept_avg_grads.sort_by(|a, b| a.total_cmp(b));
     let grad_p50 = percentile(&kept_avg_grads, 0.50);
@@ -1250,6 +1283,7 @@ fn densify_and_prune<R: Rng + ?Sized>(
         pruned,
         pruned_outliers,
         pruned_needles,
+        pruned_oversize,
         split,
         cloned,
         cap_hit,
@@ -1524,7 +1558,33 @@ pub fn train_multiview_color_only(
     let mut rotations: Vec<nalgebra::UnitQuaternion<f32>> =
         gaussians.iter().map(|g| g.rotation).collect();
     let mut grad_accum_pos_norm: Vec<f32> = vec![0.0; gaussians.len()];
+    let mut grad_denom: Vec<f32> = vec![0.0; gaussians.len()];
     let mut grad_window_iters: usize = 0;
+
+    // B5/B6: scene spatial extent = radius of the camera centers about their centroid.
+    // Camera center C = -Rᵀ·t (R is world→camera). Used to make densification thresholds and
+    // the oversize prune scene-relative, matching reference 3DGS.
+    let scene_extent: f32 = {
+        let centers: Vec<Vector3<f32>> = scene
+            .images
+            .iter()
+            .map(|img| {
+                let r = crate::core::quaternion_to_matrix(&img.rotation);
+                -r.transpose() * img.translation
+            })
+            .collect();
+        if centers.is_empty() {
+            1.0
+        } else {
+            let mean = centers.iter().fold(Vector3::zeros(), |a, c| a + c) / centers.len() as f32;
+            centers
+                .iter()
+                .map(|c| (c - mean).norm())
+                .fold(0.0f32, f32::max)
+                .max(1e-3)
+        }
+    };
+    eprintln!("scene_extent = {:.4} (from {} cameras)", scene_extent, scene.images.len());
 
     // Capture disable_sh from config for use in closures
     let disable_sh = cfg.disable_sh;
@@ -1792,7 +1852,7 @@ pub fn train_multiview_color_only(
 
         // Backward
         let t1 = Instant::now();
-        let (_img_u8, d_color, d_opacity_logits, d_positions, d_log_scales, d_rot_vecs, d_bg) = {
+        let (_img_u8, d_color, d_opacity_logits, d_positions, d_log_scales, d_rot_vecs, d_bg, d_mean_px) = {
             #[cfg(feature = "gpu")]
             if let Some(ref renderer) = gpu_renderer {
                 // Use GPU backward pass with sparse atomic gradients (efficient for <10k Gaussians)
@@ -1819,22 +1879,25 @@ pub fn train_multiview_color_only(
                     };
 
                     let dummy_img = image::RgbImage::new(train_camera.width, train_camera.height);
-                    (dummy_img, grads_2d.d_colors, grads_2d.d_opacity_logits, d_pos, d_scales, d_rots, d_background)
+                    // GPU path does not surface a view-space mean gradient; densification is a
+                    // CPU-path concern, so hand back zeros here.
+                    let d_mean_px_gpu = vec![nalgebra::Vector2::<f32>::zeros(); gaussians.len()];
+                    (dummy_img, grads_2d.d_colors, grads_2d.d_opacity_logits, d_pos, d_scales, d_rots, d_background, d_mean_px_gpu)
                     }
                     Err(e) => {
                         eprintln!("GPU backward failed, falling back to CPU: {e}");
                         gpu_backward_disabled_reason = Some(e);
-                        render_full_color_grads(&gaussians, &train_camera, &d_image, &bg, disable_sh)
+                        render_full_color_grads_ext(&gaussians, &train_camera, &d_image, &bg, disable_sh)
                     }
                 }
                 }
             } else {
                 // CPU backward pass
-                render_full_color_grads(&gaussians, &train_camera, &d_image, &bg, disable_sh)
+                render_full_color_grads_ext(&gaussians, &train_camera, &d_image, &bg, disable_sh)
             }
 
             #[cfg(not(feature = "gpu"))]
-            render_full_color_grads(&gaussians, &train_camera, &d_image, &bg, disable_sh)
+            render_full_color_grads_ext(&gaussians, &train_camera, &d_image, &bg, disable_sh)
         };
         let t_backward = t1.elapsed();
 
@@ -1960,11 +2023,25 @@ pub fn train_multiview_color_only(
         }
 
         if cfg.densify_interval > 0 {
-            if grad_accum_pos_norm.len() != d_positions.len() {
-                grad_accum_pos_norm.resize(d_positions.len(), 0.0);
+            if grad_accum_pos_norm.len() != d_mean_px.len() {
+                grad_accum_pos_norm.resize(d_mean_px.len(), 0.0);
+                grad_denom.resize(d_mean_px.len(), 0.0);
             }
-            for (i, dp) in d_positions.iter().enumerate() {
-                grad_accum_pos_norm[i] += dp.norm();
+            // B1: accumulate the VIEW-SPACE mean gradient — the quantity the densify_grad_threshold
+            //     (~0.0002, reference 3DGS) is calibrated for, instead of the depth-scaled
+            //     world-space position gradient. The renderer returns it in PIXEL units; convert to
+            //     NDC ([-1,1]) so the threshold is resolution-independent: dL/d(ndc) = dL/d(px)·(dim/2).
+            // B2: a Gaussian is "visible" this iteration iff it received a non-zero view-space
+            //     gradient; count those so the per-Gaussian average is over views it appeared in.
+            let ndc_sx = train_camera.width as f32 * 0.5;
+            let ndc_sy = train_camera.height as f32 * 0.5;
+            for (i, d_uv) in d_mean_px.iter().enumerate() {
+                if *d_uv != Vector2::zeros() {
+                    let gx = d_uv.x * ndc_sx;
+                    let gy = d_uv.y * ndc_sy;
+                    grad_accum_pos_norm[i] += (gx * gx + gy * gy).sqrt();
+                    grad_denom[i] += 1.0;
+                }
             }
             grad_window_iters += 1;
         }
@@ -2153,12 +2230,14 @@ pub fn train_multiview_color_only(
                 &mut log_scales,
                 &mut rotations,
                 &mut grad_accum_pos_norm,
+                &mut grad_denom,
                 &mut rng,
                 grad_window_iters,
                 effective_max_gaussians,
                 cfg.densify_grad_threshold,
                 cfg.prune_opacity_threshold,
                 cfg.split_sigma_threshold,
+                scene_extent,
             );
             // The parameter arrays have been re-built; any per-index optimizer state is invalid.
             // Reset moments but keep timesteps to avoid bias-correction spikes.
@@ -2167,15 +2246,6 @@ pub fn train_multiview_color_only(
             position_opt.reset_moments_keep_t(positions.len());
             scale_opt.reset_moments_keep_t(log_scales.len());
             rotation_opt.reset_moments_keep_t(rotations.len());
-
-            // Reset opacities to encourage relearning (original 3DGS technique)
-            // This helps prevent transmittance blocking where front Gaussians
-            // block gradient flow to Gaussians behind them
-            let reset_logit = 0.0; // sigmoid(0) = 0.5
-            for i in 0..opacity_logits.len() {
-                opacity_logits[i] = reset_logit;
-                gaussians[i].opacity = reset_logit;
-            }
 
             grad_window_iters = 0;
             densify_events += 1;
@@ -2197,8 +2267,13 @@ pub fn train_multiview_color_only(
             } else {
                 String::new()
             };
+            let oversize_msg = if stats.pruned_oversize > 0 {
+                format!(" pruned_oversize={}", stats.pruned_oversize)
+            } else {
+                String::new()
+            };
             eprintln!(
-                "densify @iter {}/{}: gaussians {} -> {} (kept={} pruned={}{}{} split={} cloned={} cap_hit={} grad_p50={:.4} grad_p90={:.4})",
+                "densify @iter {}/{}: gaussians {} -> {} (kept={} pruned={}{}{}{} split={} cloned={} cap_hit={} grad_p50={:.4} grad_p90={:.4})",
                 iter + 1,
                 cfg.iters,
                 before,
@@ -2207,12 +2282,30 @@ pub fn train_multiview_color_only(
                 stats.pruned,
                 outlier_msg,
                 needle_msg,
+                oversize_msg,
                 stats.split,
                 stats.cloned,
                 stats.cap_hit,
                 stats.grad_p50,
                 stats.grad_p90
             );
+        }
+
+        // B3: opacity reset — every opacity_reset_interval iterations, cap opacities DOWNWARD
+        // toward ~0.01 (never raise them), forcing weak Gaussians to re-earn their opacity or be
+        // pruned. Runs on its own schedule, independent of the densification cadence, and NOT on
+        // the final iteration.
+        if cfg.opacity_reset_interval > 0
+            && (iter + 1) % cfg.opacity_reset_interval == 0
+            && (iter + 1) < cfg.iters
+        {
+            let reset_cap = crate::core::inverse_sigmoid(0.01); // ≈ -4.595
+            for i in 0..opacity_logits.len() {
+                opacity_logits[i] = opacity_logits[i].min(reset_cap);
+                gaussians[i].opacity = opacity_logits[i];
+            }
+            opacity_opt.reset_moments_keep_t(opacity_logits.len());
+            eprintln!("opacity reset @iter {}/{} (capped to <= 0.01)", iter + 1, cfg.iters);
         }
     }
 

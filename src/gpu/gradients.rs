@@ -196,7 +196,10 @@ pub fn chain_2d_to_3d_gradients_cpu(
             let point_cam = camera.world_to_camera(&gaussian.position);
             let gaussian_r = crate::core::quaternion_to_matrix(&gaussian.rotation);
             let log_scale = gaussian.scale;
-            let d_sigma2d = Matrix2::new(d_cov.x, d_cov.y, d_cov.y, d_cov.z);
+            // Off-diagonal (cov_xy) is a single DOF; split its complete gradient evenly across
+            // both symmetric slots (½ each) so the matrix-chain backprop below doesn't double-count
+            // the cross term. Mirrors the CPU path in render/full_diff.rs.
+            let d_sigma2d = Matrix2::new(d_cov.x, 0.5 * d_cov.y, 0.5 * d_cov.y, d_cov.z);
 
             // d_cov_2d -> d_point_cam (via Jacobian dependence)
             d_point_cam_total += project_covariance_2d_grad_point_cam(

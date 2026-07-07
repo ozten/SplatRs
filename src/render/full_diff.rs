@@ -84,11 +84,15 @@ fn project_gaussian(
     let j = camera.projection_jacobian(&mean_cam);
     let sigma_2d: Matrix2<f32> = j * sigma_cam * j.transpose();
 
-    // 6) Pack symmetric Σ₂d into (xx, xy, yy). Add a tiny diagonal regularizer for stability.
-    let eps = 1e-6;
-    let cov_xx = sigma_2d[(0, 0)] + eps;
+    // 6) Pack symmetric Σ₂d into (xx, xy, yy) and apply the standard EWA screen-space
+    // low-pass filter: add 0.3 to the diagonal. This is the antialiasing dilation used by
+    // every reference 3DGS rasterizer (Kerbl et al. 2023). It guarantees each splat has a
+    // ~0.55px minimum footprint and keeps the 2D covariance well-conditioned, so near-singular
+    // "needle" projections blend smoothly instead of aliasing into hard-edged blobs.
+    const LOW_PASS: f32 = 0.3;
+    let cov_xx = sigma_2d[(0, 0)] + LOW_PASS;
     let cov_xy = sigma_2d[(0, 1)];
-    let cov_yy = sigma_2d[(1, 1)] + eps;
+    let cov_yy = sigma_2d[(1, 1)] + LOW_PASS;
 
     // 7) Cull if 2D covariance is degenerate or too large
     // Compute approximate radius: r ≈ sqrt(max(cov_xx, cov_yy))
@@ -207,6 +211,32 @@ pub fn render_full_color_grads(
     Vec<Vector3<f32>>,
     Vec<Vector3<f32>>,
     Vector3<f32>,
+) {
+    let (img, dc, dop, dpos, dls, drv, dbg, _d_mean_px) =
+        render_full_color_grads_ext(gaussians, camera, d_image, bg, disable_sh);
+    (img, dc, dop, dpos, dls, drv, dbg)
+}
+
+/// Like [`render_full_color_grads`] but also returns the per-Gaussian VIEW-SPACE (pixel-space)
+/// gradient of the projected mean (`d_mean_px`). This is the quantity the reference 3DGS
+/// densification threshold (`densify_grad_threshold`, ~0.0002) is calibrated against — it is
+/// roughly depth/scale-invariant, unlike the world-space position gradient.
+#[allow(clippy::type_complexity)]
+pub fn render_full_color_grads_ext(
+    gaussians: &[Gaussian],
+    camera: &Camera,
+    d_image: &[Vector3<f32>],
+    bg: &Vector3<f32>,
+    disable_sh: bool,
+) -> (
+    RgbImage,
+    Vec<Vector3<f32>>,
+    Vec<f32>,
+    Vec<Vector3<f32>>,
+    Vec<Vector3<f32>>,
+    Vec<Vector3<f32>>,
+    Vector3<f32>,
+    Vec<Vector2<f32>>,
 ) {
     let enable_timing = std::env::var("SUGAR_BACKWARD_TIMING").is_ok();
     let t_total = if enable_timing { Some(std::time::Instant::now()) } else { None };
@@ -420,7 +450,13 @@ pub fn render_full_color_grads(
             // - point_cam (via Jacobian dependence on depth)
             // - log_scale (via Σ reconstruction)
             // - rotation (via Σ reconstruction)
-            let d_sigma2d = Matrix2::new(d_cov.x, d_cov.y, d_cov.y, d_cov.z);
+            //
+            // Σ₂d is symmetric with a single off-diagonal DOF (cov_xy); `d_cov.y` is the COMPLETE
+            // gradient w.r.t. that one scalar. The downstream matrix-chain (Jᵀ·G·J, Wᵀ·..·W) treats
+            // G as a full 4-entry matrix, so the off-diagonal gradient must be split evenly across
+            // both symmetric slots (½ each) — packing the full value in both double-counts the cross
+            // term (confirmed 2× vs finite differences).
+            let d_sigma2d = Matrix2::new(d_cov.x, 0.5 * d_cov.y, 0.5 * d_cov.y, d_cov.z);
 
             let gaussian_r = crate::core::quaternion_to_matrix(&gaussians[gi].rotation);
             let log_scale = gaussians[gi].scale;
@@ -465,6 +501,7 @@ pub fn render_full_color_grads(
         d_log_scales,
         d_rot_vecs,
         d_bg,
+        d_mean_px,
     )
 }
 
