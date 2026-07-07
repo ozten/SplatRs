@@ -2186,10 +2186,16 @@ pub fn train_multiview_color_only(
 
         // Densify/prune after validation (so reported PSNR reflects the trained state),
         // and never on the last iteration (so new Gaussians get at least one update step).
+        // B7: densify only during the first HALF of training (reference: iters 500–15000 of
+        // 30k), then freeze the population and let it settle. Without this, every cycle keeps
+        // injecting full-opacity capacity to the end of the run — the 15k validation run showed
+        // a reset-bounded sawtooth with a decaying envelope (16.7 → 12.8 dB by iter 7500) as
+        // additions accelerated ~100→550/cycle. Ported proportionally as `iters/2`; the
+        // reference 500-iter warmup is effectively covered by the first densify interval.
         if cfg.densify_interval > 0
             && grad_window_iters > 0
             && (iter + 1) % cfg.densify_interval == 0
-            && (iter + 1) < cfg.iters
+            && (iter + 1) <= cfg.iters / 2
         {
             let before = gaussians.len();
 
