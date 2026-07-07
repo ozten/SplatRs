@@ -9,6 +9,8 @@ use crate::core::color::srgb_u8_to_linear_f32;
 use crate::core::{Camera, Gaussian, GaussianCloud};
 use crate::io::Point3D;
 use nalgebra::{UnitQuaternion, Vector3};
+use rayon::prelude::*;
+use std::collections::HashMap;
 
 fn gaussian_from_colmap_point(point: &Point3D) -> Gaussian {
     // Position
@@ -151,6 +153,120 @@ pub fn init_from_colmap_points_visible_stratified(
     GaussianCloud::from_gaussians(gaussians)
 }
 
+/// Per-point mean squared distance to the `k` nearest neighbors.
+///
+/// This is the quantity reference 3DGS (`simple-knn` / `distCUDA2`, k = 3) uses to set each
+/// Gaussian's initial scale: dense regions get small splats, sparse regions larger ones.
+/// Implemented as a uniform voxel grid with an expanding Chebyshev-ring search, so no
+/// external KD-tree dependency is needed. O(n) grid build, near-O(1) query per point for
+/// realistic COLMAP clouds.
+pub fn mean_sq_dist_knn(positions: &[Vector3<f32>], k: usize) -> Vec<f32> {
+    let n = positions.len();
+    if n <= 1 || k == 0 {
+        return vec![0.0; n];
+    }
+    let k = k.min(n - 1);
+
+    let mut min = positions[0];
+    let mut max = positions[0];
+    for p in positions {
+        min = min.inf(p);
+        max = max.sup(p);
+    }
+    let extent = max - min;
+    let max_extent = extent.x.max(extent.y).max(extent.z).max(1e-6);
+
+    // Cell size: aim for a few points per occupied cell. COLMAP clouds are mostly
+    // surface-like, so size cells off the largest bbox axis rather than a volumetric
+    // estimate (which would under-size cells for flat scenes).
+    let cells_per_axis = ((n as f32 / 4.0).cbrt().ceil() as i64).max(1);
+    let cell = max_extent / cells_per_axis as f32;
+
+    let cell_of = |p: &Vector3<f32>| -> (i64, i64, i64) {
+        (
+            ((p.x - min.x) / cell).floor() as i64,
+            ((p.y - min.y) / cell).floor() as i64,
+            ((p.z - min.z) / cell).floor() as i64,
+        )
+    };
+
+    let mut grid: HashMap<(i64, i64, i64), Vec<u32>> = HashMap::new();
+    for (i, p) in positions.iter().enumerate() {
+        grid.entry(cell_of(p)).or_default().push(i as u32);
+    }
+
+    // Searching rings up to this radius is guaranteed to have visited every occupied cell.
+    let max_ring = cells_per_axis + 1;
+
+    positions
+        .par_iter()
+        .enumerate()
+        .map(|(i, p)| {
+            // Best-k squared distances, kept sorted ascending (k is tiny, so sort-on-insert is fine).
+            let mut best: Vec<f32> = Vec::with_capacity(k + 1);
+            let (cx, cy, cz) = cell_of(p);
+            let mut r: i64 = 0;
+            loop {
+                // Visit cells on the Chebyshev shell at radius r.
+                for dx in -r..=r {
+                    for dy in -r..=r {
+                        for dz in -r..=r {
+                            if dx.abs().max(dy.abs()).max(dz.abs()) != r {
+                                continue;
+                            }
+                            let Some(cell_pts) = grid.get(&(cx + dx, cy + dy, cz + dz)) else {
+                                continue;
+                            };
+                            for &j in cell_pts {
+                                if j as usize == i {
+                                    continue;
+                                }
+                                let d2 = (positions[j as usize] - p).norm_squared();
+                                if best.len() < k {
+                                    best.push(d2);
+                                    best.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                                } else if d2 < best[k - 1] {
+                                    best[k - 1] = d2;
+                                    best.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                                }
+                            }
+                        }
+                    }
+                }
+                // Any point in an unvisited cell (Chebyshev distance > r) is at least r·cell
+                // away, so once the current k-th best is within that bound we are done.
+                let searched = r as f32 * cell;
+                if best.len() == k && best[k - 1] <= searched * searched {
+                    break;
+                }
+                if r > max_ring {
+                    break;
+                }
+                r += 1;
+            }
+            if best.is_empty() {
+                0.0
+            } else {
+                best.iter().sum::<f32>() / best.len() as f32
+            }
+        })
+        .collect()
+}
+
+/// C1: density-adaptive initial scale (reference 3DGS): per point, isotropic
+/// `σ = sqrt(mean sq dist to 3 nearest neighbors)`, stored in log space. Replaces the old
+/// depth heuristic (`1.5·z/f`), which sized Gaussians by distance from one camera instead of
+/// local point density, making dense regions start too large and over-split during
+/// densification. `min_sigma`/`max_sigma` bound σ in world units.
+pub fn apply_knn_init_scales(gaussians: &mut [Gaussian], min_sigma: f32, max_sigma: f32) {
+    let positions: Vec<Vector3<f32>> = gaussians.iter().map(|g| g.position).collect();
+    let d2 = mean_sq_dist_knn(&positions, 3);
+    for (g, d2) in gaussians.iter_mut().zip(d2) {
+        let sigma = d2.max(1e-7).sqrt().clamp(min_sigma, max_sigma);
+        g.scale = Vector3::from_element(sigma.ln());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,5 +332,100 @@ mod tests {
 
         let cloud = init_from_colmap_points_visible_stratified(&points, &camera, 10, 16);
         assert_eq!(cloud.len(), 1);
+    }
+
+    fn brute_force_mean_sq_dist_knn(positions: &[Vector3<f32>], k: usize) -> Vec<f32> {
+        positions
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let mut d2: Vec<f32> = positions
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, _)| *j != i)
+                    .map(|(_, q)| (q - p).norm_squared())
+                    .collect();
+                d2.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let k = k.min(d2.len());
+                if k == 0 {
+                    0.0
+                } else {
+                    d2[..k].iter().sum::<f32>() / k as f32
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_mean_sq_dist_knn_line() {
+        // Points on a line, spacing 1: 3-NN sq dists at an interior point are 1, 1, 4 → mean 2.
+        let positions: Vec<Vector3<f32>> = (0..10)
+            .map(|i| Vector3::new(i as f32, 0.0, 0.0))
+            .collect();
+        let d2 = mean_sq_dist_knn(&positions, 3);
+        for i in 2..8 {
+            assert!((d2[i] - 2.0).abs() < 1e-5, "interior point {}: {}", i, d2[i]);
+        }
+        // Endpoint: neighbors at 1, 2, 3 → (1 + 4 + 9)/3
+        assert!((d2[0] - 14.0 / 3.0).abs() < 1e-5, "endpoint: {}", d2[0]);
+    }
+
+    #[test]
+    fn test_mean_sq_dist_knn_matches_brute_force() {
+        // Deterministic pseudo-random cloud, non-uniform density (cluster + sparse shell).
+        let mut positions = Vec::new();
+        let mut state = 0x12345678u32;
+        let mut next = || {
+            state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+            (state >> 8) as f32 / (1u32 << 24) as f32
+        };
+        for i in 0..500 {
+            let s = if i % 5 == 0 { 10.0 } else { 1.0 };
+            positions.push(Vector3::new(s * next(), s * next(), s * next()));
+        }
+        let fast = mean_sq_dist_knn(&positions, 3);
+        let slow = brute_force_mean_sq_dist_knn(&positions, 3);
+        for i in 0..positions.len() {
+            assert!(
+                (fast[i] - slow[i]).abs() <= 1e-4 * slow[i].max(1e-6),
+                "point {}: grid={} brute={}",
+                i,
+                fast[i],
+                slow[i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_mean_sq_dist_knn_degenerate() {
+        // Empty, single point, duplicates: must not panic, must return finite values.
+        assert!(mean_sq_dist_knn(&[], 3).is_empty());
+        assert_eq!(mean_sq_dist_knn(&[Vector3::zeros()], 3), vec![0.0]);
+        let dup = vec![Vector3::new(1.0, 2.0, 3.0); 4];
+        for d2 in mean_sq_dist_knn(&dup, 3) {
+            assert_eq!(d2, 0.0);
+        }
+    }
+
+    #[test]
+    fn test_apply_knn_init_scales() {
+        let points: Vec<Point3D> = (0..5)
+            .map(|i| Point3D {
+                id: i,
+                position: Vector3::new(i as f32 * 0.5, 0.0, 0.0),
+                color: [128, 128, 128],
+                error: 0.1,
+            })
+            .collect();
+        let mut gaussians = init_from_colmap_points(&points).gaussians;
+        apply_knn_init_scales(&mut gaussians, 1e-4, 1.0);
+        for g in &gaussians {
+            // Interior spacing 0.5 → σ ∈ [0.5, 1.0]-ish; all finite, isotropic, within clamps.
+            assert!(g.scale.x.is_finite());
+            assert_eq!(g.scale.x, g.scale.y);
+            assert_eq!(g.scale.x, g.scale.z);
+            let sigma = g.scale.x.exp();
+            assert!((1e-4..=1.0).contains(&sigma), "sigma = {}", sigma);
+        }
     }
 }

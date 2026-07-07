@@ -188,10 +188,26 @@ produced 0 splits/0 clones (densification silently off). Fixed by converting pix
 **Open follow-ups from this work:**
 - **PSNR gain** still being measured on a longer run — at 600 iters densification is in its "churn"
   phase and PSNR (18.27) is ~level with the no-densify baseline; the payoff needs thousands of iters.
-- **Split dominates clone**, which traces to **C1** (initial scale still uses the depth heuristic, so
-  Gaussians start larger than `0.01·scene_extent` and over-split). Fixing C1 (NN-distance init)
-  should rebalance clone/split. 
-- **GPU backward** returns zero `d_mean_px`, so GPU-path densification is disabled (CPU-only for now).
+- **Split dominates clone** — traced to **C1**; ✅ FIXED (2026-07-06, see below).
+- **GPU backward** returned zero `d_mean_px` to the trainer — ✅ FIXED (2026-07-06). The GPU
+  rasterization backward (`backward.wgsl`) always computed the pixel-space `dL/d(mean_px)` and read
+  it back (it is what the position gradient is chained from), but the trainer discarded it and
+  handed zeros to the B1 accumulator, silently disabling densification on the GPU path. Now the
+  real `grads_2d.d_mean_px` is passed through — same pixel-space convention as the CPU path, so the
+  B1b pixel→NDC calibration applies unchanged. Also fixed: the GPU-backward-disabled fallback
+  branch used the 7-tuple `render_full_color_grads` (a latent compile error with `--features gpu`
+  since B1 landed — the GPU feature build had been broken at HEAD), and the pre-B1
+  `densify_and_prune`/FD-test call sites were updated to the new signatures/conventions.
+
+**C1 — ✅ DONE (2026-07-06).** Initial scale is now density-adaptive, matching reference 3DGS
+(`simple-knn`/`distCUDA2`): per point, isotropic `σ = sqrt(mean sq dist to 3 nearest neighbors)`,
+log-space, computed with a uniform voxel grid + expanding-ring search (`core/init.rs`,
+`mean_sq_dist_knn` + `apply_knn_init_scales`, brute-force-verified in tests). Replaces the
+depth-only heuristic (`1.5·z/f`) at both trainer init sites. In the multiview trainer σ is capped
+at `0.1·scene_extent` (the B6 oversize-prune bound, so no init Gaussian is born pruned);
+`scene_extent` computation moved above init to support this. Expected effect: dense regions start
+below `0.01·scene_extent`, so densification prefers **clone** (under-reconstruction) over **split**,
+rebalancing the split≫clone skew.
 
 Only after Phase 1 holds. This is a rewrite of `densify_and_prune`, not a tuning pass.
 

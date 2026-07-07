@@ -32,8 +32,9 @@ fn loss_from_mean_cov(
     mean_px: &Vector2<f32>,
     cov2d: &Matrix2<f32>,
 ) -> f32 {
-    let cov_mat = Matrix2::new(d_cov.x, d_cov.y, d_cov.y, d_cov.z);
-    d_mean.dot(mean_px) + (cov_mat.component_mul(cov2d)).sum()
+    // Renderer convention: d_cov.y is the FULL derivative dL/d(cov_xy) with the symmetric
+    // off-diagonal treated as a single DOF, so it enters the loss once (not once per slot).
+    d_mean.dot(mean_px) + d_cov.x * cov2d[(0, 0)] + d_cov.y * cov2d[(0, 1)] + d_cov.z * cov2d[(1, 1)]
 }
 
 #[test]

@@ -428,19 +428,9 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
         return Err(anyhow::anyhow!("GPU rendering requested but not compiled with --features gpu"));
     }
 
-    // Heuristic: set per-point isotropic 3D sigma so that the projected footprint is ~constant in pixel-space.
-    // This reduces the "salt-and-pepper" look from tiny splats when using sparse COLMAP points.
-    let desired_sigma_px = 1.5f32;
-    let f_mean = 0.5 * (camera.fx + camera.fy).max(1.0);
-    for g in &mut gaussians {
-        let z = camera.world_to_camera(&g.position).z;
-        if z <= 0.0 {
-            continue;
-        }
-        let sigma_world = (desired_sigma_px * z / f_mean).clamp(1e-4, 1.0);
-        let log_sigma = sigma_world.ln();
-        g.scale = Vector3::new(log_sigma, log_sigma, log_sigma);
-    }
+    // C1: density-adaptive initial scale from 3-nearest-neighbor distances (reference 3DGS),
+    // replacing the constant-pixel-footprint depth heuristic. σ clamp range matches the old one.
+    crate::core::apply_knn_init_scales(&mut gaussians, 1e-4, 1.0);
 
     let target_ds = downsample_image_smart(&target_full, camera.width, camera.height, cfg.downsample_factor);
     let target_linear = rgb8_to_linear_vec(&target_ds);
@@ -1472,23 +1462,40 @@ pub fn train_multiview_color_only(
         downsample_camera(&camera_full, cfg.downsample_factor)
     };
 
+    // B5/B6: scene spatial extent = radius of the camera centers about their centroid.
+    // Camera center C = -Rᵀ·t (R is world→camera). Used to make densification thresholds, the
+    // oversize prune, and the C1 init-scale cap scene-relative, matching reference 3DGS.
+    let scene_extent: f32 = {
+        let centers: Vec<Vector3<f32>> = scene
+            .images
+            .iter()
+            .map(|img| {
+                let r = crate::core::quaternion_to_matrix(&img.rotation);
+                -r.transpose() * img.translation
+            })
+            .collect();
+        if centers.is_empty() {
+            1.0
+        } else {
+            let mean = centers.iter().fold(Vector3::zeros(), |a, c| a + c) / centers.len() as f32;
+            centers
+                .iter()
+                .map(|c| (c - mean).norm())
+                .fold(0.0f32, f32::max)
+                .max(1e-3)
+        }
+    };
+    eprintln!("scene_extent = {:.4} (from {} cameras)", scene_extent, scene.images.len());
+
     // Initialize Gaussians from visible points (using first view for now)
     let cloud =
         init_from_colmap_points_visible_stratified(&scene.points, &camera, cfg.max_gaussians, 8);
     let mut gaussians: Vec<Gaussian> = cloud.gaussians;
 
-    // Set per-point isotropic 3D sigma for consistent pixel-space footprint
-    let desired_sigma_px = 1.5f32;
-    let f_mean = 0.5 * (camera.fx + camera.fy).max(1.0);
-    for g in &mut gaussians {
-        let z = camera.world_to_camera(&g.position).z;
-        if z <= 0.0 {
-            continue;
-        }
-        let sigma_world = (desired_sigma_px * z / f_mean).clamp(1e-4, 1.0);
-        let log_sigma = sigma_world.ln();
-        g.scale = Vector3::new(log_sigma, log_sigma, log_sigma);
-    }
+    // C1: density-adaptive initial scale from 3-nearest-neighbor distances (reference 3DGS),
+    // replacing the depth heuristic that made dense regions start too large and over-split.
+    // Cap σ at 0.1·scene_extent so no init Gaussian starts beyond the B6 oversize-prune bound.
+    crate::core::apply_knn_init_scales(&mut gaussians, 1e-4, 0.1 * scene_extent);
 
     eprintln!("Initialized {} Gaussians", gaussians.len());
     let initial_num_gaussians = gaussians.len();
@@ -1560,31 +1567,6 @@ pub fn train_multiview_color_only(
     let mut grad_accum_pos_norm: Vec<f32> = vec![0.0; gaussians.len()];
     let mut grad_denom: Vec<f32> = vec![0.0; gaussians.len()];
     let mut grad_window_iters: usize = 0;
-
-    // B5/B6: scene spatial extent = radius of the camera centers about their centroid.
-    // Camera center C = -Rᵀ·t (R is world→camera). Used to make densification thresholds and
-    // the oversize prune scene-relative, matching reference 3DGS.
-    let scene_extent: f32 = {
-        let centers: Vec<Vector3<f32>> = scene
-            .images
-            .iter()
-            .map(|img| {
-                let r = crate::core::quaternion_to_matrix(&img.rotation);
-                -r.transpose() * img.translation
-            })
-            .collect();
-        if centers.is_empty() {
-            1.0
-        } else {
-            let mean = centers.iter().fold(Vector3::zeros(), |a, c| a + c) / centers.len() as f32;
-            centers
-                .iter()
-                .map(|c| (c - mean).norm())
-                .fold(0.0f32, f32::max)
-                .max(1e-3)
-        }
-    };
-    eprintln!("scene_extent = {:.4} (from {} cameras)", scene_extent, scene.images.len());
 
     // Capture disable_sh from config for use in closures
     let disable_sh = cfg.disable_sh;
@@ -1860,7 +1842,7 @@ pub fn train_multiview_color_only(
                     if iter == 0 {
                         eprintln!("GPU backward disabled, using CPU backward: {reason}");
                     }
-                    render_full_color_grads(&gaussians, &train_camera, &d_image, &bg, disable_sh)
+                    render_full_color_grads_ext(&gaussians, &train_camera, &d_image, &bg, disable_sh)
                 } else {
                     match renderer.render_with_gradients(&gaussians, &train_camera, &bg, &d_image) {
                     Ok((_pixels, grads_2d)) => {
@@ -1879,10 +1861,10 @@ pub fn train_multiview_color_only(
                     };
 
                     let dummy_img = image::RgbImage::new(train_camera.width, train_camera.height);
-                    // GPU path does not surface a view-space mean gradient; densification is a
-                    // CPU-path concern, so hand back zeros here.
-                    let d_mean_px_gpu = vec![nalgebra::Vector2::<f32>::zeros(); gaussians.len()];
-                    (dummy_img, grads_2d.d_colors, grads_2d.d_opacity_logits, d_pos, d_scales, d_rots, d_background, d_mean_px_gpu)
+                    // The GPU rasterization backward accumulates the same pixel-space
+                    // dL/d(mean_px) as the CPU path (backward.wgsl, offsets 8-9), so hand it
+                    // straight to the B1 densification accumulator.
+                    (dummy_img, grads_2d.d_colors, grads_2d.d_opacity_logits, d_pos, d_scales, d_rots, d_background, grads_2d.d_mean_px)
                     }
                     Err(e) => {
                         eprintln!("GPU backward failed, falling back to CPU: {e}");
@@ -2448,9 +2430,12 @@ mod tests {
         let mut positions = vec![g1.position, Vector3::new(1.0, 0.0, 1.0)];
         let mut log_scales: Vec<Vector3<f32>> = gaussians.iter().map(|g| g.scale).collect();
         let mut rotations: Vec<UnitQuaternion<f32>> = gaussians.iter().map(|g| g.rotation).collect();
-        let mut grad_accum = vec![2.0, 0.0]; // avg_grad=0.2 if window=10
+        let mut grad_accum = vec![2.0, 0.0]; // avg_grad = 2.0/denom = 0.2
+        let mut denom = vec![10.0, 0.0]; // B2: g1 visible in all 10 window iterations
 
         let mut rng = StdRng::seed_from_u64(123);
+        // scene_extent = 2.0: split boundary 0.01·2 = 0.02 < σ = 0.1 → split (not clone),
+        // and oversize-prune bound 0.1·2 = 0.2 > σ so g1 is not pruned.
         let stats = densify_and_prune(
             &mut gaussians,
             &mut sh_params,
@@ -2459,12 +2444,14 @@ mod tests {
             &mut log_scales,
             &mut rotations,
             &mut grad_accum,
+            &mut denom,
             &mut rng,
             10,
             10,
             0.1,
             0.01,
             0.05,
+            2.0,
         );
 
         // g2 pruned, and g1 split -> two gaussians remain.
@@ -2475,6 +2462,7 @@ mod tests {
         assert_eq!(log_scales.len(), 2);
         assert_eq!(rotations.len(), 2);
         assert_eq!(grad_accum, vec![0.0, 0.0]);
+        assert_eq!(denom, vec![0.0, 0.0]);
 
         // First is the original, second is the split copy.
         assert_eq!(gaussians[0].position, g1.position);
