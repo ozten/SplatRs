@@ -1065,9 +1065,14 @@ fn densify_and_prune<R: Rng + ?Sized>(
     } else {
         max_gaussians
     };
-    // Never drop existing Gaussians just because the post-densify cap is smaller than current size.
-    // The cap is intended to limit *additions* during densification.
-    let cap = cap.max(before);
+    // Never drop existing Gaussians just because the post-densify cap is smaller than current
+    // size — the cap limits *additions*. Enforce it as an addition BUDGET (cap − current count),
+    // decremented per child. The old check compared the rebuilt array's RUNNING length against
+    // the cap, but survivors are appended after children stop, so every cycle overshot the cap
+    // by the number of parents still unprocessed at the moment the length crossed it — and the
+    // next cycle's cap.max(before) ratcheted the cap up to the inflated count (compounding
+    // ~5–8%/cycle until the 400k GPU buffer limit).
+    let mut add_budget = cap.saturating_sub(before);
 
     let mut new_gaussians = Vec::with_capacity(gaussians.len());
     let mut new_sh_params = Vec::with_capacity(sh_params.len());
@@ -1155,13 +1160,14 @@ fn densify_and_prune<R: Rng + ?Sized>(
         remap.push(Some(i));
         kept += 1;
 
-        let can_add = new_gaussians.len() < cap;
+        let can_add = add_budget > 0;
         if !(avg_grad > grad_threshold && can_add) {
             if avg_grad > grad_threshold && !can_add {
                 cap_hit = true;
             }
             continue;
         }
+        add_budget -= 1;
 
         let sigma = mean_world_sigma(&gaussians[i]);
         let jitter = (0.5 * sigma).clamp(1e-4, 5e-3);
@@ -2506,6 +2512,56 @@ mod tests {
         assert_eq!(remap, vec![Some(0), None]);
         // B12: both keep the parent opacity unchanged.
         assert_eq!(opacity_logits, vec![1.0, 1.0]);
+    }
+
+    #[test]
+    fn densify_respects_max_gaussians_cap() {
+        // 4 clone-eligible Gaussians (σ = 0.01 < split boundary 0.02), cap 6 → exactly 2
+        // children may be added regardless of how many parents qualify.
+        let make = |x: f32| {
+            Gaussian::new(
+                Vector3::new(x, 0.0, 1.0),
+                Vector3::new(0.01f32.ln(), 0.01f32.ln(), 0.01f32.ln()),
+                UnitQuaternion::identity(),
+                1.0,
+                empty_sh(),
+            )
+        };
+        let mut gaussians: Vec<Gaussian> = (0..4).map(|i| make(i as f32)).collect();
+        let mut sh_params = vec![[Vector3::zeros(); 16]; 4];
+        let mut opacity_logits = vec![1.0; 4];
+        let mut positions: Vec<Vector3<f32>> = gaussians.iter().map(|g| g.position).collect();
+        let mut log_scales: Vec<Vector3<f32>> = gaussians.iter().map(|g| g.scale).collect();
+        let mut rotations: Vec<UnitQuaternion<f32>> =
+            gaussians.iter().map(|g| g.rotation).collect();
+        let mut grad_accum = vec![2.0; 4];
+        let mut denom = vec![10.0; 4];
+        let mut rng = StdRng::seed_from_u64(7);
+
+        let (stats, remap) = densify_and_prune(
+            &mut gaussians,
+            &mut sh_params,
+            &mut opacity_logits,
+            &mut positions,
+            &mut log_scales,
+            &mut rotations,
+            &mut grad_accum,
+            &mut denom,
+            &mut rng,
+            10,
+            6, // cap
+            0.1,
+            0.01,
+            0.05,
+            2.0,
+        );
+
+        assert_eq!(gaussians.len(), 6, "cap must bound the final count");
+        assert_eq!(stats.cloned + stats.split, 2);
+        assert!(stats.cap_hit, "cap_hit must be reported when the budget runs out");
+        assert_eq!(remap.len(), 6);
+        // All 4 parents survive (kept), regardless of the cap.
+        assert_eq!(stats.kept, 4);
     }
 
     #[test]
