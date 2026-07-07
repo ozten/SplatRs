@@ -24,7 +24,7 @@ use crate::optim::loss::{
 };
 use crate::core::sigmoid;
 use crate::render::full_diff::{
-    coverage_mask_bool, coverage_weights_downsampled, debug_contrib_count, debug_coverage_mask,
+    coverage_mask_bool, debug_contrib_count, debug_coverage_mask,
     debug_final_transmittance, debug_overlay_means, downsample_rgb_bilinear, downsample_rgb_box,
     linear_vec_to_rgb8_img, render_full_color_grads, render_full_color_grads_ext,
     render_full_linear, rgb8_to_linear_vec,
@@ -1683,17 +1683,6 @@ pub fn train_multiview_color_only(
     let mut last_grad_p90: f32 = 0.0;
     let mut last_gaussian_stats: GaussianStats = GaussianStats::default();
 
-    // Cached coverage weights for GPU training
-    // Updated every COVERAGE_INTERVAL iterations at 4x downsampled resolution
-    #[cfg(feature = "gpu")]
-    const COVERAGE_INTERVAL: usize = 25;
-    #[cfg(feature = "gpu")]
-    const COVERAGE_DOWNSAMPLE: u32 = 4;
-    #[cfg(feature = "gpu")]
-    let mut cached_coverage_weights: Option<Vec<f32>> = None;
-    #[cfg(feature = "gpu")]
-    let mut cached_coverage_dims: (u32, u32) = (0, 0);
-
     for iter in 0..cfg.iters {
         // D2: position-only exponential schedule; all other LRs stay at their configured values.
         let t = (iter as f32 / POSITION_LR_MAX_STEPS).min(1.0);
@@ -1777,40 +1766,13 @@ pub fn train_multiview_color_only(
 
         let t0 = Instant::now();
 
-        // Coverage weighting: weight covered pixels more than background
-        // GPU path uses downsampled coverage computed periodically to reduce overhead
-        #[cfg(feature = "gpu")]
-        let weights: Vec<f32> = if gpu_renderer.is_some() {
-            // Update cached coverage every COVERAGE_INTERVAL iterations or when dimensions change
-            let current_dims = (train_camera.width, train_camera.height);
-            if cached_coverage_weights.is_none()
-                || cached_coverage_dims != current_dims
-                || iter % COVERAGE_INTERVAL == 0
-            {
-                cached_coverage_weights = Some(coverage_weights_downsampled(
-                    &gaussians,
-                    &train_camera,
-                    COVERAGE_DOWNSAMPLE,
-                ));
-                cached_coverage_dims = current_dims;
-            }
-            cached_coverage_weights.clone().unwrap()
-        } else {
-            let coverage_bool = coverage_mask_bool(&gaussians, &train_camera);
-            coverage_bool
-                .iter()
-                .map(|&c| if c { 1.0 } else { 0.5 })
-                .collect()
-        };
-
-        #[cfg(not(feature = "gpu"))]
-        let weights: Vec<f32> = {
-            let coverage_bool = coverage_mask_bool(&gaussians, &train_camera);
-            coverage_bool
-                .iter()
-                .map(|&c| if c { 1.0 } else { 0.5 })
-                .collect()
-        };
+        // Uniform loss weights, matching reference 3DGS (no pixel weighting). The old coverage
+        // weighting (covered 1.0 / uncovered 0.5) halved the background-restoring gradient from
+        // sky pixels while partially-covered pixels pushed at full weight — a mechanism that
+        // drags the background dark. It persisted across every other variable A/B'd (learned vs
+        // frozen bg, L2 vs L1+DSSIM, densify on/off).
+        let weights: Vec<f32> =
+            vec![1.0; (train_camera.width * train_camera.height) as usize];
 
         // Forward and loss
         let rendered_linear = render(&gaussians, &train_camera, &bg);

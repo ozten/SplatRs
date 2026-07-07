@@ -301,10 +301,17 @@ over-opacity equilibrium that the resets only mask.** Leading suspects, in order
    CLI override and re-ran the trio with L1+DSSIM: no-densify 16.24 (vs 16.33), @500 15.71
    (vs 16.02), @100 13.71 (vs 14.90) — slightly worse everywhere at this horizon, and the
    background still gets dragged to pure black. The dark-drift/over-opacity dynamic is NOT
-   loss-driven. Next suspect: the **coverage loss weighting** (covered 1.0 / uncovered 0.5) —
-   a SplatRs-only deviation from reference (which uses NO pixel weighting); it halves the
-   background-restoring gradient from sky pixels, exactly the observed drag-to-dark mechanism,
-   and it is common to every run so far.
+   loss-driven. The **coverage loss weighting** (covered 1.0 / uncovered 0.5, a SplatRs-only
+   deviation) was the next suspect — **also refuted (2026-07-06), in an unexpected way: it was
+   INERT.** Replacing it with uniform weights (reference behavior) reproduced every run
+   bit-for-bit (train losses identical to 6 decimals) — with 8000 C1-sized Gaussians the
+   coverage mask saturates, so every pixel already weighed 1.0. The uniform-weights code was
+   kept (reference-faithful, removes a periodic coverage computation from the training loop;
+   verified zero behavior change). The bg→black drag in densify runs therefore reflects the
+   *optimizer's actual preference* as capacity grows — remaining explanation: densified
+   Gaussians progressively cover sky pixels, and bg then fits darker residual regions. The
+   quality gap itself points back at **densify calibration (B1b under D1 LRs)** as the one
+   live lever.
 2. **B1b threshold recalibration** under the corrected (D1) position LRs — faster positions
    produce larger view-space gradients, so 0.0002 now over-selects; densification adds capacity
    faster than it adds quality (even @500 trails the no-densify baseline at 2000 iters).
