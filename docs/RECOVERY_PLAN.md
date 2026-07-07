@@ -317,6 +317,22 @@ over-opacity equilibrium that the resets only mask.** Leading suspects, in order
    0.0004→15.72, 0.0008→15.97 — but the train loss at 0.0008 (0.028) vs no-densify (0.121)
    exposed the real story: densification was fitting the train views far better while testing
    worse ⇒ **overfitting the tiny train set**, not a calibration bug per se.
+**Phase-3 15k runs at 100 views (2026-07-06/07) — capacity-to-data ratio is the binding
+constraint.** Three 15k runs (100 images, interval 100, seed 42) after the cap fix:
+- **Densify-cap bug found & fixed** by the first run — the cap compared the rebuilt array's
+  *running length*, so survivors appended after children overshot it every cycle and
+  `cap.max(before)` ratcheted it upward compounding ~5–8%/cycle (207k→259k past a 200k cap,
+  headed for the 400k Metal buffer limit). Now enforced as an addition budget; unit-tested.
+- Capped at 200k, resets throughout: **14.02** final (settle phase climbed 13.58→14.40 but the
+  iter-12000 reset ended the run mid-recovery).
+- Capped at 200k, resets gated to the densify window (reference behavior, B3 follow-up commit):
+  **12.76** final — reset-free settle *overfits* (train loss ↓ while test PSNR ↓, 14.16→12.76).
+  The resets had been acting as accidental regularization.
+**Conclusion: at 200k Gaussians × 75 half-res views (~10M pixel constraints), supervision per
+Gaussian is 2–5× thinner than reference conditions; the settle phase overfits regardless of
+schedule. The schedule fixes are reference-correct; the *config* isn't reference-like yet.**
+Next levers: lower cap (60k run in flight), all 301 images, and/or full resolution.
+
 3. **Micro-config confound — CONFIRMED as the root of "densification hurts" (2026-07-06).**
    Re-ran the A/B with `--max-images 100` (75 train / 25 test): densify@100 **beats** its
    no-densify baseline for the first time — 15.33 vs 15.10 final, count 8000→22,618 (~3×,
