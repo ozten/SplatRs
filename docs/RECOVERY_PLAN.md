@@ -287,6 +287,24 @@ Only after Phase 1 holds. This is a rewrite of `densify_and_prune`, not a tuning
   ~100→550/cycle (count →12.6k, PSNR 16.7→12.8 by 7500; run stopped there). With B7 at 2000
   iters: @500 15.49→16.02, @100 12.47→14.90 final — the post-densify collapse is gone.
 - **B8** size-proportional child jitter. **B9** real cap. **B10** consistent thresholds/intervals.
+
+**Full 15k validation run with the complete fix stack (2026-07-06, micro @490×272, interval 500,
+seed 42): final 14.47 dB, count 12,593.** Trajectory: 15.72@500 → **16.73 peak @1000** → slides
+through the densify phase to 12.78@7500 (last densify event) → settle phase sawtooths with the
+3000-iter opacity resets (12.23 → 14.05 → 12.47 → 14.92) → 14.47 final. B7's settle phase
+recovered +1.7 dB from the trough (pre-B7 the envelope was still falling at 7500), but the run
+ends below the 2000-iter no-densify baseline (16.33) and below its own iter-1000 peak.
+**Verdict: the densify phase digs a hole the settle phase only partly climbs out of, and even
+pure optimization degrades between opacity resets (12.78→12.23 with zero densify events) — an
+over-opacity equilibrium that the resets only mask.** Leading suspects, in order:
+1. **Loss: micro trains with L2**; reference is `0.8·L1 + 0.2·(1−SSIM)` — implemented and
+   verified correct in this codebase (`LossKind::L1Dssim`, already used by the m10/onehour/full
+   presets) but NOT used by micro. Cheapest next A/B: micro with L1Dssim.
+2. **B1b threshold recalibration** under the corrected (D1) position LRs — faster positions
+   produce larger view-space gradients, so 0.0002 now over-selects; densification adds capacity
+   faster than it adds quality (even @500 trails the no-densify baseline at 2000 iters).
+3. Micro-config confounds vs reference: 15 train views (reference uses all ~250), 40% res,
+   8k init points. Phase-3 validation should move to a fuller config once 1–2 land.
 - **C1** nearest-neighbor initial scale.
 
 ### Phase 3 — Validate against benchmarks
