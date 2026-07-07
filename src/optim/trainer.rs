@@ -1653,15 +1653,21 @@ pub fn train_multiview_color_only(
         None
     };
 
-    // Learning rate scheduling: exponential decay
-    // Decay all LRs by 10× over the full training (exponential)
-    let lr_decay_rate = 0.1f32.powf(1.0 / cfg.iters as f32);
-    let initial_lr_position = cfg.lr_position;
-    let initial_lr_rotation = cfg.lr_rotation;
-    let initial_lr_scale = cfg.lr_scale;
-    let initial_lr_opacity = cfg.lr_opacity;
-    let initial_lr_sh = cfg.lr_sh;
-    let initial_lr_background = cfg.lr_background;
+    // D1/D2: reference 3DGS learning-rate schedule.
+    // D1: position LR is scaled by the scene extent (reference `spatial_lr_scale`) — a fixed
+    //     0.00016 in world units moves positions far too slowly on scenes larger than ~1 unit,
+    //     and Gaussians compensate by growing scale instead of relocating onto geometry.
+    // D2: ONLY position is scheduled — log-linear (exponential) decay from lr_init·extent down
+    //     100× over the reference horizon of 30k steps (reference `get_expon_lr_func`, no
+    //     delay). Every other parameter group holds its LR constant for the whole run; the old
+    //     uniform 10×-per-run decay starved scale/opacity/SH updates late in training.
+    const POSITION_LR_MAX_STEPS: f32 = 30_000.0;
+    let position_lr_init = cfg.lr_position * scene_extent;
+    let position_lr_final = position_lr_init * 0.01;
+    eprintln!(
+        "position lr = {:.6} -> {:.8} over {} steps (spatial_lr_scale = {:.3}); other LRs constant",
+        position_lr_init, position_lr_final, POSITION_LR_MAX_STEPS as usize, scene_extent
+    );
 
     // Training loop: sample random views
     let mut train_loss = 0.0f32;
@@ -1689,14 +1695,9 @@ pub fn train_multiview_color_only(
     let mut cached_coverage_dims: (u32, u32) = (0, 0);
 
     for iter in 0..cfg.iters {
-        // Apply LR schedule: exponential decay
-        let lr_multiplier = lr_decay_rate.powi(iter as i32);
-        position_opt.lr = initial_lr_position * lr_multiplier;
-        rotation_opt.lr = initial_lr_rotation * lr_multiplier;
-        scale_opt.lr = initial_lr_scale * lr_multiplier;
-        opacity_opt.lr = initial_lr_opacity * lr_multiplier;
-        sh_opt.lr = initial_lr_sh * lr_multiplier;
-        bg_opt.lr = initial_lr_background * lr_multiplier;
+        // D2: position-only exponential schedule; all other LRs stay at their configured values.
+        let t = (iter as f32 / POSITION_LR_MAX_STEPS).min(1.0);
+        position_opt.lr = (position_lr_init.ln() * (1.0 - t) + position_lr_final.ln() * t).exp();
         let should_log =
             cfg.log_interval > 0 && (iter == 0 || iter % cfg.log_interval == 0 || iter + 1 == cfg.iters);
         let iter_start = if should_log { Some(Instant::now()) } else { None };

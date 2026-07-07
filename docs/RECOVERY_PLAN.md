@@ -178,7 +178,26 @@ Fix the base so a *fixed* Gaussian set converges like reference does pre-densifi
   D1/D2 (LR schedule).** Kept: learned bg default, `--learn-bg`/`--no-learn-bg` flags, startup
   `background init` log line, fixed gpu-gated bg-gradient tests.
 - **C2** progressive SH-degree warmup (or at least confirm SH forward + linear/sRGB color handling).
-- **D1/D2/D3** correct the LR schedule (scene-extent position LR, position-only decay, SH-rest LR).
+- **D1/D2 — ✅ DONE (2026-07-06).** Position LR is now `lr_position · scene_extent` (reference
+  `spatial_lr_scale`) with a position-ONLY log-linear decay of 100× over the reference 30k-step
+  horizon; all other parameter groups hold constant LR (the old code decayed all six groups 10×
+  per run). **Verified — this was the cause of the late-training PSNR decay.** A/B
+  (tandt/train micro, 2000 iters GPU, seed 42, test PSNR @500/@1000/@1500/@2000):
+  | Config | before D1/D2 | after |
+  |---|---|---|
+  | no densify | 15.26 / 15.25 / 15.05 / **14.91** | 15.72 / 16.84 / 17.00 / **16.33** |
+  | densify @500 | 15.26 / 15.52 / 16.01 / **15.69** | 15.72 / 16.73 / 16.46 / **15.49** |
+  | densify @100 | 16.11 / 15.36 / 14.35 / **14.15** | 16.34 / 15.90 / 14.19 / **12.47** |
+  Base fitting now CLIMBS (peak 17.0) instead of decaying — +1.4 dB final on no-densify.
+  **New bottleneck exposed: densification now hurts relative to the improved baseline.** At
+  interval 100 there is a clone runaway (clones/cycle grow 200→542 by iter 1900, count →14.3k,
+  bg driven to (0,0,0), PSNR →12.5): faster positions produce larger view-space gradients, more
+  Gaussians cross the 0.0002 clone threshold each cycle, and added capacity feeds back. Next
+  candidates: **B7** (densify stop horizon — reference stops at 15k/30k; we densify to the end
+  of the run), revisiting the B1b pixel→NDC threshold calibration under the corrected LRs, and
+  the not-yet-firing B3 opacity reset (interval 3000 > these 2000-iter runs, which is
+  reference-consistent but means alpha inflation from cloning goes uncorrected).
+- **D3** SH-rest LR (rest bands at DC/20) — still open, needs per-band LR in `AdamSh16`.
 - **Gate:** with densification disabled, this scene should climb to ~18–20 dB. If it can't, return
   to Phase 0 — the forward path is still wrong.
 
