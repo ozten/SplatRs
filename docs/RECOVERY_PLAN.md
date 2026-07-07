@@ -312,11 +312,21 @@ over-opacity equilibrium that the resets only mask.** Leading suspects, in order
    Gaussians progressively cover sky pixels, and bg then fits darker residual regions. The
    quality gap itself points back at **densify calibration (B1b under D1 LRs)** as the one
    live lever.
-2. **B1b threshold recalibration** under the corrected (D1) position LRs — faster positions
-   produce larger view-space gradients, so 0.0002 now over-selects; densification adds capacity
-   faster than it adds quality (even @500 trails the no-densify baseline at 2000 iters).
-3. Micro-config confounds vs reference: 15 train views (reference uses all ~250), 40% res,
-   8k init points. Phase-3 validation should move to a fuller config once 1–2 land.
+2. **B1b threshold recalibration** — partially confirmed (2026-07-06): sweeping the threshold
+   at interval 100 (2000 iters, 15 train views) improves monotonically — 0.0002→14.90,
+   0.0004→15.72, 0.0008→15.97 — but the train loss at 0.0008 (0.028) vs no-densify (0.121)
+   exposed the real story: densification was fitting the train views far better while testing
+   worse ⇒ **overfitting the tiny train set**, not a calibration bug per se.
+3. **Micro-config confound — CONFIRMED as the root of "densification hurts" (2026-07-06).**
+   Re-ran the A/B with `--max-images 100` (75 train / 25 test): densify@100 **beats** its
+   no-densify baseline for the first time — 15.33 vs 15.10 final, count 8000→22,618 (~3×,
+   reference-scale growth), PSNR climbing monotonically through iter 2000, train loss
+   comparable to baseline (no overfit), **and the bg→black pathology disappears** (background
+   settles at a sensible gray). With 15 train views, extra capacity memorizes the train set
+   and test PSNR pays for it; with 100 views, multi-view consistency constrains the added
+   capacity exactly as reference assumes. **Phase-3 validation must use ≥100 images**
+   (`--max-images 100` or 0 = all); micro's default 20 stays for its fast-profiling purpose.
+   Threshold 0.0002 + interval 100 (reference values) are healthy at real view counts.
 - **C1** nearest-neighbor initial scale.
 
 ### Phase 3 — Validate against benchmarks
