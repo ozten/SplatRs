@@ -73,8 +73,11 @@ fn test_background_gradient_only() {
     println!("  G: CPU={:.6}, GPU={:.6}, diff={:.6}", cpu_d_bg.y, gpu_grads_2d.d_background.y, (cpu_d_bg.y - gpu_grads_2d.d_background.y).abs());
     println!("  B: CPU={:.6}, GPU={:.6}, diff={:.6}", cpu_d_bg.z, gpu_grads_2d.d_background.z, (cpu_d_bg.z - gpu_grads_2d.d_background.z).abs());
 
-    if diff > 0.1 {
-        println!("\n❌ Background gradient FAILS - diff {:.6} > 0.1", diff);
+    // Relative tolerance: d_bg is a sum over all pixels, so tiny per-pixel numerical
+    // differences (fixed-point atomics, alpha cutoffs) accumulate with image size.
+    let tol = 1e-3 * cpu_d_bg.norm().max(1.0);
+    if diff > tol {
+        println!("\n❌ Background gradient FAILS - diff {:.6} > {:.6}", diff, tol);
         panic!("GPU background gradient is incorrect");
     } else {
         println!("\n✅ Background gradient matches within tolerance!");

@@ -109,6 +109,12 @@ fn main() {
     let mut max_gaussians: usize = 20_000;
     let mut image_index: usize = 0;
     let mut log_interval: usize = 10;
+    // A3 (resolved 2026-07-06): the learned background stays ON. The historical divergence
+    // (bg negative/past 1.0) no longer reproduces — the [0,1] clamp in the trainer plus the
+    // A1/A2/B-series fixes removed it — and a 6-run A/B showed the learned background beats a
+    // frozen constant by 0.5–1.0 dB in every densify config (it converges to a jointly better
+    // constant; "red pinned at 0" is a clamped optimum, not divergence). Use --no-learn-bg to
+    // freeze it for experiments.
     let mut learn_background: bool = true;
     let mut learn_opacity: bool = false;
     let mut learn_position: bool = false;
@@ -512,6 +518,7 @@ fn main() {
             "--image-index" => image_index = args.next().unwrap().parse().unwrap(),
             "--log-interval" => log_interval = args.next().unwrap().parse().unwrap(),
             "--no-learn-bg" => learn_background = false,
+            "--learn-bg" => learn_background = true,
             "--learn-opacity" => learn_opacity = true,
             "--learn-position" => learn_position = true,
             "--learn-scale" => learn_scale = true,

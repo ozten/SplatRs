@@ -1534,6 +1534,10 @@ pub fn train_multiview_color_only(
         }
         acc / (first_target_linear.len() as f32).max(1.0)
     };
+    eprintln!(
+        "background init = ({:.3},{:.3},{:.3})  learn_background={}",
+        bg.x, bg.y, bg.z, cfg.learn_background
+    );
     let mut bg_opt = AdamVec3::new(cfg.lr_background, 0.9, 0.999, 1e-8);
 
     // Optimizer state for SH coeffs (RGB × 16)

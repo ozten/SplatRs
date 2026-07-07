@@ -165,8 +165,18 @@ Fix the base so a *fixed* Gaussian set converges like reference does pre-densifi
   `d_cov.y` evenly across the symmetric matrix slots (`0.5 * d_cov.y` each). Verified against the math
   (the `Jᵀ·G·J` chain treats G as a full 4-entry matrix) and the agent's finite-difference check; the
   14 existing gradient FD tests still pass (no regression).
-- **A3** diagnose & stop background/optimizer divergence (clamp/regularize background; likely eased
-  by A1 + D2).
+- **A3 — ✅ RESOLVED (2026-07-06, diagnosis: no longer reproduces; learned bg kept).**
+  The documented divergence (bg RGB negative/past 1.0, PSNR collapse) does not reproduce after
+  the [0,1] bg clamp (present in the trainer) plus A1/A2/B1–B6/B11/B12. Verified the GPU
+  background gradient against CPU (matches to ~0.02–2% — the old failing test used an absolute
+  tolerance on a pixel-sum; now relative). Then A/B'd learned-vs-frozen bg across all three
+  densify configs (tandt/train micro, 2000 iters, seed 42, final test PSNR):
+  frozen loses everywhere — no-densify 14.43 vs 14.91, @500 14.97 vs 15.69, @100 13.15 vs 14.15.
+  The learned bg converges to a jointly better constant than any fixed value; "red pinned at 0"
+  is a clamped optimum, not divergence. **Key negative result: the slow late-training PSNR decay
+  persists with bg completely frozen → the decay is NOT background-driven; next suspect is
+  D1/D2 (LR schedule).** Kept: learned bg default, `--learn-bg`/`--no-learn-bg` flags, startup
+  `background init` log line, fixed gpu-gated bg-gradient tests.
 - **C2** progressive SH-degree warmup (or at least confirm SH forward + linear/sRGB color handling).
 - **D1/D2/D3** correct the LR schedule (scene-extent position LR, position-only decay, SH-rest LR).
 - **Gate:** with densification disabled, this scene should climb to ~18–20 dB. If it can't, return
