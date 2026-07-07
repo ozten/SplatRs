@@ -331,7 +331,13 @@ constraint.** Three 15k runs (100 images, interval 100, seed 42) after the cap f
 **Conclusion: at 200k Gaussians × 75 half-res views (~10M pixel constraints), supervision per
 Gaussian is 2–5× thinner than reference conditions; the settle phase overfits regardless of
 schedule. The schedule fixes are reference-correct; the *config* isn't reference-like yet.**
-Next levers: lower cap (60k run in flight), all 301 images, and/or full resolution.
+- Capped at **60k**, reference schedule (2026-07-07): **14.25** final — best of the three, and
+  the only settle phase that *stabilized and turned upward* (oscillating 14.2–14.5) instead of
+  declining. Confirms the capacity story directionally: 60k + reference schedule beats 200k
+  with any schedule. All 15k runs still trail the 2000-iter run's 15.33 on the same test set —
+  long-horizon payoff needs reference-like data.
+**Next levers: all 301 images (`--max-images 0`) and/or fuller resolution (`--downsample`),
+with cap ~60–100k. Note the Metal 128 MB buffer limit when raising resolution+count together.**
 
 3. **Micro-config confound — CONFIRMED as the root of "densification hurts" (2026-07-06).**
    Re-ran the A/B with `--max-images 100` (75 train / 25 test): densify@100 **beats** its
