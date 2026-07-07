@@ -2251,11 +2251,13 @@ pub fn train_multiview_color_only(
 
         // B3: opacity reset — every opacity_reset_interval iterations, cap opacities DOWNWARD
         // toward ~0.01 (never raise them), forcing weak Gaussians to re-earn their opacity or be
-        // pruned. Runs on its own schedule, independent of the densification cadence, and NOT on
-        // the final iteration.
+        // pruned. Like reference 3DGS, resets fire only inside the densification window (first
+        // half of training, matching B7): the settle phase must run reset-free so the model can
+        // converge — the Phase-3 15k run ended mid-recovery from an iter-12000 reset (13.78 at
+        // 13500 → only 14.02 at 15000) because resets kept firing after densification stopped.
         if cfg.opacity_reset_interval > 0
             && (iter + 1) % cfg.opacity_reset_interval == 0
-            && (iter + 1) < cfg.iters
+            && (iter + 1) <= cfg.iters / 2
         {
             let reset_cap = crate::core::inverse_sigmoid(0.01); // ≈ -4.595
             for i in 0..opacity_logits.len() {
