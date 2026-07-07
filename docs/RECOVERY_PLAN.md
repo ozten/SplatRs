@@ -297,9 +297,14 @@ ends below the 2000-iter no-densify baseline (16.33) and below its own iter-1000
 **Verdict: the densify phase digs a hole the settle phase only partly climbs out of, and even
 pure optimization degrades between opacity resets (12.78→12.23 with zero densify events) — an
 over-opacity equilibrium that the resets only mask.** Leading suspects, in order:
-1. **Loss: micro trains with L2**; reference is `0.8·L1 + 0.2·(1−SSIM)` — implemented and
-   verified correct in this codebase (`LossKind::L1Dssim`, already used by the m10/onehour/full
-   presets) but NOT used by micro. Cheapest next A/B: micro with L1Dssim.
+1. ~~**Loss: micro trains with L2**~~ — **REFUTED (2026-07-06).** Added a `--loss l2|l1dssim`
+   CLI override and re-ran the trio with L1+DSSIM: no-densify 16.24 (vs 16.33), @500 15.71
+   (vs 16.02), @100 13.71 (vs 14.90) — slightly worse everywhere at this horizon, and the
+   background still gets dragged to pure black. The dark-drift/over-opacity dynamic is NOT
+   loss-driven. Next suspect: the **coverage loss weighting** (covered 1.0 / uncovered 0.5) —
+   a SplatRs-only deviation from reference (which uses NO pixel weighting); it halves the
+   background-restoring gradient from sky pixels, exactly the observed drag-to-dark mechanism,
+   and it is common to every run so far.
 2. **B1b threshold recalibration** under the corrected (D1) position LRs — faster positions
    produce larger view-space gradients, so 0.0002 now over-selects; densification adds capacity
    faster than it adds quality (even @500 trails the no-densify baseline at 2000 iters).

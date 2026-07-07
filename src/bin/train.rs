@@ -519,6 +519,14 @@ fn main() {
             "--log-interval" => log_interval = args.next().unwrap().parse().unwrap(),
             "--no-learn-bg" => learn_background = false,
             "--learn-bg" => learn_background = true,
+            "--loss" => {
+                let v = args.next().expect("--loss requires a value: l2 | l1dssim");
+                loss = match v.as_str() {
+                    "l2" => sugar_rs::optim::loss::LossKind::L2,
+                    "l1dssim" | "l1-dssim" => sugar_rs::optim::loss::LossKind::L1Dssim,
+                    other => panic!("unknown --loss '{other}': expected l2 | l1dssim"),
+                };
+            }
             "--learn-opacity" => learn_opacity = true,
             "--learn-position" => learn_position = true,
             "--learn-scale" => learn_scale = true,
