@@ -280,7 +280,12 @@ Only after Phase 1 holds. This is a rewrite of `densify_and_prune`, not a tuning
 - **B4** split shrink → `/1.6`.
 - **B5** introduce `scene_extent`; clone/split boundary = `0.01·scene_extent` on **max** axis scale.
 - **B6** add screen-radius / world-scale prune after opacity reset; tie any scale ceiling to extent.
-- **B7** stop densification at ~15000 iters.
+- **B7 — ✅ DONE (2026-07-06).** Densify only during the first half of training (`≤ iters/2`,
+  proportional port of reference 500–15000/30k). Motivated by the 15k validation run
+  (interval 500): reset-bounded sawtooth with decaying envelope — opacity resets recovered
+  +0.6/+2.85 dB but between resets PSNR fell faster each cycle as additions accelerated
+  ~100→550/cycle (count →12.6k, PSNR 16.7→12.8 by 7500; run stopped there). With B7 at 2000
+  iters: @500 15.49→16.02, @100 12.47→14.90 final — the post-densify collapse is gone.
 - **B8** size-proportional child jitter. **B9** real cap. **B10** consistent thresholds/intervals.
 - **C1** nearest-neighbor initial scale.
 
