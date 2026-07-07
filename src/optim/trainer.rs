@@ -1005,25 +1005,6 @@ fn percentile(sorted: &[f32], p: f32) -> f32 {
     sorted[idx]
 }
 
-fn logit_from_alpha(alpha: f32) -> f32 {
-    let a = alpha.clamp(1e-6, 1.0 - 1e-6);
-    (a / (1.0 - a)).ln()
-}
-
-fn split_opacity_logit(parent_logit: f32, children: usize) -> f32 {
-    if children <= 1 {
-        return parent_logit;
-    }
-    let a_parent = sigmoid(parent_logit);
-    // Preserve total alpha under the approximation:
-    // alpha_total = 1 - Π_k (1 - alpha_k), with all children equal.
-    // Solve for alpha_child:
-    // 1 - (1 - alpha_child)^children = alpha_parent
-    // => alpha_child = 1 - (1 - alpha_parent)^(1/children)
-    let a_child = 1.0 - (1.0 - a_parent).powf(1.0 / (children as f32));
-    logit_from_alpha(a_child)
-}
-
 fn densify_and_prune<R: Rng + ?Sized>(
     gaussians: &mut Vec<Gaussian>,
     sh_params: &mut Vec<[Vector3<f32>; 16]>,
@@ -1040,23 +1021,26 @@ fn densify_and_prune<R: Rng + ?Sized>(
     prune_opacity_threshold: f32,
     _split_sigma_threshold: f32,
     scene_extent: f32,
-) -> DensifyStats {
+) -> (DensifyStats, Vec<Option<usize>>) {
     let before = gaussians.len();
     if iters_in_window == 0 || gaussians.is_empty() {
-        return DensifyStats {
-            before,
-            after: before,
-            kept: before,
-            pruned: 0,
-            pruned_outliers: 0,
-            pruned_needles: 0,
-            pruned_oversize: 0,
-            split: 0,
-            cloned: 0,
-            cap_hit: false,
-            grad_p50: f32::NAN,
-            grad_p90: f32::NAN,
-        };
+        return (
+            DensifyStats {
+                before,
+                after: before,
+                kept: before,
+                pruned: 0,
+                pruned_outliers: 0,
+                pruned_needles: 0,
+                pruned_oversize: 0,
+                split: 0,
+                cloned: 0,
+                cap_hit: false,
+                grad_p50: f32::NAN,
+                grad_p90: f32::NAN,
+            },
+            (0..before).map(Some).collect(),
+        );
     }
 
     // B5: clone vs split boundary is scene-relative (percent_dense · scene_extent), matching
@@ -1093,6 +1077,9 @@ fn densify_and_prune<R: Rng + ?Sized>(
     let mut new_rotations = Vec::with_capacity(rotations.len());
     let mut new_grad_accum = Vec::with_capacity(grad_accum.len());
     let mut new_denom = Vec::with_capacity(denom.len());
+    // B11: source-index map for optimizer state — Some(old_i) carries a survivor's Adam
+    // moments over, None (children, re-initialized split parents) starts from zero.
+    let mut remap: Vec<Option<usize>> = Vec::with_capacity(gaussians.len());
 
     let mut kept = 0usize;
     let mut pruned = 0usize;
@@ -1165,6 +1152,7 @@ fn densify_and_prune<R: Rng + ?Sized>(
         new_rotations.push(rotations[i]);
         new_grad_accum.push(0.0);
         new_denom.push(0.0);
+        remap.push(Some(i));
         kept += 1;
 
         let can_add = new_gaussians.len() < cap;
@@ -1189,11 +1177,10 @@ fn densify_and_prune<R: Rng + ?Sized>(
         }
         let new_pos = positions[i] + dir * jitter;
 
-        // We are turning 1 Gaussian into 2; split opacity between them so the render doesn't
-        // abruptly get more opaque just because we duplicated a primitive.
-        let child_opacity_logit = split_opacity_logit(opacity_logits[i], 2).clamp(-10.0, 10.0);
-        new_opacity_logits[keep_idx] = child_opacity_logit;
-        new_gaussians[keep_idx].opacity = child_opacity_logit;
+        // B12: children copy the parent opacity unchanged (reference 3DGS). The old
+        // alpha-preserving halving knocked down exactly the high-gradient Gaussians on every
+        // densify cycle; the periodic B3 opacity reset is what handles alpha inflation.
+        let child_opacity_logit = opacity_logits[i];
 
         // B5: split when the Gaussian's LARGEST axis exceeds the scene-relative size threshold
         // (over-reconstruction), otherwise clone (under-reconstruction). Uses max axis, not mean,
@@ -1208,6 +1195,9 @@ fn densify_and_prune<R: Rng + ?Sized>(
             // Shrink the parent (kept Gaussian) - CRITICAL FIX
             new_log_scales[keep_idx] = shrunk_scale;
             new_gaussians[keep_idx].scale = shrunk_scale;
+            // B11: reference prunes the split source and creates N fresh Gaussians, so the
+            // re-initialized (shrunk) parent starts with fresh optimizer state too.
+            remap[keep_idx] = None;
 
             // Create child with same shrunk scale, offset position
             let mut g2 = gaussians[i].clone();
@@ -1228,6 +1218,7 @@ fn densify_and_prune<R: Rng + ?Sized>(
             new_rotations.push(rotations[i]);
             new_grad_accum.push(0.0);
             new_denom.push(0.0);
+            remap.push(None);
             split += 1;
         } else {
             // CLONE: same scale, slight offset.
@@ -1249,6 +1240,7 @@ fn densify_and_prune<R: Rng + ?Sized>(
             new_rotations.push(rotations[i]);
             new_grad_accum.push(0.0);
             new_denom.push(0.0);
+            remap.push(None);
             cloned += 1;
         }
     }
@@ -1266,20 +1258,23 @@ fn densify_and_prune<R: Rng + ?Sized>(
     let grad_p50 = percentile(&kept_avg_grads, 0.50);
     let grad_p90 = percentile(&kept_avg_grads, 0.90);
 
-    DensifyStats {
-        before,
-        after: gaussians.len(),
-        kept,
-        pruned,
-        pruned_outliers,
-        pruned_needles,
-        pruned_oversize,
-        split,
-        cloned,
-        cap_hit,
-        grad_p50,
-        grad_p90,
-    }
+    (
+        DensifyStats {
+            before,
+            after: gaussians.len(),
+            kept,
+            pruned,
+            pruned_outliers,
+            pruned_needles,
+            pruned_oversize,
+            split,
+            cloned,
+            cap_hit,
+            grad_p50,
+            grad_p90,
+        },
+        remap,
+    )
 }
 
 /// M8: Train on multiple views with train/test split.
@@ -2204,7 +2199,7 @@ pub fn train_multiview_color_only(
             #[cfg(not(feature = "gpu"))]
             let effective_max_gaussians = cfg.densify_max_gaussians;
 
-            let stats = densify_and_prune(
+            let (stats, remap) = densify_and_prune(
                 &mut gaussians,
                 &mut sh_params,
                 &mut opacity_logits,
@@ -2221,13 +2216,15 @@ pub fn train_multiview_color_only(
                 cfg.split_sigma_threshold,
                 scene_extent,
             );
-            // The parameter arrays have been re-built; any per-index optimizer state is invalid.
-            // Reset moments but keep timesteps to avoid bias-correction spikes.
-            sh_opt.reset_moments_keep_t(sh_params.len());
-            opacity_opt.reset_moments_keep_t(opacity_logits.len());
-            position_opt.reset_moments_keep_t(positions.len());
-            scale_opt.reset_moments_keep_t(log_scales.len());
-            rotation_opt.reset_moments_keep_t(rotations.len());
+            // B11: the parameter arrays have been re-built; remap optimizer state through the
+            // survivor map so surviving Gaussians keep their Adam moments (reference behavior)
+            // and only new/re-initialized ones start from zero. A full reset here restarted the
+            // optimizer on every densify event, which degraded PSNR at short intervals.
+            sh_opt.remap_moments_keep_t(&remap);
+            opacity_opt.remap_moments_keep_t(&remap);
+            position_opt.remap_moments_keep_t(&remap);
+            scale_opt.remap_moments_keep_t(&remap);
+            rotation_opt.remap_moments_keep_t(&remap);
 
             grad_window_iters = 0;
             densify_events += 1;
@@ -2436,7 +2433,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(123);
         // scene_extent = 2.0: split boundary 0.01·2 = 0.02 < σ = 0.1 → split (not clone),
         // and oversize-prune bound 0.1·2 = 0.2 > σ so g1 is not pruned.
-        let stats = densify_and_prune(
+        let (stats, remap) = densify_and_prune(
             &mut gaussians,
             &mut sh_params,
             &mut opacity_logits,
@@ -2471,17 +2468,15 @@ mod tests {
         assert!(gaussians[1].scale.y < g1.scale.y);
         assert!(gaussians[1].scale.z < g1.scale.z);
 
-        // Opacity is split across children to preserve total alpha.
-        let expected_child_logit = split_opacity_logit(2.0, 2).clamp(-10.0, 10.0);
-        assert_relative_eq!(gaussians[0].opacity, expected_child_logit, epsilon = 1e-6);
-        assert_relative_eq!(gaussians[1].opacity, expected_child_logit, epsilon = 1e-6);
-        assert_relative_eq!(opacity_logits[0], expected_child_logit, epsilon = 1e-6);
-        assert_relative_eq!(opacity_logits[1], expected_child_logit, epsilon = 1e-6);
+        // B12: parent and child keep the parent's opacity unchanged (reference 3DGS).
+        assert_relative_eq!(gaussians[0].opacity, 2.0, epsilon = 1e-6);
+        assert_relative_eq!(gaussians[1].opacity, 2.0, epsilon = 1e-6);
+        assert_relative_eq!(opacity_logits[0], 2.0, epsilon = 1e-6);
+        assert_relative_eq!(opacity_logits[1], 2.0, epsilon = 1e-6);
 
-        let a_parent = sigmoid(2.0);
-        let a_child = sigmoid(expected_child_logit);
-        let a_total = 1.0 - (1.0 - a_child).powi(2);
-        assert_relative_eq!(a_total, a_parent, epsilon = 1e-5);
+        // B11: a split re-initializes the parent, so BOTH resulting Gaussians start with
+        // fresh optimizer state (reference prunes the split source and creates N new ones).
+        assert_eq!(remap, vec![None, None]);
 
         assert_eq!(stats.before, 2);
         assert_eq!(stats.after, 2);
@@ -2492,6 +2487,52 @@ mod tests {
         assert!(!stats.cap_hit);
         assert_relative_eq!(stats.grad_p50, 0.2, epsilon = 1e-6);
         assert_relative_eq!(stats.grad_p90, 0.2, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn densify_clone_keeps_parent_optimizer_state() {
+        // σ = 0.01 is below the split boundary (0.01·scene_extent = 0.02) → clone path.
+        let g = Gaussian::new(
+            Vector3::new(0.0, 0.0, 1.0),
+            Vector3::new(0.01f32.ln(), 0.01f32.ln(), 0.01f32.ln()),
+            UnitQuaternion::identity(),
+            1.0,
+            empty_sh(),
+        );
+        let mut gaussians = vec![g.clone()];
+        let mut sh_params = vec![[Vector3::zeros(); 16]];
+        let mut opacity_logits = vec![1.0];
+        let mut positions = vec![g.position];
+        let mut log_scales = vec![g.scale];
+        let mut rotations = vec![g.rotation];
+        let mut grad_accum = vec![2.0];
+        let mut denom = vec![10.0];
+        let mut rng = StdRng::seed_from_u64(7);
+
+        let (stats, remap) = densify_and_prune(
+            &mut gaussians,
+            &mut sh_params,
+            &mut opacity_logits,
+            &mut positions,
+            &mut log_scales,
+            &mut rotations,
+            &mut grad_accum,
+            &mut denom,
+            &mut rng,
+            10,
+            10,
+            0.1,
+            0.01,
+            0.05,
+            2.0,
+        );
+
+        assert_eq!(stats.cloned, 1);
+        assert_eq!(stats.split, 0);
+        // B11: the cloned parent keeps its optimizer state; only the child starts fresh.
+        assert_eq!(remap, vec![Some(0), None]);
+        // B12: both keep the parent opacity unchanged.
+        assert_eq!(opacity_logits, vec![1.0, 1.0]);
     }
 
     #[test]

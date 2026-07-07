@@ -216,6 +216,23 @@ damage", both deviations from reference:
 Recommended order: B11 (bigger effect), then B12, then re-run the interval-100 A/B; A3 (background
 divergence) remains open behind these.
 
+**B11 + B12 — ✅ DONE (2026-07-06).** B11: `densify_and_prune` now returns a survivor map
+(`Some(old_idx)` kept / `None` new-or-reinitialized) and all five per-Gaussian Adam optimizers
+remap their moments through it (`remap_moments_keep_t`) instead of a full reset — survivors keep
+state, children (and split parents, which reference re-creates) start fresh. B12: split/clone
+children copy the parent opacity unchanged (reference); `split_opacity_logit` removed. A/B re-run
+(same config/seed as above), test PSNR @500/@1000/@1500/@2000:
+| Config | before B11/B12 | after |
+|---|---|---|
+| no densify | 15.26 / 15.25 / 15.05 / 14.91 | (unchanged — no densify events) |
+| densify @500 | 15.26 / 15.89 / 14.48 / **14.48** | 15.26 / 15.52 / 16.01 / **15.69** |
+| densify @100 | 15.61 / 14.62 / 12.73 / **12.90** | 16.11 / 15.36 / 14.35 / **14.15** |
+Densification is now **net-positive for the first time**: @500 beats the no-densify baseline by
++0.78 dB (peak 16.01 @1500). @100 gained +1.25 dB but still trails baseline — the reference
+interval needs the still-open A3 (background divergence: bg red channel pins at 0 in every
+config, slow late decay even with densification off) and D1/D2 (LR schedule) before it wins.
+Until then prefer `--densify-interval 500` on this preset.
+
 **C1 — ✅ DONE (2026-07-06).** Initial scale is now density-adaptive, matching reference 3DGS
 (`simple-knn`/`distCUDA2`): per point, isotropic `σ = sqrt(mean sq dist to 3 nearest neighbors)`,
 log-space, computed with a uniform voxel grid + expanding-ring search (`core/init.rs`,

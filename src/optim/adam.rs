@@ -46,6 +46,23 @@ impl AdamF32 {
         self.v.resize(len, 0.0);
     }
 
+    /// B11: rebuild moments after densification/pruning from a source-index map.
+    /// `remap[new_i] = Some(old_i)` carries a surviving Gaussian's moments over; `None`
+    /// (new children, re-initialized Gaussians) starts from zero — matching reference 3DGS,
+    /// which preserves optimizer state for survivors and zeroes only new rows. Timestep kept.
+    pub fn remap_moments_keep_t(&mut self, remap: &[Option<usize>]) {
+        let m_old = std::mem::take(&mut self.m);
+        let v_old = std::mem::take(&mut self.v);
+        self.m = remap
+            .iter()
+            .map(|s| s.and_then(|j| m_old.get(j).copied()).unwrap_or(0.0))
+            .collect();
+        self.v = remap
+            .iter()
+            .map(|s| s.and_then(|j| v_old.get(j).copied()).unwrap_or(0.0))
+            .collect();
+    }
+
     pub fn step(&mut self, params: &mut [f32], grads: &[f32]) {
         assert_eq!(params.len(), grads.len());
         self.ensure_len(params.len());
@@ -120,6 +137,20 @@ impl AdamVec3 {
         self.v.clear();
         self.m.resize(len, Vector3::zeros());
         self.v.resize(len, Vector3::zeros());
+    }
+
+    /// B11: rebuild moments after densification/pruning from a source-index map (see AdamF32).
+    pub fn remap_moments_keep_t(&mut self, remap: &[Option<usize>]) {
+        let m_old = std::mem::take(&mut self.m);
+        let v_old = std::mem::take(&mut self.v);
+        self.m = remap
+            .iter()
+            .map(|s| s.and_then(|j| m_old.get(j).copied()).unwrap_or_else(Vector3::zeros))
+            .collect();
+        self.v = remap
+            .iter()
+            .map(|s| s.and_then(|j| v_old.get(j).copied()).unwrap_or_else(Vector3::zeros))
+            .collect();
     }
 
     pub fn step(&mut self, params: &mut [Vector3<f32>], grads: &[Vector3<f32>]) {
@@ -212,6 +243,20 @@ impl AdamSo3 {
         self.v.resize(len, Vector3::zeros());
     }
 
+    /// B11: rebuild moments after densification/pruning from a source-index map (see AdamF32).
+    pub fn remap_moments_keep_t(&mut self, remap: &[Option<usize>]) {
+        let m_old = std::mem::take(&mut self.m);
+        let v_old = std::mem::take(&mut self.v);
+        self.m = remap
+            .iter()
+            .map(|s| s.and_then(|j| m_old.get(j).copied()).unwrap_or_else(Vector3::zeros))
+            .collect();
+        self.v = remap
+            .iter()
+            .map(|s| s.and_then(|j| v_old.get(j).copied()).unwrap_or_else(Vector3::zeros))
+            .collect();
+    }
+
     pub fn step(&mut self, rotations: &mut [UnitQuaternion<f32>], grads: &[Vector3<f32>]) {
         assert_eq!(rotations.len(), grads.len());
         self.ensure_len(rotations.len());
@@ -292,6 +337,20 @@ impl AdamSh16 {
         self.v.clear();
         self.m.resize(len, [Vector3::zeros(); 16]);
         self.v.resize(len, [Vector3::zeros(); 16]);
+    }
+
+    /// B11: rebuild moments after densification/pruning from a source-index map (see AdamF32).
+    pub fn remap_moments_keep_t(&mut self, remap: &[Option<usize>]) {
+        let m_old = std::mem::take(&mut self.m);
+        let v_old = std::mem::take(&mut self.v);
+        self.m = remap
+            .iter()
+            .map(|s| s.and_then(|j| m_old.get(j).copied()).unwrap_or([Vector3::zeros(); 16]))
+            .collect();
+        self.v = remap
+            .iter()
+            .map(|s| s.and_then(|j| v_old.get(j).copied()).unwrap_or([Vector3::zeros(); 16]))
+            .collect();
     }
 
     pub fn step(&mut self, params: &mut [[Vector3<f32>; 16]], grads: &[[Vector3<f32>; 16]]) {
@@ -419,6 +478,31 @@ mod tests {
             params[0].z < initial.z,
             "Parameter should decrease with positive gradient"
         );
+    }
+
+    #[test]
+    fn test_remap_moments_keep_t() {
+        let mut opt = AdamVec3::new(0.001, 0.9, 0.999, 1e-8);
+        let mut params = vec![Vector3::new(1.0, 2.0, 3.0), Vector3::new(4.0, 5.0, 6.0)];
+        let grads = vec![Vector3::new(0.1, 0.2, 0.3), Vector3::new(0.4, 0.5, 0.6)];
+        opt.step(&mut params, &grads);
+        opt.step(&mut params, &grads);
+        let m1 = opt.m[1];
+        let v1 = opt.v[1];
+
+        // Simulate densify: Gaussian 0 pruned, Gaussian 1 survives at index 0, one new child.
+        opt.remap_moments_keep_t(&[Some(1), None]);
+        assert_eq!(opt.t, 2, "timestep kept");
+        assert_eq!(opt.m.len(), 2);
+        assert_eq!(opt.m[0], m1, "survivor carries its first moment");
+        assert_eq!(opt.v[0], v1, "survivor carries its second moment");
+        assert_eq!(opt.m[1], Vector3::zeros(), "new child starts from zero");
+        assert_eq!(opt.v[1], Vector3::zeros(), "new child starts from zero");
+
+        // Remap on a never-stepped optimizer must not panic (out-of-range sources -> zero).
+        let mut fresh = AdamVec3::new(0.001, 0.9, 0.999, 1e-8);
+        fresh.remap_moments_keep_t(&[Some(0), None]);
+        assert_eq!(fresh.m, vec![Vector3::zeros(); 2]);
     }
 
     #[test]
