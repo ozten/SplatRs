@@ -199,6 +199,23 @@ produced 0 splits/0 clones (densification silently off). Fixed by converting pix
   since B1 landed — the GPU feature build had been broken at HEAD), and the pre-B1
   `densify_and_prune`/FD-test call sites were updated to the new signatures/conventions.
 
+**2000-iter GPU A/B (2026-07-06, tandt/train micro @490×272, seed 42) — densify churn is the
+next blocker.** Test PSNR by config: no-densify **15.26 → 14.91** (slow base decay, A3 signature:
+bg red channel pinned at 0, channels drifting); densify@500 **15.26 → 15.89 @1000 → 14.48** (beats
+baseline mid-run, then decays after more densify events); densify@100 **15.61 → 12.90** (worst,
+count 8000→13.5k). Clone/split DID rebalance as C1 predicted (interval-100 run: split 59/clone 19
+at iter 100 → split 236/clone 373 by iter 1900). Two mechanisms explain "more densify events = more
+damage", both deviations from reference:
+- **B11 (new):** `reset_moments_keep_t` zeroes ALL Adam moments for ALL parameter groups after
+  every densify event (`trainer.rs` post-`densify_and_prune`). Reference prunes/concats optimizer
+  state, preserving moments for surviving Gaussians and zeroing only new rows. At interval 100
+  that is 19 full optimizer restarts in 2000 iters — Adam never converges.
+- **B12 (new):** `split_opacity_logit` halves effective alpha for BOTH split and clone children
+  (`densify_and_prune`). Reference copies opacity unchanged on clone and split; repeatedly
+  densified (= high-gradient, important) Gaussians get their alpha knocked down every cycle.
+Recommended order: B11 (bigger effect), then B12, then re-run the interval-100 A/B; A3 (background
+divergence) remains open behind these.
+
 **C1 — ✅ DONE (2026-07-06).** Initial scale is now density-adaptive, matching reference 3DGS
 (`simple-knn`/`distCUDA2`): per point, isotropic `σ = sqrt(mean sq dist to 3 nearest neighbors)`,
 log-space, computed with a uniform voxel grid + expanding-ring search (`core/init.rs`,
