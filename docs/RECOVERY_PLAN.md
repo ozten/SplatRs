@@ -339,6 +339,21 @@ schedule. The schedule fixes are reference-correct; the *config* isn't reference
 **Next levers: all 301 images (`--max-images 0`) and/or fuller resolution (`--downsample`),
 with cap ~60–100k. Note the Metal 128 MB buffer limit when raising resolution+count together.**
 
+**All-views run (2026-07-07, 301 images = 225 train/76 test, 100k cap, 15k iters): final
+13.45** (initial 11.53; test set is broader/harder than the 100-view runs', so not directly
+comparable). Same shape as every capped run: climb to ~13.4 during densify, then the settle
+phase OSCILLATES 12.6–13.4 while train loss improves — even at the healthiest supervision
+ratio yet (~300 pixel constraints per Gaussian, near reference). **The settle-phase ceiling
+has now survived every capacity/data ratio, both losses, and all schedules → the remaining
+suspect is representational: the per-step scale ANISOTROPY clamp (`MAX_LOG_ANISOTROPY = 1.6`,
+trainer step loop) drags the smaller axes toward the largest EVERY iteration, so Gaussians can
+never flatten into the thin surface-aligned splats reference relies on (reference anisotropy
+is routinely 10–100×), and the clamp acts as a standing scale-inflation force. Its companion,
+the needle prune (anisotropy > 2.0 → prune), reinforces it. Both were added to fight needle
+artifacts whose actual root cause (missing EWA low-pass) was fixed in Phase 0 — they are
+legacy double-medication. NEXT EXPERIMENT: relax/remove the per-step anisotropy pull and the
+needle prune (keep the low-pass), A/B on the 2000-iter trio first.**
+
 3. **Micro-config confound — CONFIRMED as the root of "densification hurts" (2026-07-06).**
    Re-ran the A/B with `--max-images 100` (75 train / 25 test): densify@100 **beats** its
    no-densify baseline for the first time — 15.33 vs 15.10 final, count 8000→22,618 (~3×,
