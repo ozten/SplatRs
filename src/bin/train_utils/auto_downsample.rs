@@ -188,15 +188,19 @@ mod tests {
     #[test]
     fn test_power_of_2_preference() {
         // Test that we prefer power-of-2 divisors over fractional
-        let max_buffer = 128 * 1024 * 1024;
+        let max_buffer = 128 * 1024 * 1024; // 134,217,728 bytes
 
-        // 4K: 3840×2160×16 = 133 MB > 128 MB → 1/2
+        // 4K actually FITS at 16 B/px: 3840×2160×16 = 132.7 MB <= 134.2 MB
         let downsample = calculate_downsample_factor(3840, 2160, max_buffer);
+        assert_eq!(downsample, 1.0);
+
+        // 4096×2304×16 = 151 MB > 134.2 MB → 1/2 (37.7 MB)
+        let downsample = calculate_downsample_factor(4096, 2304, max_buffer);
         assert_eq!(downsample, 0.5);
         assert_eq!(is_power_of_2_downsample(downsample), Some(2));
 
-        // 8K-ish: 7680×4320×16 = 531 MB → 1/4 gives 33 MB... 1/2 gives 133 MB (just over) → 1/4
-        let downsample = calculate_downsample_factor(7680, 4320, max_buffer);
+        // 8192×4608×16 = 604 MB → 1/2 gives 151 MB (still over) → 1/4 (37.7 MB)
+        let downsample = calculate_downsample_factor(8192, 4608, max_buffer);
         assert_eq!(downsample, 0.25);
         assert_eq!(is_power_of_2_downsample(downsample), Some(4));
     }

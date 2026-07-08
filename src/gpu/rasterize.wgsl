@@ -93,6 +93,15 @@ fn rasterize(@builtin(global_invocation_id) global_id: vec3<u32>) {
             continue;
         }
 
+        // 3-sigma bounding box (radius precomputed in projection, cov.w) — replicates the
+        // CPU rasterizer's bbox and reference 3DGS tile binning. Integer-pixel comparison
+        // matches the CPU's `px < floor(mean - r) || px > ceil(mean + r)` semantics.
+        let radius = g.cov.w;
+        if (f32(px) < floor(g.mean.x - radius) || f32(px) > ceil(g.mean.x + radius) ||
+            f32(py) < floor(g.mean.y - radius) || f32(py) > ceil(g.mean.y + radius)) {
+            continue;
+        }
+
         // Evaluate Gaussian weight at this pixel
         let weight = eval_gaussian_2d(
             g.mean.x, g.mean.y,

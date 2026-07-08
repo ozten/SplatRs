@@ -129,11 +129,8 @@ fn test_save_ply_unimplemented() {
 }
 
 #[test]
-#[should_panic(expected = "not implemented")]
-fn test_load_ply_unimplemented() {
-    // load_ply should panic with unimplemented! until M10
-    let path = PathBuf::from("/tmp/test.ply");
-
-    // This should panic
-    let _ = load_ply(&path);
+fn test_load_ply_missing_file_errors() {
+    // load_ply is implemented (post-M10); a missing file must surface as an Err, not a panic.
+    let path = PathBuf::from("/tmp/definitely_missing_sugar_rs_test.ply");
+    assert!(load_ply(&path).is_err());
 }

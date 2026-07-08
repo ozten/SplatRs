@@ -61,6 +61,11 @@ fn sigmoid(x: f32) -> f32 {
 
 // Convert quaternion to rotation matrix
 // NOTE: Quaternion uploaded as (w, i, j, k) at positions (q.x, q.y, q.z, q.w)
+// WGSL mat3x3 takes COLUMN vectors: each vec3 below is a column of the standard R.
+// (Until 2026-07-08 the ROWS were passed as columns, so the forward projection used R^T
+// while project_backward.wgsl used R — rotation/scale gradients were inconsistent with
+// the rendered forward for every anisotropic Gaussian, and the GPU forward disagreed
+// with the CPU renderer by ~0.05 mean abs on trained models.)
 fn quat_to_matrix(q_raw: vec4<f32>) -> mat3x3<f32> {
     // Normalize the quaternion
     let n = length(q_raw);
@@ -73,9 +78,9 @@ fn quat_to_matrix(q_raw: vec4<f32>) -> mat3x3<f32> {
     let k = q.w;
 
     return mat3x3<f32>(
-        vec3<f32>(1.0 - 2.0*(j*j + k*k), 2.0*(i*j - k*w), 2.0*(i*k + j*w)),
-        vec3<f32>(2.0*(i*j + k*w), 1.0 - 2.0*(i*i + k*k), 2.0*(j*k - i*w)),
-        vec3<f32>(2.0*(i*k - j*w), 2.0*(j*k + i*w), 1.0 - 2.0*(i*i + j*j))
+        vec3<f32>(1.0 - 2.0*(j*j + k*k), 2.0*(i*j + k*w), 2.0*(i*k - j*w)),
+        vec3<f32>(2.0*(i*j - k*w), 1.0 - 2.0*(i*i + k*k), 2.0*(j*k + i*w)),
+        vec3<f32>(2.0*(i*k + j*w), 2.0*(j*k - i*w), 1.0 - 2.0*(i*i + j*j))
     );
 }
 
@@ -178,6 +183,17 @@ fn project_gaussians(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let num_gaussians = arrayLength(&gaussians_in);
 
     if (idx >= num_gaussians) {
+        // The output buffer is padded to the next power of two for the bitonic sort, which
+        // must compare-exchange the FULL padded array to be correct. Fill the pad region with
+        // +inf-depth sentinels so every real entry sorts ahead of it; the rasterize/backward
+        // loops only walk indices < num_gaussians and never read these.
+        if (idx < arrayLength(&gaussians_out)) {
+            gaussians_out[idx].mean = vec4<f32>(0.0, 0.0, 3.402823e38, 0.0);
+            gaussians_out[idx].cov = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+            gaussians_out[idx].color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+            gaussians_out[idx].opacity_pad = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+            gaussians_out[idx].gaussian_idx_pad = vec4<u32>(idx, 0u, 0u, 0u);
+        }
         return;
     }
 
@@ -303,9 +319,18 @@ fn project_gaussians(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // 7. Convert opacity from logit to [0,1]
     let opacity = sigmoid(g.opacity_pad.x);
 
+    // 3-sigma bounding radius from the max eigenvalue of the 2D covariance — stored in
+    // cov.w so the rasterize/backward passes can skip pixels outside the splat's bounding
+    // box, matching the CPU rasterizer's bbox and reference 3DGS's tile binning. Without
+    // it, every pixel accumulated the 3-6 sigma tails of tens of thousands of splats.
+    let ev_trace = cov_xx + cov_yy;
+    let ev_disc = sqrt(max((cov_xx - cov_yy) * (cov_xx - cov_yy) + 4.0 * cov_xy * cov_xy, 0.0));
+    let lambda_max = 0.5 * (ev_trace + ev_disc);
+    let bound_radius = 3.0 * sqrt(max(lambda_max, 0.0));
+
     // Write output
     gaussians_out[idx].mean = vec4<f32>(x_px, y_px, pos_cam.z, 0.0);
-    gaussians_out[idx].cov = vec4<f32>(cov_xx, cov_xy, cov_yy, 0.0);
+    gaussians_out[idx].cov = vec4<f32>(cov_xx, cov_xy, cov_yy, bound_radius);
     gaussians_out[idx].color = vec4<f32>(color, 0.0);
     gaussians_out[idx].opacity_pad = vec4<f32>(opacity, 0.0, 0.0, 0.0);
     gaussians_out[idx].gaussian_idx_pad = vec4<u32>(idx, 0u, 0u, 0u);

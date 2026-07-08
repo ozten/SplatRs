@@ -83,8 +83,11 @@ impl BitonicSorter {
     /// # Arguments
     /// * `device` - GPU device
     /// * `encoder` - Command encoder to record sort commands into
-    /// * `buffer` - Gaussian2DGPU buffer to sort (must have STORAGE usage)
-    /// * `count` - Number of Gaussians in the buffer
+    /// * `buffer` - Gaussian2DGPU buffer to sort (must have STORAGE usage). The buffer MUST
+    ///   be allocated with `count.next_power_of_two()` entries, with the pad region filled
+    ///   with +inf-depth sentinels (the projection shader does this) — the bitonic network
+    ///   compare-exchanges the full padded array.
+    /// * `count` - Number of real Gaussians in the buffer
     ///
     /// # Performance
     /// - Time complexity: O(log²n) parallel passes
@@ -102,6 +105,12 @@ impl BitonicSorter {
 
         // Pad to next power of 2 for bitonic sort
         let padded_count = count.next_power_of_two();
+        debug_assert!(
+            buffer.size() >= (padded_count as u64) * (std::mem::size_of::<crate::gpu::Gaussian2DGPU>() as u64),
+            "bitonic sort requires a power-of-two padded buffer ({} entries, buffer holds {} bytes)",
+            padded_count,
+            buffer.size()
+        );
 
         // Bitonic sort requires log²(n) passes:
         // For each stage s in 0..log2(n):
@@ -115,7 +124,7 @@ impl BitonicSorter {
 
                 // Create params uniform for this pass
                 let params = SortParams {
-                    count,
+                    padded_count,
                     stage,
                     step_within_stage,
                     pad: 0,
@@ -165,7 +174,7 @@ impl BitonicSorter {
 #[repr(C)]
 #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct SortParams {
-    count: u32,
+    padded_count: u32,
     stage: u32,
     step_within_stage: u32,
     pad: u32,

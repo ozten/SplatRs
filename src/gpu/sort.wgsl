@@ -14,7 +14,7 @@ struct Gaussian2D {
 
 // Sort parameters for each pass
 struct SortParams {
-    count: u32,              // Number of elements to sort
+    padded_count: u32,       // Buffer length: power of two, pad entries hold +inf depth
     stage: u32,              // Current sorting stage (0..log2(n))
     step_within_stage: u32,  // Current step within stage
     pad: u32,                // Padding for 16-byte alignment
@@ -26,7 +26,10 @@ struct SortParams {
 @compute @workgroup_size(256)
 fn bitonic_sort(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let idx = global_id.x;
-    if (idx >= params.count) { return; }
+    // One thread per compare-exchange pair. The network MUST run over the entire
+    // power-of-two padded array — skipping any pair breaks the sortedness guarantee.
+    // (The projection pass fills the pad region with +inf-depth sentinels.)
+    if (idx >= params.padded_count / 2u) { return; }
 
     // Compute pair indices using bitonic network pattern
     // pair_distance = 2^step_within_stage
@@ -37,12 +40,10 @@ fn bitonic_sort(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let left_idx = (idx / pair_distance) * block_size + (idx % pair_distance);
     let right_idx = left_idx + pair_distance;
 
-    // Both indices must be within bounds
-    if (left_idx >= params.count || right_idx >= params.count) { return; }
-
-    // Determine sort direction (ascending/descending) for bitonic sequence
-    // Alternates between ascending and descending for each stage
-    let ascending = ((left_idx >> params.stage) & 1u) == 0u;
+    // Determine sort direction for the bitonic sequence: blocks of size 2^(stage+1)
+    // alternate ascending/descending, i.e. bit (stage+1) of the index — NOT bit `stage`
+    // (that bug left ~45% adjacent inversions and made GPU compositing depth-random).
+    let ascending = (left_idx & (2u << params.stage)) == 0u;
 
     // Compare depths (z coordinate in mean.z)
     let left_depth = gaussians[left_idx].mean.z;

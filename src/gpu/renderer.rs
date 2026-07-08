@@ -397,7 +397,10 @@ impl GpuRenderer {
 
         let max_storage_binding = self.ctx.device.limits().max_storage_buffer_binding_size as u64;
         let gaussians_bytes = (num_gaussians * std::mem::size_of::<GaussianGPU>()) as u64;
-        let projected_bytes = (num_gaussians * std::mem::size_of::<Gaussian2DGPU>()) as u64;
+        // Padded to the next power of two: the bitonic sort runs over the full padded array
+        // (projection fills the pad region with +inf-depth sentinels).
+        let projected_bytes = ((num_gaussians as u32).next_power_of_two() as usize
+            * std::mem::size_of::<Gaussian2DGPU>()) as u64;
         let output_bytes = (num_pixels * std::mem::size_of::<[f32; 4]>()) as u64;
 
         for (label, bytes) in [
@@ -497,7 +500,13 @@ impl GpuRenderer {
             });
             compute_pass.set_pipeline(&self.project_pipeline);
             compute_pass.set_bind_group(0, &project_bind_group, &[]);
-            compute_pass.dispatch_workgroups((num_gaussians as u32 + 255) / 256, 1, 1);
+            // Dispatch over the PADDED count: threads past num_gaussians write the +inf-depth
+            // sort sentinels into the pad region of the projected buffer.
+            compute_pass.dispatch_workgroups(
+                ((num_gaussians as u32).next_power_of_two() + 255) / 256,
+                1,
+                1,
+            );
         }
 
         self.ctx.queue.submit(Some(encoder.finish()));
@@ -700,7 +709,9 @@ impl GpuRenderer {
 
         let max_storage_binding = self.ctx.device.limits().max_storage_buffer_binding_size as u64;
         let gaussians_bytes = (num_gaussians * std::mem::size_of::<GaussianGPU>()) as u64;
-        let projected_bytes = (num_gaussians * std::mem::size_of::<Gaussian2DGPU>()) as u64;
+        // Padded to the next power of two for the bitonic sort (see render path above).
+        let projected_bytes = ((num_gaussians as u32).next_power_of_two() as usize
+            * std::mem::size_of::<Gaussian2DGPU>()) as u64;
         let output_bytes = (num_pixels * std::mem::size_of::<[f32; 4]>()) as u64;
         // Per-pixel forward state: final transmittance + last contributor index (8 bytes)
         let pixel_state_bytes = (num_pixels * std::mem::size_of::<[u32; 2]>()) as u64;
@@ -806,7 +817,13 @@ impl GpuRenderer {
             });
             compute_pass.set_pipeline(&self.project_pipeline);
             compute_pass.set_bind_group(0, &project_bind_group, &[]);
-            compute_pass.dispatch_workgroups((num_gaussians as u32 + 255) / 256, 1, 1);
+            // Dispatch over the PADDED count: threads past num_gaussians write the +inf-depth
+            // sort sentinels into the pad region of the projected buffer.
+            compute_pass.dispatch_workgroups(
+                ((num_gaussians as u32).next_power_of_two() + 255) / 256,
+                1,
+                1,
+            );
         }
 
         self.ctx.queue.submit(Some(encoder.finish()));

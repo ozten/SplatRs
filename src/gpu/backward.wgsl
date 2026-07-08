@@ -280,6 +280,13 @@ fn backward_pass(
             continue;
         }
 
+        // 3-sigma bounding box, identical to the forward rasterize pass (radius in cov.w)
+        let radius = g.cov.w;
+        if (f32(global_px) < floor(g.mean.x - radius) || f32(global_px) > ceil(g.mean.x + radius) ||
+            f32(global_py) < floor(g.mean.y - radius) || f32(global_py) > ceil(g.mean.y + radius)) {
+            continue;
+        }
+
         let color = g.color.xyz;
         let opacity = g.opacity_pad.x;
         let mean_x = g.mean.x;
