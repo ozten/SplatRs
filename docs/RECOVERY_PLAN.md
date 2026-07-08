@@ -562,6 +562,22 @@ model at a real camera.** sugar-render eyeballs are now trustworthy. Downstream 
 - Old saved models (.gs) encode rotations under the Rᵀ convention — they render differently
   (worse) on the fixed renderer; do not compare old model files against new renders.
 
+**Post-renderer-fix 2k re-baseline (2026-07-08, seed 42, ds 0.5, micro/20 img):**
+| Config | unclamped | clamp 3.0 | Δ | aniso max (unc → clamp) |
+|---|---|---|---|---|
+| no densify | 18.93 | 18.87 | −0.06 | 2827 → 20.1 |
+| densify @500 | 17.92 | 18.53 | **+0.61** | 6771 → 20.1 |
+| densify @100 | 18.66 | **19.49** | **+0.83** | 20295 → 20.1 |
+19.49 is the best 2k result of the campaign (broken-renderer d100 pairs: 18.86/18.86 —
+not comparable, they scored against their own broken compositing). On the fixed renderer
+the clamp is a clear win wherever densification runs, neutral without it; aniso p90 is
+naturally low (~15) post-fix — the unclamped max-tail (up to 20k:1) is what the clamp
+removes. Renders (both d100 arms): locomotive fully legible ("713 WESTERN P"), no needle
+streaks, no fog — best visual quality of the campaign at 2k/20 images; the clamped arm is
+visibly crisper. d500 dipping below d0 at 2k is the known 15-train-view overfit artifact.
+15k pair (`runs/srt15k_unclamped` vs `runs/srt15k_aniso3`, 100 img / 60k cap) launched —
+default flip decision on its result.
+
 3. **Micro-config confound — CONFIRMED as the root of "densification hurts" (2026-07-06).**
    Re-ran the A/B with `--max-images 100` (75 train / 25 test): densify@100 **beats** its
    no-densify baseline for the first time — 15.33 vs 15.10 final, count 8000→22,618 (~3×,
