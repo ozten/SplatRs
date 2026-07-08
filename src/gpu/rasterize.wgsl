@@ -13,27 +13,25 @@ struct Gaussian2D {
     gaussian_idx_pad: vec4<u32>, // Source index
 }
 
-// Contribution structure for backward pass intermediates
-struct Contribution {
-    transmittance: f32,       // T before this Gaussian
-    alpha: f32,               // α of this Gaussian
-    gaussian_idx: u32,        // Source Gaussian index
-    pad: u32,                 // Alignment
-}
-
 // Uniforms
 struct RenderParams {
     width: u32,
     height: u32,
     num_gaussians: u32,
-    save_intermediates: u32,  // 1 = save intermediates, 0 = don't
+    save_intermediates: u32,  // 1 = save per-pixel state for backward, 0 = don't
     background: vec4<f32>,    // Background color (r,g,b,pad)
 }
 
 @group(0) @binding(0) var<uniform> params: RenderParams;
 @group(0) @binding(1) var<storage, read> gaussians: array<Gaussian2D>;
 @group(0) @binding(2) var<storage, read_write> output: array<vec4<f32>>;
-@group(0) @binding(3) var<storage, read_write> intermediates: array<Contribution>;
+// Per-pixel forward state for the backward pass:
+//   x = final transmittance after the last blended contributor (bitcast f32)
+//   y = SORTED index of the last blended contributor (0xFFFFFFFF if none)
+// The backward pass re-walks the sorted list back-to-front from this index, recomputing
+// each alpha, so EVERY contributor receives gradients (no per-pixel contribution cap;
+// the old 16-slot intermediates scheme starved all Gaussians at depth rank > 16).
+@group(0) @binding(3) var<storage, read_write> pixel_state: array<vec2<u32>>;
 
 // Evaluate 2D Gaussian at a pixel
 fn eval_gaussian_2d(mean_x: f32, mean_y: f32, cov_xx: f32, cov_xy: f32, cov_yy: f32,
@@ -68,9 +66,6 @@ fn blend_gaussian(color_accum: vec3<f32>, transmittance: f32,
     return vec4<f32>(new_color, new_transmittance);
 }
 
-// Maximum contributions per pixel (must match Rust constant)
-const MAX_CONTRIBUTIONS_PER_PIXEL: u32 = 16u;
-
 @compute @workgroup_size(16, 16)
 fn rasterize(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let px = global_id.x;
@@ -87,7 +82,7 @@ fn rasterize(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // Alpha blending loop
     var color = vec3<f32>(0.0, 0.0, 0.0);
     var transmittance = 1.0;
-    var contrib_count = 0u;
+    var last_idx = 0xFFFFFFFFu;
 
     // Loop through all Gaussians (depth-sorted on CPU for now)
     for (var i = 0u; i < params.num_gaussians; i++) {
@@ -114,17 +109,8 @@ fn rasterize(@builtin(global_invocation_id) global_id: vec3<u32>) {
             continue;
         }
 
-        // Save intermediate values for backward pass (before blending)
-        if (params.save_intermediates != 0u && contrib_count < MAX_CONTRIBUTIONS_PER_PIXEL) {
-            let intermediate_idx = pixel_idx * MAX_CONTRIBUTIONS_PER_PIXEL + contrib_count;
-            intermediates[intermediate_idx] = Contribution(
-                transmittance,  // T before this Gaussian
-                alpha,          // α of this Gaussian
-                i,              // SORTED index (to look up Gaussian in backward pass)
-                0u              // padding
-            );
-            contrib_count += 1u;
-        }
+        // Track the last blended contributor (sorted index) for the backward pass
+        last_idx = i;
 
         // Blend
         let result = blend_gaussian(color, transmittance, g.color.xyz, alpha);
@@ -137,17 +123,10 @@ fn rasterize(@builtin(global_invocation_id) global_id: vec3<u32>) {
         }
     }
 
-    // Fill remaining contribution slots with empty markers
+    // Save per-pixel forward state for the backward pass: the TRUE final transmittance
+    // (used for the background gradient) and where the backward walk starts.
     if (params.save_intermediates != 0u) {
-        for (var j = contrib_count; j < MAX_CONTRIBUTIONS_PER_PIXEL; j++) {
-            let intermediate_idx = pixel_idx * MAX_CONTRIBUTIONS_PER_PIXEL + j;
-            intermediates[intermediate_idx] = Contribution(
-                0.0,
-                0.0,
-                0xFFFFFFFFu,  // Empty marker
-                0u
-            );
-        }
+        pixel_state[pixel_idx] = vec2<u32>(bitcast<u32>(transmittance), last_idx);
     }
 
     // Add background

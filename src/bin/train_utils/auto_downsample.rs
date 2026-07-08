@@ -23,13 +23,12 @@ pub fn calculate_downsample_factor(
     image_height: u32,
     max_buffer_size: u64,
 ) -> f32 {
-    // Intermediates buffer calculation (from renderer.rs:675-677):
-    // intermediates_bytes = num_pixels × MAX_CONTRIBUTIONS_PER_PIXEL × sizeof(ContributionGPU)
-    //                     = (width × height) × 16 × 16 bytes
-    //                     = (width × height) × 256 bytes
-    const MAX_CONTRIBUTIONS_PER_PIXEL: u64 = 16;
-    const CONTRIBUTION_SIZE_BYTES: u64 = 16; // 4 f32s
-    const BYTES_PER_PIXEL: u64 = MAX_CONTRIBUTIONS_PER_PIXEL * CONTRIBUTION_SIZE_BYTES;
+    // Largest per-pixel GPU buffer binding (from renderer.rs render_with_gradients):
+    // output / d_pixels / d_background_pixels are each [f32; 4] = 16 bytes per pixel.
+    // (The old 256 B/px intermediates buffer was removed 2026-07-08 — the backward
+    // pass now re-walks the sorted list per pixel instead of recording contributions,
+    // so much higher training resolutions fit within the binding limit.)
+    const BYTES_PER_PIXEL: u64 = 16;
 
     let num_pixels = (image_width as u64) * (image_height as u64);
     let buffer_needed = num_pixels * BYTES_PER_PIXEL;
@@ -165,26 +164,25 @@ mod tests {
     #[test]
     fn test_no_downsampling_needed() {
         let max_buffer = 128 * 1024 * 1024; // 128 MB
-        let downsample = calculate_downsample_factor(800, 600, max_buffer);
+        // 16 B/px: even 4K fits (3840×2160×16 = 133 MB > 128 MB is just over — use 1080p)
+        let downsample = calculate_downsample_factor(1920, 1080, max_buffer);
+        assert_eq!(downsample, 1.0);
+        // tandt-sized images fit at full resolution now
+        let downsample = calculate_downsample_factor(980, 545, max_buffer);
         assert_eq!(downsample, 1.0);
     }
 
     #[test]
     fn test_large_image_requires_downsampling() {
         let max_buffer = 128 * 1024 * 1024; // 128 MB
+        // 5712×4284×16 = 391 MB > 128 MB; 1/2 → 2856×2142×16 = 98 MB ✓
         let downsample = calculate_downsample_factor(5712, 4284, max_buffer);
+        assert_eq!(downsample, 0.5);
+        assert_eq!(is_power_of_2_downsample(downsample), Some(2));
 
-        // Should select 1/8 (0.125) as the power-of-2 divisor
-        assert_eq!(downsample, 0.125);
-
-        // Verify it's recognized as power-of-2
-        assert_eq!(is_power_of_2_downsample(downsample), Some(8));
-
-        // Verify result fits in buffer
-        let new_w = (5712 + 8 - 1) / 8; // 714
-        let new_h = (4284 + 8 - 1) / 8; // 536
-        let buffer_needed = (new_w as u64) * (new_h as u64) * 256;
-        assert!(buffer_needed <= max_buffer);
+        let new_w = (5712u64 + 1) / 2;
+        let new_h = (4284u64 + 1) / 2;
+        assert!(new_w * new_h * 16 <= max_buffer);
     }
 
     #[test]
@@ -192,19 +190,14 @@ mod tests {
         // Test that we prefer power-of-2 divisors over fractional
         let max_buffer = 128 * 1024 * 1024;
 
-        // Image that needs downsampling but fits with 1/2
-        let downsample = calculate_downsample_factor(1024, 768, max_buffer);
-        assert_eq!(downsample, 0.5); // Should be exactly 1/2
+        // 4K: 3840×2160×16 = 133 MB > 128 MB → 1/2
+        let downsample = calculate_downsample_factor(3840, 2160, max_buffer);
+        assert_eq!(downsample, 0.5);
         assert_eq!(is_power_of_2_downsample(downsample), Some(2));
 
-        // Image that needs 1/4
-        let downsample = calculate_downsample_factor(2048, 1536, max_buffer);
-        assert_eq!(downsample, 0.25); // Should be exactly 1/4
+        // 8K-ish: 7680×4320×16 = 531 MB → 1/4 gives 33 MB... 1/2 gives 133 MB (just over) → 1/4
+        let downsample = calculate_downsample_factor(7680, 4320, max_buffer);
+        assert_eq!(downsample, 0.25);
         assert_eq!(is_power_of_2_downsample(downsample), Some(4));
-
-        // Image that needs 1/8
-        let downsample = calculate_downsample_factor(4096, 3072, max_buffer);
-        assert_eq!(downsample, 0.125); // Should be exactly 1/8
-        assert_eq!(is_power_of_2_downsample(downsample), Some(8));
     }
 }

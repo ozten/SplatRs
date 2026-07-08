@@ -31,10 +31,7 @@ pub use gradients::{GaussianGradients2D, chain_2d_to_3d_gradients, chain_2d_to_3
 #[cfg(feature = "gpu")]
 pub use renderer::GpuRenderer;
 #[cfg(feature = "gpu")]
-pub use types::{
-    CameraGPU, ContributionGPU, Gaussian2DGPU, GaussianGPU, GradientGPU,
-    MAX_CONTRIBUTIONS_PER_PIXEL,
-};
+pub use types::{CameraGPU, Gaussian2DGPU, GaussianGPU, GradientGPU};
 
 #[cfg(not(feature = "gpu"))]
 pub struct GpuRenderer;

@@ -7,7 +7,7 @@ use sugar_rs::core::{Camera, Gaussian};
 #[ignore]
 #[cfg(feature = "gpu")]
 fn test_inspect_intermediates() {
-    use sugar_rs::gpu::{ContributionGPU, GpuRenderer, MAX_CONTRIBUTIONS_PER_PIXEL};
+    use sugar_rs::gpu::GpuRenderer;
 
     println!("\n=== Inspecting GPU Intermediate Buffers ===\n");
 

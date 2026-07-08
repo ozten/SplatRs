@@ -47,7 +47,7 @@ fn test_gpu_vs_cpu_toy_scene() {
     ];
 
     let bg = Vector3::new(0.01, 0.02, 0.03);
-    let cpu = render_full_linear(&gaussians, &camera, &bg);
+    let cpu = render_full_linear(&gaussians, &camera, &bg, false);
 
     let gpu = GpuRenderer::new()
         .expect("Failed to initialize GPU")

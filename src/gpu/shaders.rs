@@ -248,13 +248,16 @@ fn project_gaussians(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     // Σ_2d = J * Σ_cam * J^T
     // Manual 2x3 * 3x3 * 3x2 multiplication
+    // EWA screen-space low-pass filter: add 0.3 to the diagonal (matches the CPU
+    // projection in render/full_diff.rs and reference 3DGS). Guarantees a ~0.55px
+    // minimum footprint so near-singular "needle" projections blend smoothly.
+    // (Missing here until 2026-07-08 — GPU training ran without the anti-needle
+    // defense the CPU path had since Phase 0.)
     let s = sigma_cam;
-    let cov_xx = j00*j00*s[0][0] + 2.0*j00*j02*s[0][2] + j02*j02*s[2][2];
+    let low_pass = 0.3;
+    let cov_xx = j00*j00*s[0][0] + 2.0*j00*j02*s[0][2] + j02*j02*s[2][2] + low_pass;
     let cov_xy = j00*j11*s[0][1] + j00*j12*s[0][2] + j02*j11*s[1][2] + j02*j12*s[2][2];
-    let cov_yy = j11*j11*s[1][1] + 2.0*j11*j12*s[1][2] + j12*j12*s[2][2];
-
-    // Add small epsilon for stability
-    let eps = 1e-6;
+    let cov_yy = j11*j11*s[1][1] + 2.0*j11*j12*s[1][2] + j12*j12*s[2][2] + low_pass;
 
     // Cull if 2D covariance is degenerate or too large
     // Note: WGSL has no isnan/isinf - use bounds check instead
@@ -302,7 +305,7 @@ fn project_gaussians(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     // Write output
     gaussians_out[idx].mean = vec4<f32>(x_px, y_px, pos_cam.z, 0.0);
-    gaussians_out[idx].cov = vec4<f32>(cov_xx + eps, cov_xy, cov_yy + eps, 0.0);
+    gaussians_out[idx].cov = vec4<f32>(cov_xx, cov_xy, cov_yy, 0.0);
     gaussians_out[idx].color = vec4<f32>(color, 0.0);
     gaussians_out[idx].opacity_pad = vec4<f32>(opacity, 0.0, 0.0, 0.0);
     gaussians_out[idx].gaussian_idx_pad = vec4<u32>(idx, 0u, 0u, 0u);

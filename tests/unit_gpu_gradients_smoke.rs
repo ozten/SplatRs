@@ -51,7 +51,7 @@ fn test_gpu_vs_cpu_gradients_toy_scene() {
     let d_pixels = vec![Vector3::new(1.0, -0.5, 0.25); num_pixels];
 
     let (_cpu_img, cpu_d_colors, cpu_d_opacity, _cpu_d_pos, _cpu_d_scale, _cpu_d_rot, _cpu_d_bg) =
-        render_full_color_grads(&gaussians, &camera, &d_pixels, &bg);
+        render_full_color_grads(&gaussians, &camera, &d_pixels, &bg, false);
 
     let (_gpu_img, gpu_grads) = GpuRenderer::new()
         .expect("Failed to initialize GPU")

@@ -147,54 +147,13 @@ impl SettingsGPU {
     }
 }
 
-/// GPU representation of a contribution for backward pass.
-///
-/// Stores the intermediate values needed for gradient computation:
-/// - transmittance (T) at this depth layer
-/// - alpha (α) of this Gaussian
-/// - index of source Gaussian
-///
-/// For Phase 1: We use fixed-size allocation per pixel for simplicity.
-/// Each pixel reserves space for MAX_CONTRIBUTIONS_PER_PIXEL.
-/// Unused slots have gaussian_idx = 0xFFFFFFFF.
-#[repr(C)]
-#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct ContributionGPU {
-    /// Transmittance before this Gaussian (for chain rule)
-    pub transmittance: f32,
-
-    /// Alpha value of this Gaussian at this pixel
-    pub alpha: f32,
-
-    /// Index of source Gaussian (0xFFFFFFFF if unused slot)
-    pub gaussian_idx: u32,
-
-    /// Padding to 16-byte alignment
-    pub pad: u32,
-}
-
-impl ContributionGPU {
-    /// Create an empty (unused) contribution slot.
-    pub const fn empty() -> Self {
-        Self {
-            transmittance: 0.0,
-            alpha: 0.0,
-            gaussian_idx: 0xFFFFFFFF,
-            pad: 0,
-        }
-    }
-
-    /// Check if this slot is used.
-    pub fn is_used(&self) -> bool {
-        self.gaussian_idx != 0xFFFFFFFF
-    }
-}
-
-/// Configuration for intermediate storage.
-///
-/// This determines how much memory to allocate for forward pass intermediates.
-/// Conservative default: 16 contributions per pixel is enough for most scenes.
-pub const MAX_CONTRIBUTIONS_PER_PIXEL: u32 = 16;
+// NOTE: the per-pixel contribution recording scheme (ContributionGPU,
+// MAX_CONTRIBUTIONS_PER_PIXEL = 16) was removed 2026-07-08. It capped the backward
+// pass at the 16 front-most contributors per pixel, giving exactly zero gradient to
+// every Gaussian at depth rank > 16 (~90% of a converged population). The forward
+// pass now stores only a per-pixel [u32; 2] state (final transmittance bitcast +
+// last blended sorted index) and the backward re-walks the sorted list, recomputing
+// alphas — reference-3DGS style, every contributor gets gradients.
 
 /// GPU representation of gradients for a single Gaussian.
 ///

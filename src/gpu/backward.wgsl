@@ -1,18 +1,13 @@
 // WGSL shader for backward pass (gradient computation).
 //
-// This shader reads intermediate values saved during the forward pass
-// (transmittances, alphas, Gaussian indices) and computes gradients
-// w.r.t. Gaussian parameters using the chain rule.
-//
-// Phase 2: Per-pixel gradient computation with per-workgroup accumulation.
-
-// Contribution structure (matches forward pass)
-struct Contribution {
-    transmittance: f32,       // T before this Gaussian
-    alpha: f32,               // α of this Gaussian
-    gaussian_idx: u32,        // Source Gaussian index
-    pad: u32,                 // Alignment
-}
+// Reference-3DGS-style backward: the forward pass stores only the per-pixel final
+// transmittance and the sorted index of the last blended contributor. This shader
+// re-walks the sorted Gaussian list BACK-TO-FRONT from that index, re-applying the
+// forward pass's exact tests and recomputing each alpha, reconstructing T_i
+// incrementally via T_i = T_{i+1} / (1 - a_i). Every contributor down to the
+// forward's termination point receives gradients — there is NO per-pixel
+// contribution cap (the old 16-slot intermediates scheme gave exactly zero gradient
+// to all Gaussians at depth rank > 16, starving ~90% of a converged population).
 
 // Gradient structure for a single Gaussian (must match GradientGPU in Rust!)
 struct Gradient {
@@ -33,7 +28,7 @@ struct Gaussian2D {
 
 // Uniforms for backward pass
 struct BackwardParams {
-    width: u32,          // Full image width (for intermediates indexing)
+    width: u32,          // Full image width (for pixel_state indexing)
     height: u32,         // Full image height
     num_gaussians: u32,
     tile_start_x: u32,   // Tile offset in global coordinates
@@ -45,14 +40,13 @@ struct BackwardParams {
 }
 
 @group(0) @binding(0) var<uniform> params: BackwardParams;
-@group(0) @binding(1) var<storage, read> intermediates: array<Contribution>;
+// Per-pixel forward state (matches rasterize.wgsl):
+//   x = final transmittance (bitcast f32), y = sorted index of last blended contributor
+@group(0) @binding(1) var<storage, read> pixel_state: array<vec2<u32>>;
 @group(0) @binding(2) var<storage, read> gaussians: array<Gaussian2D>;
 @group(0) @binding(3) var<storage, read> d_pixels: array<vec4<f32>>;  // Upstream gradients
 @group(0) @binding(4) var<storage, read_write> gradient_atomic: array<atomic<i32>>;  // Per-Gaussian gradients as fixed-point i32
 @group(0) @binding(5) var<storage, read_write> d_background_pixels: array<vec4<f32>>;  // Per-pixel background gradient contribution (f32, summed on CPU)
-
-// Maximum contributions per pixel (must match Rust constant)
-const MAX_CONTRIBUTIONS_PER_PIXEL: u32 = 16u;
 
 
 // Evaluate 2D Gaussian at a pixel (same as in rasterize.wgsl)
@@ -245,17 +239,19 @@ fn backward_pass(
     // Get upstream gradient for this pixel
     let d_out = d_pixels[pixel_idx].xyz;
 
-    // Read contributions for this pixel
-    let base_contrib_idx = pixel_idx * MAX_CONTRIBUTIONS_PER_PIXEL;
+    // Per-pixel forward state: TRUE final transmittance + last blended sorted index
+    let state = pixel_state[pixel_idx];
+    let t_final = bitcast<f32>(state.x);
+    let last_idx = state.y;
 
-    // Count valid contributions
-    var num_contribs = 0u;
-    for (var i = 0u; i < MAX_CONTRIBUTIONS_PER_PIXEL; i++) {
-        let contrib = intermediates[base_contrib_idx + i];
-        if (contrib.gaussian_idx == 0xFFFFFFFFu) {
-            break;
-        }
-        num_contribs += 1u;
+    // Background gradient: dL/d(bg) = d_out * T_final, using the forward pass's true
+    // final transmittance (the old scheme recomputed it from <=16 recorded contributions,
+    // overestimating d_bg ~10x on dense pixels and dragging the background to black).
+    d_background_pixels[pixel_idx] = vec4<f32>(d_out * t_final, 0.0);
+
+    if (last_idx == 0xFFFFFFFFu) {
+        // No contributors touched this pixel
+        return;
     }
 
     // Blend backward pass (same logic as CPU blend_backward_with_bg)
@@ -264,25 +260,25 @@ fn backward_pass(
     //   out = sum_i T_i * a_i * c_i + T_final * bg
     //   T_{i+1} = T_i * (1 - a_i)
     //
-    // Using reverse-mode accumulation of transmittance gradients.
+    // Using reverse-mode accumulation of transmittance gradients, walking the sorted
+    // list back-to-front from the last blended contributor and re-applying the forward
+    // pass's exact tests. T_i is reconstructed incrementally: T_i = T_{i+1} / (1 - a_i)
+    // (safe: alpha is capped at 0.99, so the divisor is >= 0.01).
 
     // Initialize g_T_N from background term: out includes T_N * bg
     // dL/dT_N = d_out · bg (because changing T_N changes out by T_N * bg)
     var g_t_next = dot(d_out, params.background.xyz); // dL/d(T_{i+1}) as we go backwards
+    var t_after = t_final;                            // T_{i+1} for the current contributor
 
-    // Process contributions in reverse order
-    for (var i = 0u; i < num_contribs; i++) {
-        let k = num_contribs - 1u - i;  // Reverse index
-        let contrib = intermediates[base_contrib_idx + k];
-        let sorted_idx = contrib.gaussian_idx;  // This is the sorted index
-        let alpha = contrib.alpha;
-        let t_i = contrib.transmittance;
-
-        // Read Gaussian from sorted array using sorted index
+    // Process contributors in reverse sorted order
+    for (var j = 0u; j <= last_idx; j++) {
+        let sorted_idx = last_idx - j;
         let g = gaussians[sorted_idx];
 
-        // Get original Gaussian index for gradient accumulation
-        let gaussian_idx = g.gaussian_idx_pad.x;
+        // Same tests as the forward pass, so the contributor set matches exactly
+        if (g.mean.z < 0.0) {
+            continue;
+        }
 
         let color = g.color.xyz;
         let opacity = g.opacity_pad.x;
@@ -291,6 +287,24 @@ fn backward_pass(
         let cov_xx = g.cov.x;
         let cov_xy = g.cov.y;
         let cov_yy = g.cov.z;
+
+        let fwd_weight = eval_gaussian_2d(
+            mean_x, mean_y,
+            cov_xx, cov_xy, cov_yy,
+            pixel_x, pixel_y
+        );
+        let fwd_alpha_raw = opacity * fwd_weight;
+        let alpha = min(fwd_alpha_raw, 0.99);
+        if (alpha < 1e-4) {
+            continue;
+        }
+
+        // Reconstruct T before this Gaussian from T after it
+        let t_i = t_after / (1.0 - alpha);
+        t_after = t_i;
+
+        // Get original Gaussian index for gradient accumulation
+        let gaussian_idx = g.gaussian_idx_pad.x;
 
         // Gradient of output w.r.t. color: dL/dc_i = d_out * (T_i * a_i)
         let d_color = d_out * (t_i * alpha);
@@ -314,17 +328,10 @@ fn backward_pass(
         //
         // alpha = min(opacity * weight, 0.99)
         // opacity = sigmoid(opacity_logit)
-        //
-        // We need to recompute weight from the Gaussian evaluation
-        let weight = eval_gaussian_2d(
-            mean_x, mean_y,
-            cov_xx, cov_xy, cov_yy,
-            pixel_x, pixel_y
-        );
+        let weight = fwd_weight;
 
         // Check if alpha was clamped
-        let alpha_raw = opacity * weight;
-        let was_clamped = alpha_raw >= 0.99;
+        let was_clamped = fwd_alpha_raw >= 0.99;
 
         // d(alpha)/d(opacity) = weight (if not clamped), 0 (if clamped)
         // d(alpha)/d(weight) = opacity (if not clamped), 0 (if clamped)
@@ -371,24 +378,4 @@ fn backward_pass(
         atomic_add_f32_position(base_idx + 13u, d_cov.y * d_weight);
         atomic_add_f32_position(base_idx + 14u, d_cov.z * d_weight);
     }
-
-    // Background gradient contribution
-    // out = ... + T_final * bg
-    // dL/d(bg) = d_out * T_final
-    //
-    // T_final = T_0 * prod(1 - a_i) for all contributions
-    // We need to compute this by going forward through contributions
-    var t_final = 1.0;  // T_0 = 1.0
-    for (var i = 0u; i < num_contribs; i++) {
-        let contrib = intermediates[base_contrib_idx + i];
-        let alpha = contrib.alpha;
-        t_final *= (1.0 - alpha);
-    }
-
-    // dL/d(bg) = d_out * T_final
-    let d_background = d_out * t_final;
-
-    // Store per-pixel background gradient (CPU will sum all pixels)
-    // Use pixel_idx (global pixel index) for storage
-    d_background_pixels[pixel_idx] = vec4<f32>(d_background, 0.0);
 }
