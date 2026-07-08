@@ -921,6 +921,14 @@ pub struct MultiViewTrainConfig {
     pub prune_opacity_threshold: f32,
     /// If average world sigma (exp(log_scale)) is above this, SPLIT; otherwise CLONE.
     pub split_sigma_threshold: f32,
+    /// Per-step anisotropy clamp: every iteration, pull each Gaussian's smaller log-scale axes
+    /// up to within this log-ratio of the largest axis. `0` disables (reference 3DGS has no such
+    /// clamp — thin surface-aligned splats routinely reach 10–100× anisotropy). Legacy value 1.6
+    /// (≈5:1) predates the EWA low-pass filter, which is the correct anti-needle defense.
+    pub max_log_anisotropy: f32,
+    /// Prune Gaussians whose log-scale anisotropy (max−min axis) exceeds this at densify time.
+    /// `0` disables. Legacy value 2.0 (≈7:1), companion to `max_log_anisotropy`.
+    pub needle_prune_log_anisotropy: f32,
     /// Reset (cap-down) opacities every N iterations; 0 disables. Reference default: 3000.
     pub opacity_reset_interval: usize,
     /// Use GPU for forward rendering.
@@ -1020,6 +1028,8 @@ fn densify_and_prune<R: Rng + ?Sized>(
     grad_threshold: f32,
     prune_opacity_threshold: f32,
     _split_sigma_threshold: f32,
+    // Prune Gaussians whose log-scale anisotropy (max−min axis) exceeds this; 0 disables.
+    needle_prune_log_aniso: f32,
     scene_extent: f32,
 ) -> (DensifyStats, Vec<Option<usize>>) {
     let before = gaussians.len();
@@ -1096,10 +1106,6 @@ fn densify_and_prune<R: Rng + ?Sized>(
     let mut cap_hit = false;
     let mut kept_avg_grads: Vec<f32> = Vec::new();
 
-    // Max log-space anisotropy before pruning (ln(7.4) ≈ 2.0, so ~7:1 aspect ratio)
-    // Slightly more permissive than the per-step constraint (5:1) to allow some flexibility
-    const NEEDLE_PRUNE_ANISOTROPY: f32 = 2.0;
-
     for i in 0..gaussians.len() {
         // Prune outliers: gaussians too far from scene center
         let distance_from_center = (positions[i] - scene_center).norm();
@@ -1115,11 +1121,11 @@ fn densify_and_prune<R: Rng + ?Sized>(
             continue;
         }
 
-        // Prune needles: Gaussians with extreme aspect ratios
+        // Optionally prune needles: Gaussians with extreme aspect ratios (0 disables)
         let scale = &log_scales[i];
         let max_s = scale.x.max(scale.y).max(scale.z);
         let min_s = scale.x.min(scale.y).min(scale.z);
-        if max_s - min_s > NEEDLE_PRUNE_ANISOTROPY {
+        if needle_prune_log_aniso > 0.0 && max_s - min_s > needle_prune_log_aniso {
             pruned_needles += 1;
             pruned += 1;
             continue;
@@ -1903,21 +1909,22 @@ pub fn train_multiview_color_only(
             // Tighter bounds prevent stretched/exploding Gaussians during training
             const MAX_LOG_SCALE: f32 = 5.0;
             const MIN_LOG_SCALE: f32 = -10.0;
-            // Max ratio between largest and smallest scale axis (prevents needles)
-            // ln(5) ≈ 1.6, so max 5:1 aspect ratio (tightened from 10:1 for sharper results)
-            const MAX_LOG_ANISOTROPY: f32 = 1.6;
             for scale in log_scales.iter_mut() {
                 // First clamp individual axes
                 scale.x = scale.x.clamp(MIN_LOG_SCALE, MAX_LOG_SCALE);
                 scale.y = scale.y.clamp(MIN_LOG_SCALE, MAX_LOG_SCALE);
                 scale.z = scale.z.clamp(MIN_LOG_SCALE, MAX_LOG_SCALE);
 
-                // Then enforce anisotropy constraint: pull smaller axes toward largest
-                let max_s = scale.x.max(scale.y).max(scale.z);
-                let min_allowed = max_s - MAX_LOG_ANISOTROPY;
-                scale.x = scale.x.max(min_allowed);
-                scale.y = scale.y.max(min_allowed);
-                scale.z = scale.z.max(min_allowed);
+                // Optional anisotropy constraint: pull smaller axes toward largest.
+                // Off by default — reference 3DGS lets splats flatten to 10–100×; the EWA
+                // low-pass filter in the projection is the anti-needle defense.
+                if cfg.max_log_anisotropy > 0.0 {
+                    let max_s = scale.x.max(scale.y).max(scale.z);
+                    let min_allowed = max_s - cfg.max_log_anisotropy;
+                    scale.x = scale.x.max(min_allowed);
+                    scale.y = scale.y.max(min_allowed);
+                    scale.z = scale.z.max(min_allowed);
+                }
             }
         }
         if cfg.learn_rotation {
@@ -2193,6 +2200,7 @@ pub fn train_multiview_color_only(
                 cfg.densify_grad_threshold,
                 cfg.prune_opacity_threshold,
                 cfg.split_sigma_threshold,
+                cfg.needle_prune_log_anisotropy,
                 scene_extent,
             );
             // B11: the parameter arrays have been re-built; remap optimizer state through the
@@ -2429,6 +2437,7 @@ mod tests {
             0.1,
             0.01,
             0.05,
+            0.0, // needle prune disabled (inputs are isotropic; inert either way)
             2.0,
         );
 
@@ -2505,6 +2514,7 @@ mod tests {
             0.1,
             0.01,
             0.05,
+            0.0, // needle prune disabled (inputs are isotropic; inert either way)
             2.0,
         );
 
@@ -2555,6 +2565,7 @@ mod tests {
             0.1,
             0.01,
             0.05,
+            0.0, // needle prune disabled (inputs are isotropic; inert either way)
             2.0,
         );
 

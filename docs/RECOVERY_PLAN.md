@@ -354,6 +354,29 @@ artifacts whose actual root cause (missing EWA low-pass) was fixed in Phase 0 �
 legacy double-medication. NEXT EXPERIMENT: relax/remove the per-step anisotropy pull and the
 needle prune (keep the low-pass), A/B on the 2000-iter trio first.**
 
+**Anisotropy-clamp 2000-iter trio A/B (2026-07-07) — REFUTED at this horizon, with a twist.**
+Both clamps are now config knobs (`MultiViewTrainConfig::max_log_anisotropy` /
+`needle_prune_log_anisotropy`, 0 = off; CLI `--max-log-aniso`, default 1.6 = legacy, needle
+prune at +0.4). Control (clamped) reproduced the documented baselines exactly
+(16.33 / 16.03 / 14.90), validating the refactor. Unclamped, test PSNR @2000:
+| Config | clamped (1.6/2.0) | unclamped | Δ |
+|---|---|---|---|
+| no densify | 16.33 | 16.00 | −0.33 |
+| densify @500 | 16.03 | 15.44 | −0.59 |
+| densify @100 | 14.90 | 14.60 | −0.30 |
+The twist: removing the clamp changed almost nothing structurally — `aniso_median` stays 1.0
+and p90 ≤1.6 in BOTH arms (the population remains isotropic; only a tail of a few Gaussians
+flattened, to 16–132×), `scale_median`/`opacity_median`/bg are identical between arms, and the
+trailing train loss is slightly WORSE unclamped (0.125/0.117/0.118 vs 0.125/0.113/0.111) — so
+the extreme-tail needles mildly hurt optimization overall rather than overfitting. Two
+conclusions: (1) the "standing scale-inflation force" mechanism is refuted — at 2k the clamp
+binds almost nowhere; (2) the real anomaly is that our Gaussians do not flatten EVEN WHEN
+ALLOWED TO — reference splats develop strong anisotropy early, ours stay isotropic
+(possible next suspects: scale-gradient path, rotation coupling, or simply horizon). The 2k
+screen cannot see the settle-phase (7.5k+) where the hypothesis lives, so the decisive run is
+15k @100 images/60k cap unclamped vs the 14.25 control (`runs/20260707_1127_micro`) — launched
+as `runs/ab_aniso15k_free_60k`. Clamp stays default-ON (1.6) pending that result.
+
 3. **Micro-config confound — CONFIRMED as the root of "densification hurts" (2026-07-06).**
    Re-ran the A/B with `--max-images 100` (75 train / 25 test): densify@100 **beats** its
    no-densify baseline for the first time — 15.33 vs 15.10 final, count 8000→22,618 (~3×,
