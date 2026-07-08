@@ -523,6 +523,44 @@ aniso_max pinned at e^3.0 = 20.1, medians/p90 untouched (clamp only bites the ex
 and the d100 test-view render loses most of its radiating needle streaks vs control.
 15k validation at the standard config launched as `runs/ab_aniso3_15k_100img_60k`
 (control: `bwfix_15k_100img_60k` = 16.25 dB, aniso p90 212).
+15k result: 16.17 vs 16.25 final (settle mean 15.96 vs 15.95, settle peak 16.59 vs 16.25) —
+a statistical tie on PSNR with needles pinned at 20.1 vs p90=212/max=320k. **But both arms
+ran on a broken renderer — see below; the clamp decision moves to the post-fix re-baseline.**
+
+**THREE GPU FORWARD BUGS — found 2026-07-08 while eyeballing the aniso A/B renders, fixed
+in commit 836f4d0. ALL prior GPU PSNR numbers (including everything above) ran on a broken
+renderer and are superseded.** Discovery chain: sugar-render (CPU forward) drew the
+bwfix_15k model as structureless fog while the trainer's own test-view render (GPU forward)
+showed structure+needles → `examples/render_compare` (new diagnostic: renders a saved model
+through both paths + a CPU replica of the GPU pipeline) measured mean abs pixel diff 0.14 on
+the same model+camera → bisected to three GPU-side bugs:
+1. **The bitonic depth sort never sorted** (`gpu/sort.wgsl`): the ascending/descending bit
+   used bit `stage` of the index instead of bit `stage+1`, violating the bitonic invariant
+   from stage 0; additionally, compare-exchanges reaching into the power-of-two pad region
+   were skipped instead of treated as +∞ sentinels. Measured on the real 60k model: **45.1%
+   adjacent inversions — GPU training composited in near-random depth order for the entire
+   campaign.** (Unit test used N=2, which even the broken network sorts.) Fix: correct
+   direction bit; projected buffer padded to 2^k with +∞-depth sentinels written by the
+   projection shader. Regression test `unit_gpu_sort_order` (300 shuffled translucent
+   Gaussians) fails pre-fix, passes post-fix.
+2. **No 3σ bounding box on GPU** (`rasterize.wgsl`/`backward.wgsl`): every pixel accumulated
+   the 3–6σ tails of ALL splats (alpha at 3σ ≈ 0.011·opacity > the 1e-4 skip), where the CPU
+   renderer and reference 3DGS truncate at the 3σ box. Fix: projection stores the 3σ radius
+   in the free cov.w slot; rasterize and the backward re-walk apply the CPU's exact bbox test.
+3. **The forward projection used Rᵀ for the Gaussian rotation** (`shaders.rs quat_to_matrix`
+   passed matrix ROWS to WGSL's column-major mat3x3 constructor) — while
+   `project_backward.wgsl` used the correct R. So for every anisotropic Gaussian, the
+   world covariance was built with the transposed rotation AND rotation/scale gradients were
+   inconsistent with the rendered forward all campaign. Identity-quaternion / isotropic unit
+   tests are blind to this. Verified by replica: R with transpose matches old GPU to 1e-6.
+After the fixes: **GPU forward == CPU forward to mean abs 3e-6 (max 4e-4) on the real 60k
+model at a real camera.** sugar-render eyeballs are now trustworthy. Downstream implications:
+- The "settle-phase climb" and all bwfix PSNR numbers were measured under random-order
+  compositing with rotation gradients fighting the renderer; densification/clamp/floor
+  conclusions must be re-validated. Post-fix re-baseline: `runs/ab_srt_{d0,d500,d100}` and
+  `runs/ab_srt_a3_{d0,d500,d100}` (2k trio, unclamped vs clamp 3.0), then a 15k pair.
+- Old saved models (.gs) encode rotations under the Rᵀ convention — they render differently
+  (worse) on the fixed renderer; do not compare old model files against new renders.
 
 3. **Micro-config confound — CONFIRMED as the root of "densification hurts" (2026-07-06).**
    Re-ran the A/B with `--max-images 100` (75 train / 25 test): densify@100 **beats** its
