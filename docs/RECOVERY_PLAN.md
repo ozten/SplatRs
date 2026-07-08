@@ -377,6 +377,24 @@ screen cannot see the settle-phase (7.5k+) where the hypothesis lives, so the de
 15k @100 images/60k cap unclamped vs the 14.25 control (`runs/20260707_1127_micro`) — launched
 as `runs/ab_aniso15k_free_60k`. Clamp stays default-ON (1.6) pending that result.
 
+**15k settle-phase A/B (2026-07-07, `runs/ab_aniso15k_free_60k`) — CONFIRMED: the clamp was a
+real settle-phase ceiling; unclamped is now the default (`--max-log-aniso 0`).** Same config as
+the 14.25 control (100 images, interval 100, 60k cap, seed 42), unclamped: **settle mean
+(8000–15000) 14.47 vs 14.21 (+0.26 dB)**, ahead at 21/30 validation points, peak 15.75 vs
+15.13 (@3000), final 14.36 vs 14.25. Structure did exactly what the hypothesis predicted at
+this horizon: unclamped p90 anisotropy reaches 21× (median 2.2, max ~29,000) vs the control's
+p90 pinned at the 4.9 ceiling from iter ~2400 — at 15k scale the clamp binds the whole top
+decile, which is why the 2k trio (population still isotropic) couldn't see the effect. No
+needle artifacts observed — the EWA low-pass is a sufficient defense (a ~29,000:1 tail exists
+but does not hurt PSNR; if it ever does, `--max-log-aniso` and the derived needle prune remain
+available as knobs). Horizon trade-off: unclamped costs ~−0.3 dB on 2000-iter runs — 2k-trio
+baselines under the new default are 16.00 / 15.44 / 14.60 (vs clamped 16.33 / 16.03 / 14.90);
+use `--max-log-aniso 1.6` to reproduce legacy short-run numbers. Remaining
+(clamp-independent) pathologies, now the top suspects for the residual ceiling: bg drags to
+black mid-densify in BOTH arms, median opacity pinned at the 0.01 floor in BOTH arms (half the
+population sits near the prune threshold — dead capacity), and late-settle convergence
+(deltas fade after ~13k). Next: D3 SH-rest LR, C2 SH warmup, and the opacity-floor pileup.
+
 3. **Micro-config confound — CONFIRMED as the root of "densification hurts" (2026-07-06).**
    Re-ran the A/B with `--max-images 100` (75 train / 25 test): densify@100 **beats** its
    no-densify baseline for the first time — 15.33 vs 15.10 final, count 8000→22,618 (~3×,

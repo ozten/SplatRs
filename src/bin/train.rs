@@ -139,10 +139,11 @@ fn main() {
     let mut use_gpu: bool = true;
     let mut disable_sh: bool = false;
     // Per-step anisotropy clamp (log-space max−min axis ratio); 0 disables — reference 3DGS
-    // has no such clamp (needle prune runs at +0.4, legacy 1.6 → 2.0). The 2000-iter trio A/B
-    // (2026-07-07) showed unclamped slightly WORSE (−0.3..−0.6 dB) with the bulk population
-    // still isotropic, so the clamp stays default-on pending the 15k settle-phase A/B.
-    let mut max_log_aniso: f32 = 1.6;
+    // has no such clamp (when enabled, the needle prune runs at +0.4, legacy 1.6 → 2.0).
+    // Default OFF: the 15k settle-phase A/B (2026-07-07) showed unclamped +0.26 dB settle mean
+    // (p90 anisotropy 21× vs pinned at the clamp), at a −0.3 dB cost only on 2k-iter runs
+    // where the population is still isotropic. Use --max-log-aniso 1.6 for legacy behavior.
+    let mut max_log_aniso: f32 = 0.0;
 
     fn apply_preset(
         name: &str,
