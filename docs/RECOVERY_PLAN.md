@@ -443,6 +443,33 @@ slots ≈ 136 MB already exceeds the 128 MB Metal buffer limit while still trunc
 p50=209. Secondary (after the backward fix): reconsider reset floor (0.01) vs prune
 threshold (0.005) interplay, since zombie mass parked between them is unprunable.
 
+**GPU backward rewrite — ✅ DONE (2026-07-08, commit 15f7d9d), plus a SECOND major bug found
+during verification: the GPU projection shader NEVER HAD THE EWA LOW-PASS.** Changes:
+- Forward (`rasterize.wgsl`) stores per-pixel `(final transmittance, last blended sorted
+  index)` — 8 B/px instead of 256 B/px; backward (`backward.wgsl`) re-walks the sorted list
+  back-to-front from that index, re-applies the forward's exact tests, recomputes alpha, and
+  reconstructs `T_i = T_{i+1}/(1−a_i)`. Every contributor receives gradients; the gradient
+  math itself is unchanged. `d_bg` now uses the true final T (was ~10× overestimated on dense
+  pixels). Dead tiled-backward path deleted. Backward cost 31→44 ms/iter @8k Gaussians.
+- **Low-pass:** the 0.3 covariance dilation (Phase 0's anti-needle fix) existed only in the
+  CPU projection (`full_diff.rs`); the GPU shader added 1e-6. ALL GPU training to date ran
+  without it — and without the backward fix's gradients, this went unnoticed because the
+  long-broken CPU/GPU parity test (`unit_gpu_gradients_smoke`, compile-stale since the
+  `disable_sh` signature change) never ran. Both projections now match (forward parity 6e-5).
+  Caveat for interpreting the anisotropy A/Bs above: "EWA low-pass is a sufficient needle
+  defense" was concluded from GPU runs that had NO low-pass — needles were rare even
+  undefended; with the low-pass actually active the case for unclamped is stronger.
+- New regression test `unit_gpu_deep_blend_gradients` (40 stacked Gaussians): on the old
+  backward exactly ranks 16..39 get zero gradient; new backward matches the uncapped CPU
+  backward at all ranks. Verified the test FAILS on pre-fix HEAD.
+- `auto_downsample` now models the real 16 B/px ceiling — tandt (980×545) trains at FULL
+  resolution by default. Pass `--downsample 0.5` to reproduce the resolution of all runs
+  documented above.
+- **First signal (200-iter smoke, no densify, seed 42, 0.5 downsample): test 18.98 dB — +2.3 dB
+  above the best value this config ever reached at ANY horizon — and bg settles at sky-blue
+  instead of black.** All prior PSNR numbers in this document predate these fixes and are
+  superseded as baselines.
+
 3. **Micro-config confound — CONFIRMED as the root of "densification hurts" (2026-07-06).**
    Re-ran the A/B with `--max-images 100` (75 train / 25 test): densify@100 **beats** its
    no-densify baseline for the first time — 15.33 vs 15.10 final, count 8000→22,618 (~3×,
