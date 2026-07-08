@@ -395,6 +395,54 @@ black mid-densify in BOTH arms, median opacity pinned at the 0.01 floor in BOTH 
 population sits near the prune threshold — dead capacity), and late-settle convergence
 (deltas fade after ~13k). Next: D3 SH-rest LR, C2 SH warmup, and the opacity-floor pileup.
 
+**Opacity-floor pileup investigation (2026-07-08) — ROOT CAUSE FOUND, and it is the biggest
+structural deviation yet: `MAX_CONTRIBUTIONS_PER_PIXEL = 16` in the GPU backward
+(`rasterize.wgsl`/`backward.wgsl`).** The forward pass blends ALL contributors per pixel
+(image is correct), but only the FIRST 16 non-culled Gaussians per pixel (front-to-back) are
+recorded for the backward pass — every Gaussian at depth rank >16 in every pixel it touches
+receives EXACTLY ZERO gradient for ALL parameters. Reference 3DGS has no such cap: its
+backward re-traverses the sorted list per tile back-to-front, recomputing weights on the fly,
+so every contributor down to the T<1e-4 cutoff gets exact gradients with O(1) memory/pixel.
+Evidence (`examples/opacity_audit.rs` + `render::full_diff::debug_contrib_stats`, run on the
+final `ab_aniso15k_free_60k` model):
+- **88.4% of Gaussians (52,978/59,901) sit BIT-EXACTLY at the B3 reset-cap logit
+  `inverse_sigmoid(0.01)`** — zero opacity gradient in the 9,000 iters since the iter-6000
+  reset. Not a visibility problem: they are in-frustum in 46/75 train views on average (0%
+  in zero views), median 3σ footprint ~22 px.
+- **Per-pixel contributor counts: p50=209, p90=457, max=1168 — 99.4% of pixels exceed the 16
+  slots** (order of magnitude beyond the cap).
+- Simulating the GPU recording over 8 train views: only **1.9%** of at-floor Gaussians are
+  ever recorded in even one pixel (vs ~21% for healthy ones over the same 8 views) —
+  depth order is nearly static, so the starved set is permanent.
+This one constant mechanistically explains every open pathology:
+1. **Opacity pileup**: resets knock everyone to 0.01; only depth-rank ≤16 re-earn opacity;
+   the rest freeze forever (and at 0.01 they sit ABOVE the 0.005 prune threshold, so they
+   can never be pruned either — and pruning stops at iters/2 anyway).
+2. **Fog / over-opacity equilibrium**: the 53k zombies at α=0.01 stack ~200 deep — a
+   permanent gray veil (0.99^200 ≈ 0.13 transmittance through the zombie film alone) that
+   gradient descent cannot remove because the veil gets no gradient.
+3. **bg→black**: the backward computes the background gradient with `t_final` from only the
+   ≤16 recorded contributions (t_final ≈ 0.85 at α=0.01) instead of the true forward
+   transmittance (≈0.1 or less) — d_bg is overestimated ~10×, and the residual owned by the
+   190+ unrecorded contributors per pixel is misattributed to the background, which rails to
+   black trying to cancel the fog.
+4. **Train-improves/test-stalls & the settle ceiling**: effective trainable capacity is the
+   ~4.6% (2.8k) healthy front Gaussians, not 60k.
+5. **Why tests never caught it**: the CPU backward (`render_full_color_grads`) is UNCAPPED —
+   CPU/GPU gradient parity only holds on scenes with ≤16 overlaps, which is exactly what unit
+   tests use. All real training runs use the GPU path.
+Even the 2k-trio observation (median opacity frozen at the 0.1 init) is this: half the
+population is never in any pixel's front-16 from iteration 0.
+**RECOMMENDED FIX: rewrite the GPU backward to the reference scheme** — drop the
+intermediates buffer entirely; store per-pixel true final T (+ contributor count) in the
+forward, then walk the same sorted order back-to-front in the backward, recomputing
+weight/alpha per Gaussian (deterministic from Gaussian+pixel) and reconstructing T_i
+incrementally. This removes both the starvation and the d_bg bias, and shrinks GPU memory
+(the 34 MB intermediates buffer goes away). Raising the slot count instead CANNOT work: 64
+slots ≈ 136 MB already exceeds the 128 MB Metal buffer limit while still truncating at
+p50=209. Secondary (after the backward fix): reconsider reset floor (0.01) vs prune
+threshold (0.005) interplay, since zombie mass parked between them is unprunable.
+
 3. **Micro-config confound — CONFIRMED as the root of "densification hurts" (2026-07-06).**
    Re-ran the A/B with `--max-images 100` (75 train / 25 test): densify@100 **beats** its
    no-densify baseline for the first time — 15.33 vs 15.10 final, count 8000→22,618 (~3×,

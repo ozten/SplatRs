@@ -1113,6 +1113,67 @@ pub fn debug_final_transmittance(gaussians: &[Gaussian], camera: &Camera) -> Rgb
     img
 }
 
+/// Debug: per-pixel contributor counts plus which Gaussians the GPU backward would see.
+///
+/// Simulates the GPU rasterizer's intermediate recording exactly: contributors are visited
+/// front-to-back, α ≥ 1e-4 counts, only the first `slots` per pixel are recorded for the
+/// backward pass, and traversal stops when transmittance falls below 1e-4. Returns
+/// (per-pixel contributor counts, per-Gaussian "recorded in at least one pixel" flags).
+pub fn debug_contrib_stats(
+    gaussians: &[Gaussian],
+    camera: &Camera,
+    slots: usize,
+) -> (Vec<u32>, Vec<bool>) {
+    let width = camera.width as i32;
+    let height = camera.height as i32;
+
+    let mut projected: Vec<Gaussian2D> = gaussians
+        .iter()
+        .enumerate()
+        .filter_map(|(i, g)| project_gaussian(g, camera, i, false))
+        .collect();
+    projected.retain(|g| g.mean.z.is_finite());
+    projected.sort_by(|a, b| a.mean.z.partial_cmp(&b.mean.z).unwrap());
+    let prepared = prepare(&projected, gaussians, camera);
+
+    let mut counts = vec![0u32; (width * height) as usize];
+    let mut recorded = vec![false; gaussians.len()];
+
+    for py in 0..height {
+        for px in 0..width {
+            let pixel_x = px as f32 + 0.5;
+            let pixel_y = py as f32 + 0.5;
+            let mut count = 0u32;
+            let mut transmittance = 1.0f32;
+            for g in &prepared {
+                if px < g.min_x || px > g.max_x || py < g.min_y || py > g.max_y {
+                    continue;
+                }
+                let dx = pixel_x - g.mean_x;
+                let dy = pixel_y - g.mean_y;
+                let quad_form =
+                    g.inv_xx * dx * dx + 2.0 * g.inv_xy * dx * dy + g.inv_yy * dy * dy;
+                let weight = (-0.5 * quad_form).exp();
+                let alpha = (g.opacity * weight).min(0.99);
+                if alpha < 1e-4 {
+                    continue;
+                }
+                if (count as usize) < slots {
+                    recorded[g.gaussian_idx] = true;
+                }
+                count += 1;
+                transmittance *= 1.0 - alpha;
+                if transmittance < 1e-4 {
+                    break;
+                }
+            }
+            counts[(py * width + px) as usize] = count;
+        }
+    }
+
+    (counts, recorded)
+}
+
 /// Debug: visualize number of contributing Gaussians per pixel (brighter = more contributors).
 pub fn debug_contrib_count(gaussians: &[Gaussian], camera: &Camera, clamp_max: u32) -> RgbImage {
     let width = camera.width as i32;
