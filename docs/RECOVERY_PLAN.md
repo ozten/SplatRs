@@ -470,6 +470,21 @@ during verification: the GPU projection shader NEVER HAD THE EWA LOW-PASS.** Cha
   instead of black.** All prior PSNR numbers in this document predate these fixes and are
   superseded as baselines.
 
+**Post-fix 2000-iter trio (2026-07-08, seed 42, --downsample 0.5, unclamped default):**
+| Config | pre-fix | post-fix | Δ |
+|---|---|---|---|
+| no densify | 16.00 | 17.54 | +1.54 |
+| densify @500 | 15.44 | **18.91** | +3.47 |
+| densify @100 | 14.60 | **18.86** | +4.26 |
+The gain grows with densify frequency — densified populations were the most cap-starved.
+Densification is now decisively positive (+1.4 over no-densify) and arrests the no-densify
+arm's overfit decay (19.1@500→17.5@2000 on 15 train views; densify arms plateau ~18.9).
+Population health @2000 (d100): opacity median 0.23 and only 24% below 0.1 (pre-fix: median
+frozen at the 0.10 init, 97% below 0.1 at 15k), bg sky-blue (0.00,0.24,0.51), anisotropy
+p50/p90 = 3.2/22 (reference-style flattening already at 2k), count 8k→24.8k. 15k validation
+run (100 img / interval 100 / 60k cap / 0.5 downsample) launched as
+`runs/bwfix_15k_100img_60k` — pre-fix control: 14.25 clamped / 14.36 unclamped.
+
 3. **Micro-config confound — CONFIRMED as the root of "densification hurts" (2026-07-06).**
    Re-ran the A/B with `--max-images 100` (75 train / 25 test): densify@100 **beats** its
    no-densify baseline for the first time — 15.33 vs 15.10 final, count 8000→22,618 (~3×,
