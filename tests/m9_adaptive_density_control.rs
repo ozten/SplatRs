@@ -50,6 +50,8 @@ fn test_m9_densify_smoke_tandt() {
         max_test_views_for_metrics: 1,
         log_interval: 0,
         opacity_reset_interval: 0, // disabled for this short smoke test
+        opacity_reset_floor: 0.01,
+        settle_prune_interval: 0,
         densify_interval: 2,
         densify_max_gaussians: 2_000,
         densify_grad_threshold: -1.0, // force densify for smoke testing

@@ -144,6 +144,11 @@ fn main() {
     // (p90 anisotropy 21× vs pinned at the clamp), at a −0.3 dB cost only on 2k-iter runs
     // where the population is still isotropic. Use --max-log-aniso 1.6 for legacy behavior.
     let mut max_log_aniso: f32 = 0.0;
+    // Settle-phase prune-only pass every N iters after densification stops (0 = off).
+    let mut settle_prune_interval: usize = 0;
+    // Opacity resets cap down to this value; reference 0.01. Below the prune threshold
+    // (micro: 0.005) makes never-recovering mass prunable.
+    let mut opacity_reset_floor: f32 = 0.01;
 
     fn apply_preset(
         name: &str,
@@ -562,6 +567,8 @@ fn main() {
             "--split-sigma-threshold" => split_sigma_threshold = args.next().unwrap().parse().unwrap(),
             "--seed" => seed = Some(args.next().unwrap().parse().unwrap()),
             "--max-log-aniso" => max_log_aniso = args.next().unwrap().parse().unwrap(),
+            "--settle-prune-interval" => settle_prune_interval = args.next().unwrap().parse().unwrap(),
+            "--opacity-reset-floor" => opacity_reset_floor = args.next().unwrap().parse().unwrap(),
             "--gpu" => use_gpu = true,
             "--cpu" | "--no-gpu" => use_gpu = false,
             "--disable-sh" => disable_sh = true,
@@ -575,7 +582,7 @@ fn main() {
                 eprintln!("  sugar-train --scene <sparse/0> [--images <dir>] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--image-index I] [--log-interval N] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--learn-position] [--learn-scale] [--learn-rotation] [--learn-sh] [--seed U64] [--out-dir DIR]");
                 eprintln!();
                 eprintln!("  # M8 (multi-view)");
-                eprintln!("  sugar-train --multiview --scene <sparse/0> [--images <dir>] [--max-images N] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--train-fraction F] [--val-interval N] [--max-test-views N] [--log-interval N] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--learn-position] [--learn-scale] [--learn-rotation] [--learn-sh] [--densify-interval N] [--densify-max-gaussians N] [--densify-grad-threshold F] [--prune-opacity-threshold F] [--split-sigma-threshold F] [--max-log-aniso F (0=off, legacy 1.6)] [--seed U64] [--out-dir DIR]");
+                eprintln!("  sugar-train --multiview --scene <sparse/0> [--images <dir>] [--max-images N] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--train-fraction F] [--val-interval N] [--max-test-views N] [--log-interval N] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--learn-position] [--learn-scale] [--learn-rotation] [--learn-sh] [--densify-interval N] [--densify-max-gaussians N] [--densify-grad-threshold F] [--prune-opacity-threshold F] [--split-sigma-threshold F] [--max-log-aniso F (0=off, legacy 1.6)] [--settle-prune-interval N (0=off)] [--opacity-reset-floor F (default 0.01)] [--seed U64] [--out-dir DIR]");
                 eprintln!();
                 eprintln!("  # Auto-detect paths");
                 eprintln!("  sugar-train [--multiview] --dataset-root <root> [--iters N] ...   (auto-detects sparse/0 + images/)");
@@ -734,6 +741,8 @@ fn main() {
                 0.0
             },
             opacity_reset_interval: 3000,
+            opacity_reset_floor,
+            settle_prune_interval,
             use_gpu,
             csv_output_path: Some(final_out_dir.join("metrics.csv")),
             out_dir: final_out_dir.clone(),

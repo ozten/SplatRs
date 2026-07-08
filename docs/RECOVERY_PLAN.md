@@ -502,6 +502,28 @@ low-pass, but watch for view-dependent needle artifacts; (3) full-resolution tra
 memory-feasible (auto-downsample no longer forces 0.5) — the next big data lever; (4) D3
 SH-rest LR, C2 SH warmup.
 
+**Critical visual finding on the bwfix models (2026-07-08): PSNR hides needles.** Renders of
+`bwfix_15k_100img_60k` show real structure (locomotive "713" legible) but are dominated by
+needle streak artifacts (anisotropy p90 = 212×), much worse on novel views. The earlier
+"unclamped anisotropy wins" A/B (settle-mean +0.26 dB) was measured on a gradient-starved
+population AND on a GPU that lacked the EWA low-pass — it is invalid post-fix. Always eyeball
+renders alongside PSNR (`sugar-render --model <run>/model.gs --camera-id N --dataset-root
+datasets/tandt_db/tandt/train --out x.png`).
+
+**Aniso-clamp A/B, post-backward-fix (2026-07-08): `--max-log-aniso 3.0` (≈20:1 pull,
+needle prune auto at 3.4) vs unclamped default. 2k trio (`runs/ab_aniso3_d{0,500,100}` vs
+`ab_bwfix_d{0,500,100}`):**
+| Config | unclamped | clamp 3.0 | Δ | aniso max (unc → clamp) |
+|---|---|---|---|---|
+| no densify | 17.54 | 17.70 | +0.16 | 4291 → 20.1 |
+| densify @500 | 18.91 | 18.98 | +0.07 | 3927 → 20.1 |
+| densify @100 | 18.86 | 18.86 | ±0.00 | 8240 → 20.1 |
+PSNR neutral-to-positive (the legacy 1.6 clamp cost −0.3 dB at 2k; 3.0 costs nothing),
+aniso_max pinned at e^3.0 = 20.1, medians/p90 untouched (clamp only bites the extreme tail),
+and the d100 test-view render loses most of its radiating needle streaks vs control.
+15k validation at the standard config launched as `runs/ab_aniso3_15k_100img_60k`
+(control: `bwfix_15k_100img_60k` = 16.25 dB, aniso p90 212).
+
 3. **Micro-config confound — CONFIRMED as the root of "densification hurts" (2026-07-06).**
    Re-ran the A/B with `--max-images 100` (75 train / 25 test): densify@100 **beats** its
    no-densify baseline for the first time — 15.33 vs 15.10 final, count 8000→22,618 (~3×,

@@ -47,6 +47,8 @@ fn test_m8_multiview_train_smoke_tandt() {
         max_test_views_for_metrics: 2,
         log_interval: 1,
         opacity_reset_interval: 0, // disabled for this short smoke test
+        opacity_reset_floor: 0.01,
+        settle_prune_interval: 0,
         densify_interval: 0,
         densify_max_gaussians: 0,
         densify_grad_threshold: 0.1,
@@ -135,6 +137,8 @@ fn test_m8_multiview_train_quality_tandt() {
         max_test_views_for_metrics: 0, // Evaluate all held-out views
         log_interval: 10,
         opacity_reset_interval: 0, // disabled for this short smoke test
+        opacity_reset_floor: 0.01,
+        settle_prune_interval: 0,
         densify_interval: 0,
         densify_max_gaussians: 0,
         densify_grad_threshold: 0.1,

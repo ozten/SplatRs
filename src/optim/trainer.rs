@@ -931,6 +931,17 @@ pub struct MultiViewTrainConfig {
     pub needle_prune_log_anisotropy: f32,
     /// Reset (cap-down) opacities every N iterations; 0 disables. Reference default: 3000.
     pub opacity_reset_interval: usize,
+    /// Opacity resets cap logits down to this sigmoid-space value. Reference: 0.01 — which sits
+    /// ABOVE the usual prune threshold (0.005), so mass that never re-earns opacity parks at the
+    /// floor unprunable. Setting this BELOW `prune_opacity_threshold` lets the next prune pass
+    /// remove never-recovering Gaussians instead.
+    pub opacity_reset_floor: f32,
+    /// Settle-phase prune: after densification stops (iter > iters/2), run a prune-only pass
+    /// every N iterations (0 disables). Applies the same prune rules as densify-time
+    /// (sub-threshold opacity, needles, oversize, outliers) but never splits/clones — without
+    /// it the population is frozen for the entire settle phase and pathological Gaussians that
+    /// survive the densify window can never be removed.
+    pub settle_prune_interval: usize,
     /// Use GPU for forward rendering.
     pub use_gpu: bool,
     /// Optional CSV output path for metrics logging.
@@ -2267,13 +2278,71 @@ pub fn train_multiview_color_only(
             && (iter + 1) % cfg.opacity_reset_interval == 0
             && (iter + 1) <= cfg.iters / 2
         {
-            let reset_cap = crate::core::inverse_sigmoid(0.01); // ≈ -4.595
+            let reset_cap = crate::core::inverse_sigmoid(cfg.opacity_reset_floor);
             for i in 0..opacity_logits.len() {
                 opacity_logits[i] = opacity_logits[i].min(reset_cap);
                 gaussians[i].opacity = opacity_logits[i];
             }
             opacity_opt.reset_moments_keep_t(opacity_logits.len());
-            eprintln!("opacity reset @iter {}/{} (capped to <= 0.01)", iter + 1, cfg.iters);
+            eprintln!(
+                "opacity reset @iter {}/{} (capped to <= {})",
+                iter + 1,
+                cfg.iters,
+                cfg.opacity_reset_floor
+            );
+        }
+
+        // Settle-phase prune (opt-in): densification (and with it ALL pruning) stops at iters/2,
+        // so needles/oversize/dead mass that survive the window — or degrade during settle — are
+        // otherwise frozen into the final model. Prune-only: grad threshold ∞ means no
+        // split/clone, and no opacity reset fires here, so the settle phase stays convergent.
+        // Skip the last iteration so the final eval isn't run on a just-mutated population.
+        if cfg.settle_prune_interval > 0
+            && (iter + 1) % cfg.settle_prune_interval == 0
+            && (iter + 1) > cfg.iters / 2
+            && (iter + 1) < cfg.iters
+        {
+            let before = gaussians.len();
+            let (stats, remap) = densify_and_prune(
+                &mut gaussians,
+                &mut sh_params,
+                &mut opacity_logits,
+                &mut positions,
+                &mut log_scales,
+                &mut rotations,
+                &mut grad_accum_pos_norm,
+                &mut grad_denom,
+                &mut rng,
+                grad_window_iters.max(1),
+                0, // no additions possible at ∞ threshold; cap is irrelevant
+                f32::INFINITY,
+                cfg.prune_opacity_threshold,
+                cfg.split_sigma_threshold,
+                cfg.needle_prune_log_anisotropy,
+                scene_extent,
+            );
+            sh_opt.remap_moments_keep_t(&remap);
+            opacity_opt.remap_moments_keep_t(&remap);
+            position_opt.remap_moments_keep_t(&remap);
+            scale_opt.remap_moments_keep_t(&remap);
+            rotation_opt.remap_moments_keep_t(&remap);
+            last_densify_prune = stats.pruned;
+            if stats.pruned > 0 {
+                eprintln!(
+                    "settle prune @iter {}/{}: gaussians {} -> {} (opacity={} needles={} oversize={} outliers={})",
+                    iter + 1,
+                    cfg.iters,
+                    before,
+                    gaussians.len(),
+                    stats.pruned
+                        - stats.pruned_needles
+                        - stats.pruned_oversize
+                        - stats.pruned_outliers,
+                    stats.pruned_needles,
+                    stats.pruned_oversize,
+                    stats.pruned_outliers
+                );
+            }
         }
     }
 
