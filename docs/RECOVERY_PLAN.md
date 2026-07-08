@@ -485,6 +485,23 @@ p50/p90 = 3.2/22 (reference-style flattening already at 2k), count 8k→24.8k. 1
 run (100 img / interval 100 / 60k cap / 0.5 downsample) launched as
 `runs/bwfix_15k_100img_60k` — pre-fix control: 14.25 clamped / 14.36 unclamped.
 
+**15k validation (2026-07-08, `runs/bwfix_15k_100img_60k`): final 16.25 dB — +2.0 dB over the
+pre-fix controls (14.25 clamped / 14.36 unclamped), settle mean 15.99 vs 14.47/14.21, peak
+16.97 — and the settle phase CLIMBED (15.43 @7500 → 16.25 @15000), the first monotonically
+improving settle in the campaign.** The settle-phase ceiling that survived every capacity,
+loss, schedule, and clamp experiment is gone: it was gradient starvation all along.
+Post-fix opacity audit on the final model: trained fraction (moved off the reset cap) 11.6%
+→ 31.9%; healthy+strong (>0.1) 4.6% → 11.0%; still 68.1% bit-exact at the reset cap — the
+remaining zero-gradient mechanism is the T<1e-4 early-termination (reference-consistent:
+occluded Gaussians legitimately get no gradient; per-pixel contributors are now p50=336).
+Remaining follow-ups, in order: (1) the reset floor (0.01) still sits ABOVE the prune
+threshold (0.005), so occluded never-recovering mass stays unprunable — reference has the
+same mismatch, but with 68% of the population parked there a deviation (reset to <0.005, or
+prune-on-visibility) is worth an A/B; (2) anisotropy p90 reached 212 — render-safe under the
+low-pass, but watch for view-dependent needle artifacts; (3) full-resolution training is now
+memory-feasible (auto-downsample no longer forces 0.5) — the next big data lever; (4) D3
+SH-rest LR, C2 SH warmup.
+
 3. **Micro-config confound — CONFIRMED as the root of "densification hurts" (2026-07-06).**
    Re-ran the A/B with `--max-images 100` (75 train / 25 test): densify@100 **beats** its
    no-densify baseline for the first time — 15.33 vs 15.10 final, count 8000→22,618 (~3×,
