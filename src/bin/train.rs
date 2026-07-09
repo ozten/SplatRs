@@ -140,10 +140,12 @@ fn main() {
     let mut disable_sh: bool = false;
     // Per-step anisotropy clamp (log-space max−min axis ratio); 0 disables — reference 3DGS
     // has no such clamp (when enabled, the needle prune runs at +0.4, legacy 1.6 → 2.0).
-    // Default OFF: the 15k settle-phase A/B (2026-07-07) showed unclamped +0.26 dB settle mean
-    // (p90 anisotropy 21× vs pinned at the clamp), at a −0.3 dB cost only on 2k-iter runs
-    // where the population is still isotropic. Use --max-log-aniso 1.6 for legacy behavior.
-    let mut max_log_aniso: f32 = 0.0;
+    // Default 3.0 (≈20:1) since the post-renderer-fix A/B (2026-07-08, commit 836f4d0 fixes):
+    // 2k trio +0.61/+0.83 dB in the densify arms (19.49 best-ever 2k), 15k settle-mean tie
+    // (16.56 vs 16.61) with the needle tail capped at 20:1 vs 161,000:1 unclamped and visibly
+    // cleaner renders. (The old "unclamped wins" verdicts were measured on the broken
+    // renderer and are void.) Use --max-log-aniso 0 for reference-faithful unclamped.
+    let mut max_log_aniso: f32 = 3.0;
     // Settle-phase prune-only pass every N iters after densification stops (0 = off).
     let mut settle_prune_interval: usize = 0;
     // Opacity resets cap down to this value; reference 0.01. Below the prune threshold
@@ -582,7 +584,7 @@ fn main() {
                 eprintln!("  sugar-train --scene <sparse/0> [--images <dir>] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--image-index I] [--log-interval N] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--learn-position] [--learn-scale] [--learn-rotation] [--learn-sh] [--seed U64] [--out-dir DIR]");
                 eprintln!();
                 eprintln!("  # M8 (multi-view)");
-                eprintln!("  sugar-train --multiview --scene <sparse/0> [--images <dir>] [--max-images N] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--train-fraction F] [--val-interval N] [--max-test-views N] [--log-interval N] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--learn-position] [--learn-scale] [--learn-rotation] [--learn-sh] [--densify-interval N] [--densify-max-gaussians N] [--densify-grad-threshold F] [--prune-opacity-threshold F] [--split-sigma-threshold F] [--max-log-aniso F (0=off, legacy 1.6)] [--settle-prune-interval N (0=off)] [--opacity-reset-floor F (default 0.01)] [--seed U64] [--out-dir DIR]");
+                eprintln!("  sugar-train --multiview --scene <sparse/0> [--images <dir>] [--max-images N] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--train-fraction F] [--val-interval N] [--max-test-views N] [--log-interval N] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--learn-position] [--learn-scale] [--learn-rotation] [--learn-sh] [--densify-interval N] [--densify-max-gaussians N] [--densify-grad-threshold F] [--prune-opacity-threshold F] [--split-sigma-threshold F] [--max-log-aniso F (default 3.0, 0=off)] [--settle-prune-interval N (0=off)] [--opacity-reset-floor F (default 0.01)] [--seed U64] [--out-dir DIR]");
                 eprintln!();
                 eprintln!("  # Auto-detect paths");
                 eprintln!("  sugar-train [--multiview] --dataset-root <root> [--iters N] ...   (auto-detects sparse/0 + images/)");

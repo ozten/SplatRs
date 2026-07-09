@@ -578,6 +578,23 @@ visibly crisper. d500 dipping below d0 at 2k is the known 15-train-view overfit 
 15k pair (`runs/srt15k_unclamped` vs `runs/srt15k_aniso3`, 100 img / 60k cap) launched —
 default flip decision on its result.
 
+**Post-fix 15k pair result (2026-07-08) + DEFAULT FLIPPED to `--max-log-aniso 3.0`:**
+unclamped 16.68 final / 16.61 settle mean / 17.25 settle peak; clamp 3.0 16.37 / 16.56 /
+17.04; clamp leads 9/16 settle evals — a statistical tie on PSNR. Post-fix the unclamped
+tail is far milder than before (p90 37.6 vs 212 pre-fix — correct rotation gradients
+naturally restrain needles) but still reaches max 161,000:1 vs 20.1 pinned. Renders: both
+arms show the best 15k quality of the campaign ("713", ladder rungs, livery stripes all
+legible on the test view); unclamped slightly sharper with visible thin streaks, clamped
+cleaner and softer. Far-novel views (camera 150, outside the trained third of the orbit)
+wash out identically in both arms — a data-coverage limit, not a clamp issue. DECISION:
+default flipped to 3.0 (2k densify wins +0.6/+0.8, 15k tie, artifact tail capped 4 orders
+of magnitude, cleaner renders); `--max-log-aniso 0` restores reference-faithful unclamped.
+Both post-fix 15k arms hit the 60k cap by iter 2500 and their oversize-prune fires all
+window (~10-25/cycle); the bg rails to black mid-settle in BOTH arms (returns @~10000) —
+clamp-independent, still-open pathology (opacity median parked at the 0.010 reset floor,
+88-89% below 0.1 — the reset-floor/settle-prune levers target exactly this).
+New baseline for lever A/Bs: `runs/srt15k_aniso3` (16.37 final / 16.56 settle mean).
+
 3. **Micro-config confound — CONFIRMED as the root of "densification hurts" (2026-07-06).**
    Re-ran the A/B with `--max-images 100` (75 train / 25 test): densify@100 **beats** its
    no-densify baseline for the first time — 15.33 vs 15.10 final, count 8000→22,618 (~3×,
