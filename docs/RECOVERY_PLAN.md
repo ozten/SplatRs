@@ -631,6 +631,16 @@ Next: combo run (`runs/srt15k_a3_floor004_sp500`) + 30k floor004 horizon test
   levers, plus bg→black mid-settle in every arm. Next levers: D3 SH-rest LR / C2 SH warmup
   (SH overfit is a prime decay suspect), full-resolution training, all-views data.
 
+**Full-resolution first attempt (2026-07-09, `runs/srt15k_a3_sp500_fullres`, 980×545,
+same 60k cap/config as the 16.76 half-res run): 13.44 final — NEGATIVE at this capacity.**
+Mechanism (CSV): cap hit by iter 2500 (opac med 0.222, healthy); the iter-3000 opacity
+reset knocked the population to the 0.01 floor and it NEVER recovered — median 0.010 and
+99.9% below 0.1 for the remaining 12k iters, PSNR flat at 13.4 (renders through a
+permanent 0.01-opacity veil). At 4× pixels/Gaussian, post-reset re-earning is too slow at
+this capacity. Full-res needs a proportionally larger cap (200-400k; GPU hard cap 400k)
+and possibly gentler/earlier-only resets — NOT just the flag flip. Half-res 0.5 stays the
+validated config for A/Bs.
+
 3. **Micro-config confound — CONFIRMED as the root of "densification hurts" (2026-07-06).**
    Re-ran the A/B with `--max-images 100` (75 train / 25 test): densify@100 **beats** its
    no-densify baseline for the first time — 15.33 vs 15.10 final, count 8000→22,618 (~3×,
