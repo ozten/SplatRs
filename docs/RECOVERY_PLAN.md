@@ -595,6 +595,25 @@ clamp-independent, still-open pathology (opacity median parked at the 0.010 rese
 88-89% below 0.1 — the reset-floor/settle-prune levers target exactly this).
 New baseline for lever A/Bs: `runs/srt15k_aniso3` (16.37 final / 16.56 settle mean).
 
+**Lever A/Bs vs that baseline (2026-07-08, one lever each, clamp 3.0 active):**
+| Arm | final | settle mean | count | opac med | % < 0.1 |
+|---|---|---|---|---|---|
+| baseline (`srt15k_aniso3`) | 16.37 | 16.56 | 59,984 | 0.010 | 89.1 |
+| `--opacity-reset-floor 0.004` | 16.62 (+0.25) | 15.08 | 59,931 | **0.142** | **45.2** |
+| `--settle-prune-interval 500` | **16.76 (+0.39)** | 16.57 | 58,031 | 0.010 | 84.6 |
+Both levers win on final PSNR. floor004 is the structural fix: the parked-at-0.01
+unprunable mass is GONE (median opacity 0.142 vs 0.010; sub-floor mass gets pruned at the
+next densify pass, and the freed capacity is re-densified — population stays off the cap
+until late window). Cost: a deep mid-run dip (settle mean 15.08, train loss overfit
+signature @10000) — but the arm finished AT its settle maximum, still climbing, so the
+equilibrium is healthier and slower; longer horizons should favor it. sp500 behaves as
+designed (settle prunes remove ~100-300/pass — sub-threshold opacity early, then mostly
+oversize regrowth; needle prune never fires since the clamp prevents needles) and adds
++0.39 dB at zero health change (the 0.01-parked mass sits above the 0.005 prune threshold,
+untouchable without floor004 — the levers are complementary by construction).
+Next: combo run (`runs/srt15k_a3_floor004_sp500`) + 30k floor004 horizon test
+(`runs/srt30k_a3_floor004`) launched overnight.
+
 3. **Micro-config confound — CONFIRMED as the root of "densification hurts" (2026-07-06).**
    Re-ran the A/B with `--max-images 100` (75 train / 25 test): densify@100 **beats** its
    no-densify baseline for the first time — 15.33 vs 15.10 final, count 8000→22,618 (~3×,
