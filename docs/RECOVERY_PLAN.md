@@ -614,6 +614,23 @@ untouchable without floor004 — the levers are complementary by construction).
 Next: combo run (`runs/srt15k_a3_floor004_sp500`) + 30k floor004 horizon test
 (`runs/srt30k_a3_floor004`) launched overnight.
 
+**Overnight results (2026-07-09) + `--settle-prune-interval` DEFAULT now 500:**
+- Combo (floor004+sp500, 15k): 16.40 final / 16.03 settle mean / peak 16.98@5500 — the
+  levers do NOT stack at 15k (floor004's dip dominates; settle prunes remove recovering
+  mass). Health is good (opacity median 0.107) but PSNR trails sp500-alone.
+- floor004 30k horizon test: peak 17.30@10500, settle(15k+) mean 16.38, final 16.05 —
+  the 15k arm's "still climbing" did NOT extrapolate: long settle peaks mid-way then
+  decays. AND the population re-parks at the new floor (median 0.004, 86% <0.1) because
+  the final reset caps everyone and no pruning runs in settle without sp500 — floor004
+  alone just moves the parking lot; only the combo keeps the population healthy.
+- DECISION: `--settle-prune-interval 500` becomes the default (+0.39 clean win, A/B'd);
+  `--opacity-reset-floor` stays 0.01 opt-in (helps health, mixed PSNR, dip + long-horizon
+  decay). Best 15k config now: clamp 3.0 + sp500 = **16.76** (`runs/srt15k_a3_sp500`).
+- The dominant remaining pathology across ALL arms: **PSNR peaks mid-run (~17.0-17.3
+  during the densify window) then decays into the final** — present with and without
+  levers, plus bg→black mid-settle in every arm. Next levers: D3 SH-rest LR / C2 SH warmup
+  (SH overfit is a prime decay suspect), full-resolution training, all-views data.
+
 3. **Micro-config confound — CONFIRMED as the root of "densification hurts" (2026-07-06).**
    Re-ran the A/B with `--max-images 100` (75 train / 25 test): densify@100 **beats** its
    no-densify baseline for the first time — 15.33 vs 15.10 final, count 8000→22,618 (~3×,
