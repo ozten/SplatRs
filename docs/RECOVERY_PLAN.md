@@ -800,6 +800,30 @@ implausibly empty — a 10h run must never silently train on garbage); (b) half-
 full-res with detection armed to capture the exact failing call. The full-res PSNR
 finding (peak 16.02 pre-reset, reset is the blocker) stands — it predates the failure.
 
+**FIX LANDED (2026-07-10): watchdog-safe banded GPU dispatches — high-count rendering
+restored, CPU/GPU parity 0.000000 at 211k Gaussians.** Root cause refined through
+live experiments (each hypothesis tested and most refuted): NOT the per-command-buffer
+~2s watchdog alone, NOT queue poisoning (tiny renders work immediately after a failing
+full-res render, same process), NOT wgpu write_buffer coalescing, NOT allocator
+power-of-two boundaries, NOT a 64 MiB buffer limit (all tested). The killer: **Metal's
+CUMULATIVE GPU watchdog kills ALL in-flight command buffers once unfinished queued work
+crosses ~5s** — every deterministic-zero render measured 5.06-5.08s regardless of config;
+everything under ~4.9s survived; marginal cases dropped a subset of buffers
+(tile/band-aligned partial frames). wgpu 0.19 never checks MTLCommandBuffer status, so
+killed buffers read back as zeroed with Ok. A canary write at the top of the kernel
+proved writes were being discarded wholesale, not misdirected. THE FIX (renderer.rs):
+(1) rasterize + backward dispatches split into row bands (`watchdog_rows_per_band`,
+2.5e9 pixel·gaussian budget per band, `row_offset` in RenderParams / tile params in
+BackwardParams, per-band uniform buffers + bind groups); (2) `device.poll(Wait)` drains
+the queue after EVERY band so in-flight work never accumulates toward the cumulative
+limit. Verified: 211k model renders deterministically correct at every resolution
+(ds 0.5 was flaky all day → now byte-stable across runs); render_compare parity at 211k
+= 0.000000 mean abs diff; full test suite green (only the pre-existing m3 legacy
+failure); 300-iter GPU training smoke shows NO perf regression (forward 21-29ms,
+backward 37-44ms — identical to pre-banding). Gradients across bands are additive
+(atomicAdd per-Gaussian, bg-grads global-pixel indexed), so training math is unchanged.
+This unblocks the 400k cap and full-res directions outright.
+
 **(a) RENDER WATCHDOG LANDED (2026-07-10), ON by default (`--no-render-watchdog` to
 disable).** Three layers: (1) wgpu uncaptured-error handler now sets a global fault flag
 (`gpu::gpu_fault_seen`) instead of only printing; (2) NEW device-lost callback (same

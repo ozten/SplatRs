@@ -19,6 +19,12 @@ struct RenderParams {
     height: u32,
     num_gaussians: u32,
     save_intermediates: u32,  // 1 = save per-pixel state for backward, 0 = don't
+    row_offset: u32,          // First image row this banded dispatch covers (the host
+                              // splits the image into row bands, one command buffer each,
+                              // so no single buffer can hit the Metal ~2s watchdog)
+    pad0: u32,
+    pad1: u32,
+    pad2: u32,
     background: vec4<f32>,    // Background color (r,g,b,pad)
 }
 
@@ -69,7 +75,7 @@ fn blend_gaussian(color_accum: vec3<f32>, transmittance: f32,
 @compute @workgroup_size(16, 16)
 fn rasterize(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let px = global_id.x;
-    let py = global_id.y;
+    let py = global_id.y + params.row_offset;
 
     if (px >= params.width || py >= params.height) {
         return;

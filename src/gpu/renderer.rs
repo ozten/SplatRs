@@ -18,6 +18,21 @@ pub struct GpuRenderer {
     sorter: crate::gpu::sort::BitonicSorter,
 }
 
+/// Rows per banded rasterize/backward submission. The naive per-pixel kernels do
+/// O(pixels × gaussians) work; issued as ONE command buffer, that crosses the macOS/Metal
+/// ~2s command-buffer watchdog above ~100k Gaussians at full-res pixel counts — Metal then
+/// silently aborts the buffer and wgpu 0.19 surfaces no error, so outputs come back zeroed
+/// (root-caused 2026-07-10). Splitting the image into row bands, one command buffer each,
+/// bounds every buffer's work regardless of Gaussian count. The budget targets well under
+/// half the watchdog limit even on a cold/loaded GPU; whole image stays a single band for
+/// typical training loads (60k half-res).
+fn watchdog_rows_per_band(width: u32, height: u32, num_gaussians: usize) -> u32 {
+    const PIXEL_GAUSSIAN_BUDGET: u64 = 2_500_000_000;
+    let per_row = (width as u64).max(1) * (num_gaussians as u64).max(1);
+    let rows = (PIXEL_GAUSSIAN_BUDGET / per_row).max(16) as u32;
+    (rows / 16 * 16).min(height.max(1))
+}
+
 impl GpuRenderer {
     /// Create a new GPU renderer.
     pub fn new() -> Result<Self, String> {
@@ -552,6 +567,8 @@ impl GpuRenderer {
             height: u32,
             num_gaussians: u32,
             save_intermediates: u32,
+            row_offset: u32,
+            pad: [u32; 3],
             background: [f32; 4],
         }
 
@@ -560,15 +577,10 @@ impl GpuRenderer {
             height,
             num_gaussians: num_gaussians as u32,
             save_intermediates: 0, // Don't save intermediates in regular render
+            row_offset: 0,
+            pad: [0; 3],
             background: [background.x, background.y, background.z, 0.0],
         };
-
-        let params_buffer = buffers::create_buffer_init(
-            &self.ctx.device,
-            "Render Params",
-            &[params],
-            BufferUsages::UNIFORM,
-        );
 
         let output_buffer = buffers::create_buffer_zeroed::<[f32; 4]>(
             &self.ctx.device,
@@ -585,52 +597,72 @@ impl GpuRenderer {
             BufferUsages::STORAGE,
         );
 
-        // Create rasterize bind group
-        let rasterize_bind_group =
-            self.ctx
+        // Execute rasterization in row bands — one command buffer per band so no single
+        // buffer can hit the Metal watchdog (see watchdog_rows_per_band). Each band gets
+        // its own params buffer + bind group (same pattern as the bitonic sorter's passes).
+        let rows_per_band = watchdog_rows_per_band(width, height, num_gaussians);
+        let mut row0 = 0u32;
+        while row0 < height {
+            let band_rows = rows_per_band.min(height - row0);
+            let band_params = RenderParams {
+                row_offset: row0,
+                ..params
+            };
+            let params_buffer = buffers::create_buffer_init(
+                &self.ctx.device,
+                "Render Params (band)",
+                &[band_params],
+                BufferUsages::UNIFORM,
+            );
+            let rasterize_bind_group =
+                self.ctx
+                    .device
+                    .create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("Rasterize Bind Group"),
+                        layout: &self.rasterize_bind_group_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: params_buffer.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: sorted_buffer.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: output_buffer.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 3,
+                                resource: pixel_state_buffer.as_entire_binding(),
+                            },
+                        ],
+                    });
+
+            let mut encoder = self
+                .ctx
                 .device
-                .create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("Rasterize Bind Group"),
-                    layout: &self.rasterize_bind_group_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: params_buffer.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: sorted_buffer.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: output_buffer.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 3,
-                            resource: pixel_state_buffer.as_entire_binding(),
-                        },
-                    ],
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Rasterize Encoder"),
                 });
-
-        // Execute rasterization
-        let mut encoder = self
-            .ctx
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Rasterize Encoder"),
-            });
-
-        {
-            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Rasterize Pass"),
-                timestamp_writes: None,
-            });
-            compute_pass.set_pipeline(&self.rasterize_pipeline);
-            compute_pass.set_bind_group(0, &rasterize_bind_group, &[]);
-            compute_pass.dispatch_workgroups((width + 15) / 16, (height + 15) / 16, 1);
+            {
+                let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("Rasterize Pass"),
+                    timestamp_writes: None,
+                });
+                compute_pass.set_pipeline(&self.rasterize_pipeline);
+                compute_pass.set_bind_group(0, &rasterize_bind_group, &[]);
+                compute_pass.dispatch_workgroups((width + 15) / 16, (band_rows + 15) / 16, 1);
+            }
+            self.ctx.queue.submit(Some(encoder.finish()));
+            // Drain the queue before the next band: Metal's cumulative GPU watchdog kills
+            // ALL in-flight command buffers (silently — wgpu 0.19 never checks buffer
+            // status) once unfinished work piles up past ~5s. Waiting per band caps
+            // in-flight work at one band (~0.4s worst case), far from the cliff.
+            self.ctx.device.poll(wgpu::Maintain::Wait);
+            row0 += band_rows;
         }
-
-        self.ctx.queue.submit(Some(encoder.finish()));
 
         // Read back results
         let output: Vec<[f32; 4]> = buffers::read_buffer_blocking(
@@ -880,6 +912,8 @@ impl GpuRenderer {
             height: u32,
             num_gaussians: u32,
             save_intermediates: u32,
+            row_offset: u32,
+            pad: [u32; 3],
             background: [f32; 4],
         }
 
@@ -888,15 +922,10 @@ impl GpuRenderer {
             height,
             num_gaussians: num_gaussians as u32,
             save_intermediates: 1, // SAVE INTERMEDIATES
+            row_offset: 0,
+            pad: [0; 3],
             background: [background.x, background.y, background.z, 0.0],
         };
-
-        let params_buffer = buffers::create_buffer_init(
-            &self.ctx.device,
-            "Render Params",
-            &[params],
-            BufferUsages::UNIFORM,
-        );
 
         let output_buffer = buffers::create_buffer_zeroed::<[f32; 4]>(
             &self.ctx.device,
@@ -913,52 +942,69 @@ impl GpuRenderer {
             BufferUsages::STORAGE | BufferUsages::COPY_SRC, // Allow reading back
         );
 
-        // Create rasterize bind group
-        let rasterize_bind_group =
-            self.ctx
+        // Execute forward pass (rasterization) in watchdog-safe row bands: per-band params
+        // buffer + bind group, and drain the queue after each band so in-flight work never
+        // accumulates toward Metal's cumulative (~5s) GPU watchdog — which kills ALL
+        // in-flight command buffers silently under wgpu 0.19.
+        let rows_per_band = watchdog_rows_per_band(width, height, num_gaussians);
+        let mut row0 = 0u32;
+        while row0 < height {
+            let band_rows = rows_per_band.min(height - row0);
+            let band_params = RenderParams {
+                row_offset: row0,
+                ..params
+            };
+            let params_buffer = buffers::create_buffer_init(
+                &self.ctx.device,
+                "Render Params (band)",
+                &[band_params],
+                BufferUsages::UNIFORM,
+            );
+            let rasterize_bind_group =
+                self.ctx
+                    .device
+                    .create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("Rasterize Bind Group"),
+                        layout: &self.rasterize_bind_group_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: params_buffer.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: sorted_buffer.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: output_buffer.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 3,
+                                resource: pixel_state_buffer.as_entire_binding(),
+                            },
+                        ],
+                    });
+
+            let mut encoder = self
+                .ctx
                 .device
-                .create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("Rasterize Bind Group"),
-                    layout: &self.rasterize_bind_group_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: params_buffer.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: sorted_buffer.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: output_buffer.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 3,
-                            resource: pixel_state_buffer.as_entire_binding(),
-                        },
-                    ],
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Forward Encoder"),
                 });
-
-        // Execute forward pass (rasterization)
-        let mut encoder = self
-            .ctx
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Forward Encoder"),
-            });
-
-        {
-            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Forward Pass"),
-                timestamp_writes: None,
-            });
-            compute_pass.set_pipeline(&self.rasterize_pipeline);
-            compute_pass.set_bind_group(0, &rasterize_bind_group, &[]);
-            compute_pass.dispatch_workgroups((width + 15) / 16, (height + 15) / 16, 1);
+            {
+                let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("Forward Pass"),
+                    timestamp_writes: None,
+                });
+                compute_pass.set_pipeline(&self.rasterize_pipeline);
+                compute_pass.set_bind_group(0, &rasterize_bind_group, &[]);
+                compute_pass.dispatch_workgroups((width + 15) / 16, (band_rows + 15) / 16, 1);
+            }
+            self.ctx.queue.submit(Some(encoder.finish()));
+            self.ctx.device.poll(wgpu::Maintain::Wait);
+            row0 += band_rows;
         }
-
-        self.ctx.queue.submit(Some(encoder.finish()));
 
         // Debug: Inspect per-pixel forward state if requested
         if std::env::var("SUGAR_GPU_DEBUG").is_ok() {
@@ -1050,88 +1096,99 @@ impl GpuRenderer {
             eprintln!("  width={}, height={}, num_gaussians={}", width, height, num_gaussians);
         }
 
+        // Banded via the tile params: per-Gaussian gradients accumulate with atomicAdd and
+        // the bg-gradient buffer is indexed by global pixel, so row bands are additive.
+        // The deep-blend re-walk is the most expensive per-pixel kernel — same Metal
+        // cumulative-watchdog constraint as the forward rasterize, so each band gets its
+        // own params buffer + bind group and the queue is drained between bands.
         let backward_params = BackwardParams {
             width,
             height,
             num_gaussians: num_gaussians as u32,
-            tile_start_x: 0,      // Non-tiled: full image
-            tile_start_y: 0,      // Non-tiled: full image
-            tile_width: width,    // Non-tiled: full image
-            tile_height: height,  // Non-tiled: full image
+            tile_start_x: 0,
+            tile_start_y: 0,
+            tile_width: width,
+            tile_height: height,
             pad: 0,
             background: [background.x, background.y, background.z, 0.0],
         };
 
-        let backward_params_buffer = buffers::create_buffer_init(
-            &self.ctx.device,
-            "Backward Params",
-            &[backward_params],
-            BufferUsages::UNIFORM,
-        );
+        let rows_per_band = watchdog_rows_per_band(width, height, num_gaussians);
+        let mut row0 = 0u32;
+        while row0 < height {
+            let band_rows = rows_per_band.min(height - row0);
+            let band_params = BackwardParams {
+                tile_start_y: row0,
+                tile_height: band_rows,
+                ..backward_params
+            };
+            let backward_params_buffer = buffers::create_buffer_init(
+                &self.ctx.device,
+                "Backward Params (band)",
+                &[band_params],
+                BufferUsages::UNIFORM,
+            );
+            let backward_bind_group =
+                self.ctx
+                    .device
+                    .create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("Backward Bind Group"),
+                        layout: &self.backward_bind_group_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: backward_params_buffer.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: pixel_state_buffer.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 2,
+                                resource: sorted_buffer.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 3,
+                                resource: d_pixels_buffer.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 4,
+                                resource: pixel_grads_buffer.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 5,
+                                resource: d_background_pixels_buffer.as_entire_binding(),
+                            },
+                        ],
+                    });
 
-        // Create backward bind group
-        let backward_bind_group =
-            self.ctx
-                .device
-                .create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("Backward Bind Group"),
-                    layout: &self.backward_bind_group_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: backward_params_buffer.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: pixel_state_buffer.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: sorted_buffer.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 3,
-                            resource: d_pixels_buffer.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 4,
-                            resource: pixel_grads_buffer.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 5,
-                            resource: d_background_pixels_buffer.as_entire_binding(),
-                        },
-                    ],
-                });
-
-        // Execute backward pass
-        let mut encoder = self
-            .ctx
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Backward Encoder"),
-            });
-
-        {
             let wg_x = (width + 15) / 16;
-            let wg_y = (height + 15) / 16;
+            let wg_y = (band_rows + 15) / 16;
 
             if std::env::var("SUGAR_GPU_DEBUG").is_ok() {
-                eprintln!("[GPU DEBUG] Backward pass dispatch:");
+                eprintln!("[GPU DEBUG] Backward band rows {row0}..{}:", row0 + band_rows);
                 eprintln!("  workgroups: ({}, {}, 1)", wg_x, wg_y);
-                eprintln!("  total threads: ({}, {})", wg_x * 16, wg_y * 16);
             }
 
-            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Backward Pass"),
-                timestamp_writes: None,
-            });
-            compute_pass.set_pipeline(&self.backward_pipeline);
-            compute_pass.set_bind_group(0, &backward_bind_group, &[]);
-            compute_pass.dispatch_workgroups(wg_x, wg_y, 1);
+            let mut encoder = self
+                .ctx
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Backward Encoder"),
+                });
+            {
+                let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("Backward Pass"),
+                    timestamp_writes: None,
+                });
+                compute_pass.set_pipeline(&self.backward_pipeline);
+                compute_pass.set_bind_group(0, &backward_bind_group, &[]);
+                compute_pass.dispatch_workgroups(wg_x, wg_y, 1);
+            }
+            self.ctx.queue.submit(Some(encoder.finish()));
+            self.ctx.device.poll(wgpu::Maintain::Wait);
+            row0 += band_rows;
         }
-
-        self.ctx.queue.submit(Some(encoder.finish()));
 
         // Download per-pixel gradients
         let _t_download = if enable_timing {
@@ -1420,4 +1477,23 @@ impl GpuRenderer {
 mod tests {
     use super::*;
 
+    #[test]
+    fn test_watchdog_rows_per_band() {
+        // Typical training load (60k gaussians, half-res): a few bands, 16-row aligned.
+        let r = watchdog_rows_per_band(490, 273, 60_000);
+        assert!(r >= 64 && r <= 273 && r % 16 == 0, "rows={r}");
+        // Full-res at 60k: banded, multiple of the 16-row workgroup height.
+        let r = watchdog_rows_per_band(980, 545, 60_000);
+        assert!(r >= 16 && r < 545 && r % 16 == 0, "rows={r}");
+        // The 2026-07-10 failure regime (211k @ full-res): small bands, never zero.
+        let r = watchdog_rows_per_band(980, 545, 211_022);
+        assert!(r >= 16 && r <= 64, "rows={r}");
+        // Worst case (GPU hard cap): still bounded below by one workgroup row.
+        assert_eq!(watchdog_rows_per_band(980, 545, 400_000), 16);
+        // Degenerate inputs don't panic or return zero.
+        assert!(watchdog_rows_per_band(1, 1, 0) >= 1);
+        // Per-band work never exceeds the budget by more than one workgroup row.
+        let rows = watchdog_rows_per_band(980, 545, 211_022) as u64;
+        assert!(rows * 980 * 211_022 < 11_000_000_000);
+    }
 }
