@@ -815,6 +815,35 @@ healthy 8-iter runs confirmed not to trip with the watchdog on. Had this existed
 full-res run would have aborted at ~iter 11505 with the model at its 14.6 dB state
 instead of burning 3.5h melting it. (b) half-res+400k repro remains next.
 
+**(b+c) ROOT CAUSE PINNED (2026-07-10): the macOS/Metal command-buffer watchdog kills
+the brute-force rasterize dispatch above ~100k Gaussians at full-res pixel counts, and
+wgpu 0.19 surfaces NO error — output buffers come back zeroed/partial.**
+The repro chain: half-res@400k tripped the new render watchdog @iter 3015 (count 211k) —
+first watchdog save in production; test PSNR had degraded from iter ~2200 as count
+crossed ~130k. Offline forensics on the abort model (new tools `examples/truncate_model`
++ `examples/gpu_render_repeat`): (1) truncation bisection first suggested count
+thresholds (broken at 65,536-exact, ≥131,072) but the boundary MOVED between runs —
+100,000 passed twice, then failed; (2) a synthetic 160k depth-stack on a 16×16 image
+passes (tiny pixel count!) — ruling out the sort network and count-indexed logic;
+(3) the smoking timing: N=60,000 renders CONTENT in 1.4s; N=100,000 returns ZEROS in
+99ms — the failing dispatch is not slow, it is KILLED almost instantly; zeros ≠ bg means
+the rasterize never composited (a working pass writes bg into empty pixels).
+Mechanism: rasterize is O(pixels × gaussians) in ONE dispatch (each pixel loops over all
+sorted entries with a bbox skip); at 980×545 × 100k+ the command buffer crosses Metal's
+~2s watchdog → aborted, results discarded, no wgpu error; the boundary breathes with
+GPU clock/load (hence the nondeterminism and the earlier flaky passes). Tile-aligned
+partial frames = workgroups that completed before the kill. The trainer's 490×273 frames
+kept EACH forward under the limit (~200ms @211k) but heavier validation/full-res frames
+crossed it; after a kill the Metal queue can abort subsequent buffers (poisoning), which
+is how full-res went permanently black from iter ~11500 and the half-res trainer's
+frames went constant. This also retro-explains the "renderer stopped compositing"
+finding: not a code bug in the sort/rasterize logic — a platform execution limit.
+FIX DIRECTION: (interim) split rasterize/backward dispatches into row-band submissions
+so each command buffer stays well under the watchdog (~9 bands at full-res, µs-scale
+submission overhead); (real) tile-binned rasterization (reference design) which cuts
+per-pixel work by orders of magnitude and is also the known perf gap. Detection is
+already in place (render watchdog).
+
 3. **Micro-config confound — CONFIRMED as the root of "densification hurts" (2026-07-06).**
    Re-ran the A/B with `--max-images 100` (75 train / 25 test): densify@100 **beats** its
    no-densify baseline for the first time — 15.33 vs 15.10 final, count 8000→22,618 (~3×,
