@@ -42,6 +42,7 @@ fn test_m7_overfit_color_only_tandt_train() {
         lr_scale: 0.005,
         lr_opacity: 0.05,
         lr_sh: 0.0025,
+        lr_sh_rest_div: 1.0,
         lr_background: 0.001,
         learn_background: true,
         learn_opacity: false,

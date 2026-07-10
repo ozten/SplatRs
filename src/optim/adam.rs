@@ -304,6 +304,9 @@ impl AdamSo3 {
 
 pub struct AdamSh16 {
     pub lr: f32,
+    /// D3: rest bands (slots 1..16) step at `lr / rest_lr_div`; the DC slot (0) uses `lr`
+    /// unchanged. Reference 3DGS trains f_rest at feature_lr/20. `1.0` = uniform (legacy).
+    pub rest_lr_div: f32,
     pub beta1: f32,
     pub beta2: f32,
     pub eps: f32,
@@ -313,9 +316,14 @@ pub struct AdamSh16 {
 }
 
 impl AdamSh16 {
-    pub fn new(lr: f32, beta1: f32, beta2: f32, eps: f32) -> Self {
+    pub fn new(lr: f32, rest_lr_div: f32, beta1: f32, beta2: f32, eps: f32) -> Self {
+        assert!(
+            rest_lr_div > 0.0,
+            "rest_lr_div must be positive (1.0 = uniform LR across bands)"
+        );
         Self {
             lr,
+            rest_lr_div,
             beta1,
             beta2,
             eps,
@@ -364,6 +372,7 @@ impl AdamSh16 {
 
         let bias1 = 1.0 - b1.powf(t);
         let bias2 = 1.0 - b2.powf(t);
+        let lr_rest = self.lr / self.rest_lr_div;
 
         for i in 0..params.len() {
             for k in 0..16 {
@@ -377,9 +386,10 @@ impl AdamSh16 {
                 let m_hat = self.m[i][k] / bias1;
                 let v_hat = self.v[i][k] / bias2;
 
-                let step_x = self.lr * m_hat.x / (v_hat.x.sqrt() + self.eps);
-                let step_y = self.lr * m_hat.y / (v_hat.y.sqrt() + self.eps);
-                let step_z = self.lr * m_hat.z / (v_hat.z.sqrt() + self.eps);
+                let lr_k = if k == 0 { self.lr } else { lr_rest };
+                let step_x = lr_k * m_hat.x / (v_hat.x.sqrt() + self.eps);
+                let step_y = lr_k * m_hat.y / (v_hat.y.sqrt() + self.eps);
+                let step_z = lr_k * m_hat.z / (v_hat.z.sqrt() + self.eps);
                 if !step_x.is_finite() || !step_y.is_finite() || !step_z.is_finite() {
                     continue;
                 }
@@ -394,6 +404,41 @@ impl AdamSh16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_adamsh16_rest_lr_div() {
+        // After one step from zero moments with constant grad g: step ≈ lr·sign(g),
+        // so slot 0 (DC) moves by ~lr and slots 1..16 by ~lr/div.
+        let lr = 0.1f32;
+        let div = 20.0f32;
+        let mut opt = AdamSh16::new(lr, div, 0.9, 0.999, 1e-8);
+        let mut params = vec![[Vector3::<f32>::zeros(); 16]];
+        let grads = vec![[Vector3::new(1.0, 1.0, 1.0); 16]];
+
+        opt.step(&mut params, &grads);
+
+        let dc_step = -params[0][0].x;
+        assert!((dc_step - lr).abs() < 1e-4, "DC step {dc_step} should be ~lr {lr}");
+        for k in 1..16 {
+            let rest_step = -params[0][k].x;
+            assert!(
+                (rest_step - lr / div).abs() < 1e-5,
+                "rest slot {k} step {rest_step} should be ~lr/div {}",
+                lr / div
+            );
+        }
+
+        // div = 1.0 reproduces the legacy uniform behavior.
+        let mut opt_uniform = AdamSh16::new(lr, 1.0, 0.9, 0.999, 1e-8);
+        let mut params_u = vec![[Vector3::<f32>::zeros(); 16]];
+        opt_uniform.step(&mut params_u, &grads);
+        for k in 0..16 {
+            assert!(
+                (params_u[0][k].x - params_u[0][0].x).abs() < 1e-7,
+                "uniform div=1.0 should step all slots equally"
+            );
+        }
+    }
 
     #[test]
     fn test_adam_preserves_timestep_on_resize() {

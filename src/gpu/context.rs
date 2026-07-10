@@ -1,6 +1,18 @@
 //! GPU context management - wgpu device and queue initialization.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use wgpu::{Device, Features, Instance, Limits, Queue, RequestAdapterOptions};
+
+/// Set when wgpu reports an uncaptured error or device loss. The 2026-07-10 full-res run
+/// lost the rasterizer mid-training with zero errors surfacing in the trainer — training
+/// then ran 3.5k iterations against background-only frames and destroyed the model.
+/// Training loops poll this (see the render watchdog in `optim::trainer`) so a GPU fault
+/// aborts the run instead of silently corrupting it.
+static GPU_FAULT: AtomicBool = AtomicBool::new(false);
+
+pub fn gpu_fault_seen() -> bool {
+    GPU_FAULT.load(Ordering::Relaxed)
+}
 
 pub struct GpuContext {
     pub device: Device,
@@ -61,7 +73,12 @@ impl GpuContext {
             .map_err(|e| format!("Failed to create device: {}", e))?;
 
         device.on_uncaptured_error(Box::new(|e| {
+            GPU_FAULT.store(true, Ordering::Relaxed);
             eprintln!("[wgpu] uncaptured error: {e}");
+        }));
+        device.set_device_lost_callback(Box::new(|reason, msg| {
+            GPU_FAULT.store(true, Ordering::Relaxed);
+            eprintln!("[wgpu] DEVICE LOST ({reason:?}): {msg}");
         }));
 
         Ok(Self { device, queue })

@@ -35,6 +35,7 @@ fn test_m9_densify_smoke_tandt() {
         lr_scale: 0.005,
         lr_opacity: 0.05,
         lr_sh: 0.0025,
+        lr_sh_rest_div: 1.0,
         lr_background: 0.001,
         learn_background: true,
         learn_opacity: false,
@@ -50,6 +51,8 @@ fn test_m9_densify_smoke_tandt() {
         max_test_views_for_metrics: 1,
         log_interval: 0,
         opacity_reset_interval: 0, // disabled for this short smoke test
+        opacity_reset_window_margin: 0,
+        render_watchdog: true,
         opacity_reset_floor: 0.01,
         settle_prune_interval: 0,
         densify_interval: 2,

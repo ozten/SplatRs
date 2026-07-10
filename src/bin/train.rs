@@ -154,6 +154,18 @@ fn main() {
     // Opacity resets cap down to this value; reference 0.01. Below the prune threshold
     // (micro: 0.005) makes never-recovering mass prunable.
     let mut opacity_reset_floor: f32 = 0.01;
+    // Skip opacity resets in the last N iters of the densify window (0 = reference behavior,
+    // last reset can land AT the window end → population enters settle freshly floored; the
+    // 30k control's settle flatlined 0.75 dB below peak). A/B lever: try 2500.
+    let mut opacity_reset_window_margin: usize = 0;
+    // D3: SH rest bands (1..16) train at lr_sh / this divisor; DC keeps lr_sh. Reference 3DGS
+    // uses 20 (f_rest at feature_lr/20) — our uniform LR trains the rest bands 20× too fast,
+    // a prime suspect for the mid-run peak→decay. Default 1.0 (legacy uniform) until the
+    // 15k A/B validates; run the D3 arm with --sh-rest-lr-div 20.
+    let mut sh_rest_lr_div: f32 = 1.0;
+    // Render watchdog (2026-07-10): abort + save model when the GPU pipeline dies silently
+    // (wgpu fault, or consecutive background-only frames). ON by default.
+    let mut render_watchdog: bool = true;
 
     fn apply_preset(
         name: &str,
@@ -525,6 +537,7 @@ fn main() {
             "--lr-scale" => lr_scale = args.next().unwrap().parse().unwrap(),
             "--lr-opacity" => lr_opacity = args.next().unwrap().parse().unwrap(),
             "--lr-sh" => lr_sh = args.next().unwrap().parse().unwrap(),
+            "--sh-rest-lr-div" => sh_rest_lr_div = args.next().unwrap().parse().unwrap(),
             "--lr-background" => lr_background = args.next().unwrap().parse().unwrap(),
             "--downsample" => {
                 downsample = args.next().unwrap().parse().unwrap();
@@ -574,6 +587,8 @@ fn main() {
             "--max-log-aniso" => max_log_aniso = args.next().unwrap().parse().unwrap(),
             "--settle-prune-interval" => settle_prune_interval = args.next().unwrap().parse().unwrap(),
             "--opacity-reset-floor" => opacity_reset_floor = args.next().unwrap().parse().unwrap(),
+            "--opacity-reset-window-margin" => opacity_reset_window_margin = args.next().unwrap().parse().unwrap(),
+            "--no-render-watchdog" => render_watchdog = false,
             "--gpu" => use_gpu = true,
             "--cpu" | "--no-gpu" => use_gpu = false,
             "--disable-sh" => disable_sh = true,
@@ -719,6 +734,7 @@ fn main() {
             lr_scale,
             lr_opacity,
             lr_sh,
+            lr_sh_rest_div: sh_rest_lr_div,
             lr_background,
             learn_background,
             learn_opacity,
@@ -747,11 +763,13 @@ fn main() {
             },
             opacity_reset_interval: 3000,
             opacity_reset_floor,
+            opacity_reset_window_margin,
             settle_prune_interval,
             use_gpu,
             csv_output_path: Some(final_out_dir.join("metrics.csv")),
             out_dir: final_out_dir.clone(),
             disable_sh,
+            render_watchdog,
         };
 
         let out = sugar_rs::optim::trainer::train_multiview_color_only(&cfg)
@@ -864,6 +882,7 @@ fn main() {
             lr_scale,
             lr_opacity,
             lr_sh,
+            lr_sh_rest_div: sh_rest_lr_div,
             lr_background,
             learn_background,
             learn_opacity,

@@ -221,6 +221,9 @@ pub struct TrainConfig {
     pub lr_scale: f32,
     pub lr_opacity: f32,
     pub lr_sh: f32,
+    /// D3: SH rest bands (1..16) train at `lr_sh / lr_sh_rest_div`; DC keeps `lr_sh`.
+    /// Reference 3DGS uses 20. `1.0` = uniform across bands (legacy behavior).
+    pub lr_sh_rest_div: f32,
     pub lr_background: f32,
     pub learn_background: bool,
     pub learn_opacity: bool,
@@ -481,7 +484,7 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
     let mut bg_opt = AdamVec3::new(cfg.lr_background, 0.9, 0.999, 1e-8);
 
     // Optimizer state for SH coeffs (RGB × 16).
-    let mut sh_opt = AdamSh16::new(cfg.lr_sh, 0.9, 0.999, 1e-8);
+    let mut sh_opt = AdamSh16::new(cfg.lr_sh, cfg.lr_sh_rest_div, 0.9, 0.999, 1e-8);
     let mut opacity_opt = AdamF32::new(cfg.lr_opacity, 0.9, 0.999, 1e-8);
     let mut position_opt = AdamVec3::new(cfg.lr_position, 0.9, 0.999, 1e-8);
     let mut scale_opt = AdamVec3::new(cfg.lr_scale, 0.9, 0.999, 1e-8);
@@ -880,6 +883,49 @@ pub fn guess_sparse0_from_dataset_root(root: &Path) -> Option<PathBuf> {
 // M8: Multi-View Training
 // ============================================================================
 
+/// B3 + window-margin gate: should an opacity reset fire at 1-based iteration `iter1`?
+/// Resets fire every `interval` iterations inside the densify window, but never in the
+/// last `margin` iterations before `window_end` (so the population enters settle having
+/// re-earned opacity, with densification still active to restructure).
+pub fn opacity_reset_due(iter1: usize, interval: usize, window_end: usize, margin: usize) -> bool {
+    interval > 0 && iter1 % interval == 0 && iter1 + margin <= window_end
+}
+
+/// Render-watchdog detector: is this frame essentially dead — pure background, or a
+/// constant color (e.g. all zeros from a failed pipeline)? Samples every 7th pixel and
+/// reports true when >99% of samples sit within ~1.5/255 of the background constant OR of
+/// the first sampled pixel. A working renderer never produces this on a real training view
+/// (past init the model always composites varied content); a silently failed GPU pipeline
+/// does — see the 2026-07-10 full-res collapse, where frames went background-only with no
+/// wgpu error surfacing.
+pub fn frame_is_background_only(img: &[Vector3<f32>], bg: &Vector3<f32>) -> bool {
+    const EPS: f32 = 1.5 / 255.0;
+    if img.is_empty() {
+        return true;
+    }
+    let near = |a: &Vector3<f32>, b: &Vector3<f32>| {
+        let d = a - b;
+        d.x.abs() < EPS && d.y.abs() < EPS && d.z.abs() < EPS
+    };
+    let first = img[0];
+    let mut bg_px = 0usize;
+    let mut const_px = 0usize;
+    let mut total = 0usize;
+    let mut i = 0;
+    while i < img.len() {
+        if near(&img[i], bg) {
+            bg_px += 1;
+        }
+        if near(&img[i], &first) {
+            const_px += 1;
+        }
+        total += 1;
+        i += 7;
+    }
+    let limit = 0.99 * (total as f32);
+    (bg_px as f32) > limit || (const_px as f32) > limit
+}
+
 pub struct MultiViewTrainConfig {
     pub sparse_dir: PathBuf,
     pub images_dir: PathBuf,
@@ -892,6 +938,9 @@ pub struct MultiViewTrainConfig {
     pub lr_scale: f32,
     pub lr_opacity: f32,
     pub lr_sh: f32,
+    /// D3: SH rest bands (1..16) train at `lr_sh / lr_sh_rest_div`; DC keeps `lr_sh`.
+    /// Reference 3DGS uses 20. `1.0` = uniform across bands (legacy behavior).
+    pub lr_sh_rest_div: f32,
     pub lr_background: f32,
     pub learn_background: bool,
     pub learn_opacity: bool,
@@ -936,6 +985,13 @@ pub struct MultiViewTrainConfig {
     /// floor unprunable. Setting this BELOW `prune_opacity_threshold` lets the next prune pass
     /// remove never-recovering Gaussians instead.
     pub opacity_reset_floor: f32,
+    /// Skip opacity resets in the last N iterations of the densify window (0 = reference
+    /// behavior, resets fire right up to the window end). With the reference schedule the LAST
+    /// reset lands AT the window end (e.g. iter 15000 of a 30k run), so the population enters
+    /// the settle phase freshly floored with no densification left to restructure — the 30k
+    /// control's settle flatlined 0.75 dB below peak. A margin lets the population re-earn
+    /// opacity (with densification still active) before the window closes.
+    pub opacity_reset_window_margin: usize,
     /// Settle-phase prune: after densification stops (iter > iters/2), run a prune-only pass
     /// every N iterations (0 disables). Applies the same prune rules as densify-time
     /// (sub-threshold opacity, needles, oversize, outliers) but never splits/clones — without
@@ -950,6 +1006,11 @@ pub struct MultiViewTrainConfig {
     pub out_dir: PathBuf,
     /// Disable SH: treat sh_coeffs[0] as RGB color directly, ignore higher bands.
     pub disable_sh: bool,
+    /// Render watchdog: abort (saving the model for forensics) when a wgpu fault is
+    /// recorded or several consecutive train renders come back as pure background. The
+    /// 2026-07-10 full-res run lost the GPU rasterizer mid-training with no surfaced
+    /// error and spent 3.5k iterations training against background-only frames.
+    pub render_watchdog: bool,
 }
 
 pub struct MultiViewTrainOutputs {
@@ -1564,7 +1625,7 @@ pub fn train_multiview_color_only(
     let mut bg_opt = AdamVec3::new(cfg.lr_background, 0.9, 0.999, 1e-8);
 
     // Optimizer state for SH coeffs (RGB × 16)
-    let mut sh_opt = AdamSh16::new(cfg.lr_sh, 0.9, 0.999, 1e-8);
+    let mut sh_opt = AdamSh16::new(cfg.lr_sh, cfg.lr_sh_rest_div, 0.9, 0.999, 1e-8);
     let mut opacity_opt = AdamF32::new(cfg.lr_opacity, 0.9, 0.999, 1e-8);
     let mut position_opt = AdamVec3::new(cfg.lr_position, 0.9, 0.999, 1e-8);
     let mut scale_opt = AdamVec3::new(cfg.lr_scale, 0.9, 0.999, 1e-8);
@@ -1691,6 +1752,21 @@ pub fn train_multiview_color_only(
         "position lr = {:.6} -> {:.8} over {} steps (spatial_lr_scale = {:.3}); other LRs constant",
         position_lr_init, position_lr_final, POSITION_LR_MAX_STEPS as usize, scene_extent
     );
+    eprintln!(
+        "sh lr = {:.6} (DC), {:.6} (rest bands, div {})",
+        cfg.lr_sh,
+        cfg.lr_sh / cfg.lr_sh_rest_div,
+        cfg.lr_sh_rest_div
+    );
+    if cfg.opacity_reset_interval > 0 && cfg.opacity_reset_window_margin > 0 {
+        eprintln!(
+            "opacity resets: every {} iters, gated to iter <= {} (window end {} − margin {})",
+            cfg.opacity_reset_interval,
+            (cfg.iters / 2).saturating_sub(cfg.opacity_reset_window_margin),
+            cfg.iters / 2,
+            cfg.opacity_reset_window_margin
+        );
+    }
 
     // Training loop: sample random views
     let mut train_loss = 0.0f32;
@@ -1705,6 +1781,10 @@ pub fn train_multiview_color_only(
     let mut last_grad_p50: f32 = 0.0;
     let mut last_grad_p90: f32 = 0.0;
     let mut last_gaussian_stats: GaussianStats = GaussianStats::default();
+
+    // Render-watchdog state: consecutive background-only frames.
+    const WATCHDOG_STRIKES_TO_TRIP: usize = 5;
+    let mut watchdog_strikes: usize = 0;
 
     for iter in 0..cfg.iters {
         // D2: position-only exponential schedule; all other LRs stay at their configured values.
@@ -1816,6 +1896,72 @@ pub fn train_multiview_color_only(
         train_loss = loss; // Track most recent loss
         let train_psnr = compute_psnr(&rendered_linear, &train_target_linear);
         let t_forward = t0.elapsed();
+
+        // Render watchdog: a wgpu fault or a streak of background-only frames means the
+        // renderer is gone — abort loudly with the model saved rather than keep training
+        // against garbage (which destroys the model within a few hundred iterations).
+        if cfg.render_watchdog {
+            #[cfg(feature = "gpu")]
+            let gpu_fault = crate::gpu::gpu_fault_seen();
+            #[cfg(not(feature = "gpu"))]
+            let gpu_fault = false;
+
+            if frame_is_background_only(&rendered_linear, &bg) {
+                watchdog_strikes += 1;
+            } else {
+                watchdog_strikes = 0;
+            }
+
+            if gpu_fault || watchdog_strikes >= WATCHDOG_STRIKES_TO_TRIP {
+                for (i, g) in gaussians.iter_mut().enumerate() {
+                    for k in 0..16 {
+                        g.sh_coeffs[k][0] = sh_params[i][k].x;
+                        g.sh_coeffs[k][1] = sh_params[i][k].y;
+                        g.sh_coeffs[k][2] = sh_params[i][k].z;
+                    }
+                    g.opacity = opacity_logits[i].clamp(-10.0, 10.0);
+                    g.position = positions[i];
+                    g.scale = log_scales[i];
+                    g.rotation = rotations[i];
+                }
+                let cloud = crate::core::GaussianCloud {
+                    gaussians: gaussians.clone(),
+                };
+                let (bounds_min, bounds_max) = crate::io::compute_bounds(&cloud.gaussians);
+                let metadata = crate::io::ModelMetadata {
+                    num_gaussians: cloud.gaussians.len() as u64,
+                    sh_degree: 3,
+                    bounds_min,
+                    bounds_max,
+                    training_iterations: (iter + 1) as u64,
+                    training_psnr: train_psnr,
+                    compression: crate::io::Compression::None,
+                    training_width: train_camera.width,
+                    training_height: train_camera.height,
+                    training_downsample_factor: cfg.downsample_factor,
+                    dataset_path: String::new(),
+                };
+                let abort_path = cfg.out_dir.join("model_at_watchdog_abort.gs");
+                if let Err(e) = crate::io::save_model(&abort_path, &cloud, &metadata) {
+                    eprintln!("watchdog: failed to save abort model: {e}");
+                }
+                let reason = if gpu_fault {
+                    "wgpu reported an uncaptured error or device loss".to_string()
+                } else {
+                    format!(
+                        "{WATCHDOG_STRIKES_TO_TRIP} consecutive train renders were pure background \
+                         (renderer output is background-only; GPU pipeline presumed dead)"
+                    )
+                };
+                anyhow::bail!(
+                    "RENDER WATCHDOG tripped @iter {}/{}: {reason}. Model saved to {:?}. \
+                     Disable with --no-render-watchdog if this is a false positive.",
+                    iter + 1,
+                    cfg.iters,
+                    abort_path
+                );
+            }
+        }
 
         // Backward
         let t1 = Instant::now();
@@ -2274,10 +2420,13 @@ pub fn train_multiview_color_only(
         // half of training, matching B7): the settle phase must run reset-free so the model can
         // converge — the Phase-3 15k run ended mid-recovery from an iter-12000 reset (13.78 at
         // 13500 → only 14.02 at 15000) because resets kept firing after densification stopped.
-        if cfg.opacity_reset_interval > 0
-            && (iter + 1) % cfg.opacity_reset_interval == 0
-            && (iter + 1) <= cfg.iters / 2
-        {
+        // The window-margin gate additionally holds back resets near the window end (see config).
+        if opacity_reset_due(
+            iter + 1,
+            cfg.opacity_reset_interval,
+            cfg.iters / 2,
+            cfg.opacity_reset_window_margin,
+        ) {
             let reset_cap = crate::core::inverse_sigmoid(cfg.opacity_reset_floor);
             for i in 0..opacity_logits.len() {
                 opacity_logits[i] = opacity_logits[i].min(reset_cap);
@@ -2689,5 +2838,59 @@ mod tests {
         // PSNR = 10 * log10(1.0 / 0.01) = 10 * log10(100) = 20.0
         let psnr = compute_psnr(&rendered, &target);
         assert_relative_eq!(psnr, 20.0, epsilon = 1e-5);
+    }
+
+    #[test]
+    fn test_frame_is_background_only() {
+        let bg = Vector3::new(0.2, 0.2, 0.2);
+        let n = 490 * 273;
+
+        // Pure background frame → trips.
+        let empty = vec![bg; n];
+        assert!(frame_is_background_only(&empty, &bg));
+
+        // 5% of pixels carry content (well above the 1% tolerance) → does not trip.
+        let mut content = vec![bg; n];
+        for i in 0..n / 20 {
+            content[i * 20] = Vector3::new(0.8, 0.4, 0.1);
+        }
+        assert!(!frame_is_background_only(&content, &bg));
+
+        // Background-only except one small patch (~2%) — the 2026-07-10 failure shape → trips.
+        let mut patch = vec![bg; n];
+        for i in 0..n / 50 {
+            patch[i] = Vector3::new(0.5, 0.5, 0.9);
+        }
+        // patch is contiguous at the start; stride-7 sampling still sees ~2% non-bg... which
+        // is above 1%, so this must NOT trip — the real failure had >99% background.
+        assert!(!frame_is_background_only(&patch, &bg));
+        let mut tiny_patch = vec![bg; n];
+        for i in 0..n / 300 {
+            tiny_patch[i] = Vector3::new(0.5, 0.5, 0.9);
+        }
+        assert!(frame_is_background_only(&tiny_patch, &bg));
+
+        // Constant frame that does NOT match bg (e.g. all zeros from a dead pipeline while
+        // bg is gray) still trips via the constant-frame condition.
+        let black = vec![Vector3::zeros(); n];
+        assert!(frame_is_background_only(&black, &bg));
+    }
+
+    #[test]
+    fn test_opacity_reset_due_window_margin() {
+        // Reference behavior (margin 0): resets at every interval up to and including window end.
+        assert!(opacity_reset_due(3000, 3000, 15000, 0));
+        assert!(opacity_reset_due(15000, 3000, 15000, 0));
+        assert!(!opacity_reset_due(18000, 3000, 15000, 0)); // settle phase
+        assert!(!opacity_reset_due(3001, 3000, 15000, 0)); // off-interval
+        assert!(!opacity_reset_due(3000, 0, 15000, 0)); // disabled
+
+        // Margin 2500 on a 30k run (window end 15000): last reset moves to 12000.
+        assert!(opacity_reset_due(12000, 3000, 15000, 2500));
+        assert!(!opacity_reset_due(15000, 3000, 15000, 2500));
+
+        // Margin 2500 on a 15k run (window end 7500): only the 3000 reset survives.
+        assert!(opacity_reset_due(3000, 3000, 7500, 2500));
+        assert!(!opacity_reset_due(6000, 3000, 7500, 2500));
     }
 }
