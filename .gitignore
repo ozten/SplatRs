@@ -40,3 +40,6 @@ flamegraph.svg
 perf.data
 perf.data.old
 *.folded
+
+# README/docs images are tracked despite the global *.png ignore
+!docs/images/*.png

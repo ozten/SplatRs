@@ -504,7 +504,11 @@ SH-rest LR, C2 SH warmup.
 
 **Critical visual finding on the bwfix models (2026-07-08): PSNR hides needles.** Renders of
 `bwfix_15k_100img_60k` show real structure (locomotive "713" legible) but are dominated by
-needle streak artifacts (anisotropy p90 = 212×), much worse on novel views. The earlier
+needle streak artifacts (anisotropy p90 = 212×), much worse on novel views.
+
+![needle streaks swamp the scene at 16.25 dB](images/needles_bwfix_16dB.png)
+
+The earlier
 "unclamped anisotropy wins" A/B (settle-mean +0.26 dB) was measured on a gradient-starved
 population AND on a GPU that lacked the EWA low-pass — it is invalid post-fix. Always eyeball
 renders alongside PSNR (`sugar-render --model <run>/model.gs --camera-id N --dataset-root
@@ -631,15 +635,185 @@ Next: combo run (`runs/srt15k_a3_floor004_sp500`) + 30k floor004 horizon test
   levers, plus bg→black mid-settle in every arm. Next levers: D3 SH-rest LR / C2 SH warmup
   (SH overfit is a prime decay suspect), full-resolution training, all-views data.
 
+Best-config (`srt15k_a3_sp500`, 16.76) held-out view over training:
+
+| iter 500 | iter 5,000 | iter 15,000 | ground truth |
+|---|---|---|---|
+| ![iter 500](images/train_iter00500.png) | ![iter 5,000](images/train_iter05000.png) | ![iter 15,000](images/train_iter15000.png) | ![ground truth](images/train_ground_truth.png) |
+
 **Full-resolution first attempt (2026-07-09, `runs/srt15k_a3_sp500_fullres`, 980×545,
 same 60k cap/config as the 16.76 half-res run): 13.44 final — NEGATIVE at this capacity.**
 Mechanism (CSV): cap hit by iter 2500 (opac med 0.222, healthy); the iter-3000 opacity
 reset knocked the population to the 0.01 floor and it NEVER recovered — median 0.010 and
 99.9% below 0.1 for the remaining 12k iters, PSNR flat at 13.4 (renders through a
-permanent 0.01-opacity veil). At 4× pixels/Gaussian, post-reset re-earning is too slow at
+permanent 0.01-opacity veil):
+
+![full-res @60k renders through a permanent 0.01-opacity veil](images/fullres_60kcap_opacity_veil.png)
+
+At 4× pixels/Gaussian, post-reset re-earning is too slow at
 this capacity. Full-res needs a proportionally larger cap (200-400k; GPU hard cap 400k)
 and possibly gentler/earlier-only resets — NOT just the flag flip. Half-res 0.5 stays the
 validated config for A/Bs.
+
+**D3 SH-rest LR landed + 15k A/B (2026-07-09): `--sh-rest-lr-div` (rest bands at
+lr_sh/div, DC unchanged; reference 3DGS uses 20). Default stays 1.0 — the reference value
+LOST on PSNR at 15k but FIXED bg→black:**
+| Arm | final | settle mean | peak | peak−final | darkest bg | final bg | % opac < 0.1 |
+|---|---|---|---|---|---|---|---|
+| control (`srt15k_a3_sp500`) | **16.76** | 16.57 | 17.09 @14000 | +0.33 | (0,0,0) @8500 | (0.03,0.06,0.06) | 84.6 |
+| `--sh-rest-lr-div 20` (`srt15k_a3_sp500_shdiv20`) | 16.43 | 16.33 | 16.72 @8500 | +0.29 | (0.07,0.10,0.13) @10500 | (0.21,0.23,0.26) | 93.8 |
+Two findings. (1) **The SH-overfit decay hypothesis is refuted at this horizon**: slowing
+rest bands 20× leaves the peak→final gap unchanged (+0.29 vs +0.33) — the mid-run
+peak-then-decay is NOT driven by SH-rest LR. (2) **Fast rest bands were driving the
+background black**: the div-20 arm's bg never goes darker than (0.07,0.10,0.13) and ends
+at a sensible gray, vs the control railing to (0,0,0) mid-settle — first lever to move
+this pathology at real view counts. PSNR/visual cost (−0.33 final, "713" render visibly
+softer) is consistent with rest bands being UNDER-trained at 15k with 1/20 LR — reference
+tunes div 20 for a 30k horizon.
+
+| div-20 arm @15k (softer, bg healthy) | control @15k (sharper, bg→black) | ground truth |
+|---|---|---|
+| ![div-20 final render](images/d3_shdiv20_iter15000.png) | ![control final render](images/train_iter15000.png) | ![ground truth](images/train_ground_truth.png) |
+
+Open follow-ups: div-20 at 30k (does it catch up and does
+the 30k decay shrink?), intermediate div 5–10 at 15k, and C2 SH warmup (progressive
+degree enable) as the remaining reference-faithful SH lever. Startup log now records
+`sh lr = <dc> (DC), <rest> (rest bands, div N)`; unit test pins slot-0 vs rest step sizes.
+
+**All-views 15k DONE (2026-07-09, `runs/srt15k_a3_sp500_allviews_r2`, `--max-images 0` =
+301 images, 225 train/76 test; first attempt was externally interrupted @6801, partial
+data in `runs/srt15k_a3_sp500_allviews`): final 15.44 / settle mean 16.01 / peak 16.51
+@10000 on the 76-view denominator (NOT comparable to 25-view numbers).** Three reads:
+(1) **all-views ALSO fixes bg→black** — darkest bg (0.164,0.169,0.181), final
+(0.19,0.19,0.21); second lever to move it (after sh-rest div 20), and this one costs no
+sharpness — consistent with bg→black being an overfit symptom that either view coverage
+or slow SH constrains. (2) **The peak→decay is WORSE with 3× views**: within-run gap
++1.07 (16.51@10000 → 15.44@15000) vs the 100-image control's +0.33 — decay is NOT
+view-starvation; more data made it larger at fixed capacity/horizon. (3) Opacity pileup
+is untouched by views (median 0.010, 80% <0.1) — it tracks the reset schedule, not data.
+Render: "WESTERN PACIFIC" legible on a novel view, no fog, no black bg. 30k horizon pair
+(control `srt30k_a3_sp500` + div-20 arm) queued next.
+
+**30k control DONE (2026-07-09, `runs/srt30k_a3_sp500`, best-15k config at the reference
+horizon; NOTE the schedule scales with iters — densify window/opacity resets run to
+15000, settle is 15000-30000): final 16.33 — doubling the horizon LOST 0.4 dB vs the 15k
+schedule's 16.76.** Trajectory: peak 17.05 @11500 (mid-window), window mean 16.69
+(7500-15000), then settle is FLAT at ~16.3 (15000-22500 mean 16.28, 22500-30000 mean
+16.26) — the extra 15k settle iters bought nothing (16.27 at the 15k mark → 16.30 final).
+Clean-config confirmation of the peak→decay at horizon (gap +0.75, no floor004 confound),
+and a new structural suspect: with the reference schedule the LAST opacity reset lands AT
+the window end (iter 15000), so the population enters settle freshly floored (median
+0.010, 90% <0.1 at the end) with no densification left to restructure — the 15k schedule
+enters settle 1500 iters after its last reset instead. bg railed to black @11500 and only
+partially recovered (sum 0.38 by 30000). div-20 arm at the same 30k schedule running for
+the horizon-matched D3 read.
+
+**30k div-20 DONE (2026-07-09, `runs/srt30k_a3_sp500_shdiv20`) — D3 VERDICT FINAL: the
+"under-trained at 15k, catches up at 30k" hypothesis is REFUTED; div 20 got WORSE with
+horizon.** Final 15.26 vs control 16.30 (−1.04, vs −0.33 at 15k), peak 16.50@8000, gap
++1.24, settle segments 15.27 → 15.14 (drifting down while the control holds 16.3). It
+again kept the bg healthy (darkest 0.105,0.127,0.139 vs control's pure black @11500;
+final 0.39,0.41,0.44) — but all-views buys the same bg fix at zero PSNR cost, so div 20
+has no remaining niche. `--sh-rest-lr-div` stays default 1.0; keep the flag for future
+schedule work (a mid-value or DC-boost variant remains unexplored). Render @30k: soft,
+"713" barely legible — visibly worse than the 15k control.
+
+**Synthesis of the day's four runs (D3 15k/30k, all-views, 30k control) — where the
+decay hunt stands:** SH-rest LR is ruled out at both horizons; view count is ruled out
+(3× views made the gap LARGER: +1.07); horizon extension doesn't recover it (30k settle
+flatlines 0.75 below peak). The strongest remaining suspect is the **reset-at-window-end
+structure**: every arm peaks mid-densify-window between opacity resets, decays into the
+window's final resets, and enters settle floored (median 0.010, 90-94% <0.1) with no
+densification left to restructure — the 15k schedule (last reset @6000, window end 7500,
+settle CLIMBS) vs 30k (last reset AT window end 15000, settle FLAT) contrast fits, as
+does full-res @60k's post-reset collapse. Next lever: gate opacity resets to end ~2500
+iters before the densify window closes (reference trains 30k with window 15k — its last
+reset @15000 mirrors ours, but reference has 6-30× our capacity headroom to re-earn
+through). A reset-gate A/B also de-risks the full-res @400k run, whose first attempt died
+of exactly this reset-recovery failure. C2 SH warmup remains untested for the decay.
+
+**Reset-gate landed + 30k A/B (2026-07-10): `--opacity-reset-window-margin N` (skip
+resets in the last N iters of the densify window; predicate `opacity_reset_due` unit
+tested; default 0 = reference). Margin 2500 (last reset 15000→12000) vs the 30k control —
+PARTIAL confirmation, +0.18 final:**
+| Arm | final | peak | gap | settle entry @15500 | settle1/settle2 mean |
+|---|---|---|---|---|---|
+| control (reset @15000) | 16.30 | 17.05 @11500 | +0.75 | 16.19 | 16.33 / 16.22 |
+| `rg2500` (reset @12000) | **16.48** | 17.05 @10500 | +0.57 | **16.72** | 16.58 / 16.25 |
+Confirmed: entering settle recovered instead of freshly floored is worth +0.5 dB at
+settle entry and +0.18 at final. NOT confirmed: the decay itself — the gated arm still
+drifts 16.72 → 16.48 across settle (and both arms peak at an identical 17.05 mid-window),
+so a SECOND decay mechanism operates DURING settle, independent of the entry state.
+Settle-phase suspects, none yet isolated: settle-prune side effects, train-set overfit
+(though all-views made decay WORSE, which fits poorly), late-window densify churn at the
+cap. Also unchanged by the gate: bg→black @10500 (in-window resets still drive it),
+opacity median parked at 0.010 / 87% <0.1. 30k with gate (16.48) still trails the 15k
+schedule (16.76). Verdict: margin 2500 is a clean win, keep opt-in pending a 15k-schedule
+A/B; full-res @400k relaunched WITH the gate (`runs/srt15k_fullres_400k_rg2500`).
+
+**Full-res @400k + gate (2026-07-10, `runs/srt15k_fullres_400k_rg2500`): final 9.02 —
+CATASTROPHIC SETTLE COLLAPSE, a NEW BUG, plus one clean finding before it.** The clean
+finding first: the run peaked **16.02 @3000, immediately BEFORE the iter-3000 opacity
+reset** (vs 13.44 for the 60k-cap attempt), the reset floored the population (median
+0.010 from 4500 onward, count stalled at 176k of the 400k cap — post-reset gradients too
+weak to drive densification at 4× pixels), and it plateaued ~14.6-14.7. Full-res
+conclusion: **the reset itself is the blocker, not capacity** — next full-res arm should
+run `--opacity-reset-interval 0` (or a much higher floor), not more Gaussians.
+THE NEW BUG: between iter 11000 and ~11500 the model progressively collapsed (train view
+17.90 @10901 → 15.22 @11101 → 10.57 @11201 → 9.11 @11301; TRAIN loss degrades too, so
+not overfit/eval artifact; PSNR pinned ~9.2 for the rest of the run). Forensics:
+(1) collapse begins immediately after the routine iter-11000 settle prune (87 removed —
+identical prunes had fired every 500 iters since 8000 without incident); (2) the final
+model is numerically CLEAN — `examples/scan_model.rs` (new forensic tool): zero
+non-finite values, max world scale 0.89, max |SH| 5.7, positions bounded — but renders as
+pure structureless fog through the independent sugar-render path, so the PARAMETERS
+melted, not the trainer's eval; (3) population medians sat frozen through the collapse
+(floor-parked majority masks per-Gaussian drift). Prime suspects, in order: **B11 Adam
+moment remap corruption on prune** (mis-sourced moments → hundreds of bounded-but-wrong
+Adam steps → structure melts to fog with no NaN, exactly this signature) and a **GPU
+backward buffer issue above ~131k (2^17) Gaussians** (this run spent 9k iters at 142-176k
+— far above the 60k any prior run reached; though count crossed 131k @~6000, 5k iters
+before the collapse). Cheapest discriminating repro: same run with
+`--settle-prune-interval 0` — no prunes → no remaps in settle; if it survives, B11 remap
+is implicated; if it still collapses, suspect the GPU backward at high count.
+
+**Code audit + forensics (2026-07-10) — ROOT CAUSE CLASS FOUND, prior suspects
+EXONERATED: silent GPU pipeline failure, not an optimizer bug.**
+Audit trail: (1) B11 remap CLEAN — all four `remap_moments_keep_t` implementations
+correct (survivor-indexed, OOB-safe, unit-tested), both call sites remap all five
+optimizers; (2) GPU buffers created fresh per call, sort uses full-u32 source indices
+(no bit-packing overflow), dispatch counts fine at 262k padded; (3) alpha clamped 0.99
+identically in forward AND backward (T-rewalk division safe); (4) opacity histogram of
+the collapsed model shows an anomalous strong tail (25% >0.5 vs 8.8% healthy) but the CSV
+proves the distribution FROZE by iter 8000 and did not move through the collapse — alpha
+inflation was not the trigger. THE SMOKING GUN: the trainer's saved render at iter 11500
+(`m8_test_view_rendered_11500.png`) is background-only black except ONE rectangular patch
+with tile-aligned stair-stepped boundaries — the GPU rasterizer silently stopped
+compositing most of the frame at full-res/176k Gaussians. Zero GPU errors in the log; the
+`GPU render failed` CPU-fallback never fired — wgpu returned corrupted frames as Ok.
+Training then ran ~3500 iters against garbage frames, which is what actually melted the
+model (erratic train loss 0.09→0.8 = per-view intermittency at onset, then permanent).
+NEXT (in order): (a) add wgpu error scopes + device-lost callback + a cheap black-frame
+watchdog in the trainer (abort loudly / CPU-fallback when a render comes back
+implausibly empty — a 10h run must never silently train on garbage); (b) half-res +
+400k-cap repro (~3h) to discriminate count vs full-res pixels as the trigger; (c) rerun
+full-res with detection armed to capture the exact failing call. The full-res PSNR
+finding (peak 16.02 pre-reset, reset is the blocker) stands — it predates the failure.
+
+**(a) RENDER WATCHDOG LANDED (2026-07-10), ON by default (`--no-render-watchdog` to
+disable).** Three layers: (1) wgpu uncaptured-error handler now sets a global fault flag
+(`gpu::gpu_fault_seen`) instead of only printing; (2) NEW device-lost callback (same
+flag); (3) per-iteration frame detector `frame_is_background_only` (stride-7 sampling,
+trips when >99% of samples are within 1.5/255 of the bg constant OR of a constant frame
+color — catches both the observed bg-only failure and an all-zeros pipeline). Trip rule:
+any wgpu fault, or 5 CONSECUTIVE dead train frames → sync params → save
+`<out_dir>/model_at_watchdog_abort.gs` (with metadata, iteration, last train PSNR) →
+abort with a loud message. Unit tests pin the detector (bg-only trips, 5% content
+doesn't, tiny 0.3% patch trips, off-bg constant frame trips); trip path exercised
+end-to-end via a forced trigger (abort fired @iter 4, model saved, message correct);
+healthy 8-iter runs confirmed not to trip with the watchdog on. Had this existed, the
+full-res run would have aborted at ~iter 11505 with the model at its 14.6 dB state
+instead of burning 3.5h melting it. (b) half-res+400k repro remains next.
 
 3. **Micro-config confound — CONFIRMED as the root of "densification hurts" (2026-07-06).**
    Re-ran the A/B with `--max-images 100` (75 train / 25 test): densify@100 **beats** its
