@@ -923,6 +923,25 @@ window-peak−settle-mean metric (peak−final is uninformative). Position-LR fr
 secondary candidate. This makes 15k the WRONG testbed for mechanism #2 — all future
 decay-mechanism A/Bs go at 30k.
 
+**30k DECAY HUNT LAUNCHED (2026-07-13, IN PROGRESS) — drift + reset batch.** Landed
+`--settle-needle-prune-log-aniso F` (commit e6b97bc): a tighter needle-prune threshold used
+ONLY by the settle-phase prune pass (0=off). The default needle threshold is clamp+0.4=3.4,
+above the 3.0 clamp, so needle-prune never fires and the needling decile parks AT the clamp
+(aniso_p90 climbs into it over settle); this lets settle prunes remove that mass. Batch
+`scripts/settle_decay_hunt_30k.sh` (detached serial, ~4-5h/run → ~13.5h), all vs a fresh
+same-binary control:
+- `srt30k_ctrl_banded` — fresh 30k control (baseline + binary-stability re-check at 30k).
+- `srt30k_sd_needle25` — `--settle-needle-prune-log-aniso 2.5` (geometric-drift arm, highest
+  prior: does pruning the needling parked mass hold the settle nearer the window peak?).
+- `srt30k_sd_rg5000` — `--opacity-reset-window-margin 5000` (last reset 15000→9000, 6000 iters
+  of densify+re-earn before settle vs rg2500's 12000; targets the window→settle level drop,
+  extends the reset-gate +0.18).
+Read with `scripts/settle_decay_analyze.sh` PLUS the slope + (window-peak − settle-mean)
+metric (peak−final is uninformative — it's noise). Success = an arm that raises the settle
+mean toward the window peak (control gap ~0.7) and/or flattens the negative settle slope.
+Also track count/aniso_p90/scale_median settle drift (the drift arm should curb them).
+Status/logs: `runs/settle_decay_hunt_30k.status`, `runs/srt30k_*.log`. RESULTS PENDING.
+
 **(a) RENDER WATCHDOG LANDED (2026-07-10), ON by default (`--no-render-watchdog` to
 disable).** Three layers: (1) wgpu uncaptured-error handler now sets a global fault flag
 (`gpu::gpu_fault_seen`) instead of only printing; (2) NEW device-lost callback (same
