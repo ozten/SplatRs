@@ -998,6 +998,16 @@ pub struct MultiViewTrainConfig {
     /// it the population is frozen for the entire settle phase and pathological Gaussians that
     /// survive the densify window can never be removed.
     pub settle_prune_interval: usize,
+    /// Settle-decay hunt: freeze ALL spherical-harmonics updates (DC + rest bands) once the
+    /// densify window closes (iter > iters/2). Isolates whether continued SH optimization during
+    /// the settle phase drives the universal peak-then-decay: every arm peaks mid-densify-window
+    /// and settles ~1 dB below. D3 (`--sh-rest-lr-div`) ruled out SH-*rest* LR as the driver; this
+    /// is the stronger test (freezes DC too, and freezes rather than merely slowing).
+    pub freeze_sh_after_window: bool,
+    /// Settle-decay hunt: freeze the learnable background color once the densify window closes
+    /// (iter > iters/2). bg→black mid-settle is a universal co-symptom of the decay; freezing bg
+    /// at its window-close value tests whether the drifting background drives the PSNR decline.
+    pub freeze_bg_in_settle: bool,
     /// Use GPU for forward rendering.
     pub use_gpu: bool,
     /// Optional CSV output path for metrics logging.
@@ -1758,6 +1768,14 @@ pub fn train_multiview_color_only(
         cfg.lr_sh / cfg.lr_sh_rest_div,
         cfg.lr_sh_rest_div
     );
+    if cfg.freeze_sh_after_window || cfg.freeze_bg_in_settle {
+        eprintln!(
+            "settle-decay hunt: freeze_sh_after_window = {}, freeze_bg_in_settle = {} (applied for iter > {})",
+            cfg.freeze_sh_after_window,
+            cfg.freeze_bg_in_settle,
+            cfg.iters / 2
+        );
+    }
     if cfg.opacity_reset_interval > 0 && cfg.opacity_reset_window_margin > 0 {
         eprintln!(
             "opacity resets: every {} iters, gated to iter <= {} (window end {} − margin {})",
@@ -2032,7 +2050,10 @@ pub fn train_multiview_color_only(
         }
 
         let t2 = Instant::now();
-        sh_opt.step(&mut sh_params, &d_sh);
+        // Settle-decay hunt: optionally freeze SH once the densify window closes (iter > iters/2).
+        if !(cfg.freeze_sh_after_window && (iter + 1) > cfg.iters / 2) {
+            sh_opt.step(&mut sh_params, &d_sh);
+        }
         if cfg.learn_opacity {
             opacity_opt.step(&mut opacity_logits, &d_opacity_logits);
         }
@@ -2087,7 +2108,8 @@ pub fn train_multiview_color_only(
         if cfg.learn_rotation {
             rotation_opt.step(&mut rotations, &d_rot_vecs);
         }
-        if cfg.learn_background {
+        // Settle-decay hunt: optionally freeze bg once the densify window closes (iter > iters/2).
+        if cfg.learn_background && !(cfg.freeze_bg_in_settle && (iter + 1) > cfg.iters / 2) {
             let mut bg_param = vec![bg];
             let bg_grad = vec![d_bg];
             bg_opt.step(&mut bg_param, &bg_grad);

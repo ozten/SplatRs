@@ -824,6 +824,105 @@ backward 37-44ms — identical to pre-banding). Gradients across bands are addit
 (atomicAdd per-Gaussian, bg-grads global-pixel indexed), so training math is unchanged.
 This unblocks the 400k cap and full-res directions outright.
 
+**Full-res@400k v2 DONE (2026-07-11, `runs/srt15k_fullres_400k_rg2500_v2`, fixed banded
+renderer + gate 2500 + watchdog, ~25h wall): final 15.01 / peak 16.10@3000 / settle mean
+15.00, count 8000→212,452, NO watchdog trips — the first full-res run to ever complete
+healthy at >200k Gaussians.** Verdicts: (1) **v1's "permanent opacity veil / reset is the
+blocker" conclusion is REVISED — post-reset recovery WORKS on the fixed renderer**
+(16.10 pre-reset → 13.18 crater → steady climb to 15.02 by window close; v1 flatlined
+dead here) — the permanent veil was the GPU bug. (2) BUT the universal peak-then-never-
+recovered structure holds at full-res too: the pre-reset peak 16.10 was never re-attained
+(settle flat ~15.0, gap −1.1) — same mechanism-#2 signature as every arm. A no-reset
+full-res arm is the obvious next lever (does skipping the iter-3000 reset keep 16.1+?).
+(3) Population blew through every old barrier: 213k (v1 stalled 176k; the 131k failure
+zone passed clean), opacity health best-ever for full-res (60% <0.1 vs v1's 99.9%) but
+median still parked 0.010 and bg→black returned mid-settle (universal pathologies,
+unchanged). (4) Raw 15.01 vs half-res 16.76 is not apples-to-apples (4× pixel
+denominator); the final render has the sharpest detail of the campaign ("713" + door
+hardware crisp at native res) inside streaky haze. (5) COST: ~9.4s/iter at 213k full-res
+(2.9s fwd + 5.5s bwd) → 25h for 15k iters — the practical case for tile-binned
+rasterization; per the roadmap decision, it lands AFTER the half-res lever queue and a
+golden parity/PSNR-floor regression harness, with the naive renderer kept as an oracle.
+
+**SETTLE-DECAY MECHANISM HUNT LAUNCHED (2026-07-12) — half-res 60k A/B batch, IN PROGRESS.**
+The dominant remaining pathology after the whole campaign is "mechanism #2": every arm peaks
+mid-densify-window (~17.0-17.3) and settles ~0.3-1.1 dB below, never re-attaining the peak.
+The reset-gate A/B (margin 2500) proved a SECOND decay operates *during* settle, independent
+of the entry state (both arms peaked identically 17.05, gated arm still drifted 16.72→16.48).
+Ruled out so far: SH-*rest* LR (D3), view count (all-views made the gap larger), horizon (30k
+settle flatlines). This batch isolates the remaining settle-phase suspects, one lever per arm,
+all one-lever-different from a FRESH control re-run on the current banded-renderer binary (the
+d8dd9a7 banding fix postdates `srt15k_a3_sp500`; a same-binary control removes any drift
+confound and re-validates the 16.76 baseline). New flags landed this session (`src/bin/train.rs`
++ `src/optim/trainer.rs`, guards parallel to `--settle-prune-interval`, startup log line, both
+default off, test fixtures + build w/ `--features gpu` green, 100-iter smoke confirms the
+guards fire for iter > iters/2):
+- `--freeze-sh-after-window` — freeze ALL SH (DC + rest) once the densify window closes.
+  Stronger than D3 (freezes DC too, and freezes rather than slows). Tests continued-SH-opt
+  as the driver. LOWEST prior (D3 partially exonerated SH), runs last.
+- `--freeze-bg-in-settle` — freeze the learnable bg at its window-close value. bg→black
+  mid-settle is a universal co-symptom; tests the drifting background as the driver. HIGH prior.
+- `--settle-prune-interval 0` (exists) — no settle prunes. Tests settle-prune side-effects,
+  an explicitly-unisolated suspect from the reset-gate notes. HIGH prior.
+
+Batch (`scripts/settle_decay_hunt.sh`, detached serial, single GPU to avoid the cumulative
+watchdog, ~2h/run → ~8h): `srt15k_ctrl_banded` (fresh control) → `srt15k_sd_freezebg` →
+`srt15k_sd_sp0` → `srt15k_sd_freezesh` (ordered highest-prior first). Read with
+`scripts/settle_decay_analyze.sh` (validated: reproduces the documented control 16.76 /
+peak 17.09@14000 / gap +0.33 / bg→black / opac 0.010 and shdiv20 16.43 / bg 0.298 exactly).
+Metric = col3 psnr at VAL iters (multiples of 500 = full-test evals; per-100-iter rows are
+noisy single-view logs). Success = an arm that SHRINKS the peak−final gap (currently +0.33
+control). Also tracked per arm: darkest settle bg-sum (bg→black), final opacity_median/low%
+(parking).
+
+**SETTLE-DECAY HUNT DONE (2026-07-12, ~6.5h, all 4 arms rc=0) — THE 15k "DECAY" IS A
+MEASUREMENT ARTIFACT; the real decay is a 30k-only phenomenon. Three suspects ruled out.**
+| arm | final | settle mean | settle SLOPE | darkest bg | vs control |
+|---|---|---|---|---|---|
+| `srt15k_ctrl_banded` (fresh, same binary) | 16.87 | 16.89 | **+0.003**/1k | 0.049 | baseline |
+| `srt15k_sd_freezebg` | 16.67 | 16.67 | +0.003/1k | 0.223 | −0.20 |
+| `srt15k_sd_sp0` (--settle-prune-interval 0) | 16.78 | 16.64 | +0.006/1k | 0.000 | −0.09 |
+| `srt15k_sd_freezesh` | 16.27 | 16.34 | **−0.063**/1k | 0.065 | −0.60 |
+(pre-banding ref `srt15k_a3_sp500` = 16.76, +0.33 gap — fresh control 16.87 reproduces it
+within noise, so the banding fix introduced NO drift; the 16.76 half-res baseline stands.)
+
+Findings, in order of importance:
+1. **THE 15k SETTLE HAS NO DECAY.** The control's settle-phase (iter>7500) linear slope is
+   +0.003 dB/1000-iter (flat→up), settle mean 16.89 sits ABOVE the window mean 16.76 and
+   level with the window peak. The "+0.31 peak−final gap" that the whole campaign chased is a
+   **max-minus-last statistical artifact**: E[max of 16 samples of N(16.9, σ0.18)] ≈ mean +
+   1.77σ ≈ +0.32, while the final ≈ mean. Predicts +0.32; measured +0.31. It is noise, not
+   decay. This retro-explains why EVERY prior 15k lever A/B found "no effect on the decay" —
+   there was no decay at 15k to move.
+2. **bg-drift RULED OUT.** freezebg pinned bg bit-exact at (0.041,0.078,0.105) for the entire
+   settle (fully eliminating bg→black; control drifts to sum 0.049 mid-settle) — slope
+   unchanged, final −0.20. bg→black is a symptom; letting bg recover freely ends BETTER than
+   pinning it. (First test to hold bg perfectly constant; prior levers only slowed it.)
+3. **settle-prune side-effects RULED OUT.** sp0 (no settle prunes) slope +0.006, gap identical
+   to control; small −0.09 final (reconfirms sp500 is a minor net win, not a decay driver).
+4. **SH EXONERATED — it is a POSITIVE contributor, not a decay cause.** freezesh is the ONLY
+   arm with a real negative slope (−0.063/1k) and it peaks at 6500 (BEFORE the freeze):
+   continued SH optimization is what HOLDS the 15k plateau up and slightly climbing; freezing
+   it manufactures the only 15k decay in the batch and costs 0.60 dB. With D3 (slow rest-SH
+   lost 1.04 @30k), SH clearly wants to keep training — constraining it always hurts.
+
+**Where the REAL decay lives (existing-30k-data mining, no new runs):** the 30k settle plateau
+sits 0.6–0.8 dB BELOW the window peak (17.05@11500 → settle mean 16.27, >2σ, real; gated arm
+slope −0.043/1k). From window-peak to settle-end THREE things drift monotonically with the
+PSNR drop: count 59,969→56,111 (settle prunes erode ~3,900, no densify to refill), aniso_p90
+17.2→20.0 (climbs INTO the max_log_aniso=3.0 clamp — population needling), scale_median +11%
+(Gaussians inflating), all while opacity stays parked 0.010 / 90% <0.1. Picture: the large
+parked/near-dead sub-population slowly drifts to degenerate geometry over the long settle with
+no densification to refresh good Gaussians, PLUS a level drop at the window→settle transition
+(last reset floors the pop; reset-gate only partly closed it, +0.18). The 15k schedule enters
+settle 1500 iters after its last reset AND is short enough that this drift never accumulates —
+hence flat. NEXT (needs 30k runs, ~4-5h each): test the geometric-drift hypothesis at 30k
+(tighter settle aniso clamp / settle needle-prune / scale reg) and/or the last-reset level
+drop (no-reset or larger window-margin) against a fresh 30k banded control, with the slope +
+window-peak−settle-mean metric (peak−final is uninformative). Position-LR freeze is a
+secondary candidate. This makes 15k the WRONG testbed for mechanism #2 — all future
+decay-mechanism A/Bs go at 30k.
+
 **(a) RENDER WATCHDOG LANDED (2026-07-10), ON by default (`--no-render-watchdog` to
 disable).** Three layers: (1) wgpu uncaptured-error handler now sets a global fault flag
 (`gpu::gpu_fault_seen`) instead of only printing; (2) NEW device-lost callback (same

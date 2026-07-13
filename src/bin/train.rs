@@ -163,6 +163,13 @@ fn main() {
     // a prime suspect for the mid-run peak→decay. Default 1.0 (legacy uniform) until the
     // 15k A/B validates; run the D3 arm with --sh-rest-lr-div 20.
     let mut sh_rest_lr_div: f32 = 1.0;
+    // Settle-decay hunt (2026-07-12): isolation arms for the universal peak→settle decay.
+    // Freeze SH (DC + rest) once the densify window closes — tests continued-SH-optimization
+    // as the settle-phase decay driver (D3 ruled out rest-band LR; this freezes DC too).
+    let mut freeze_sh_after_window: bool = false;
+    // Freeze the learnable bg once the densify window closes — tests bg→black drift (a universal
+    // co-symptom of the decay) as the driver.
+    let mut freeze_bg_in_settle: bool = false;
     // Render watchdog (2026-07-10): abort + save model when the GPU pipeline dies silently
     // (wgpu fault, or consecutive background-only frames). ON by default.
     let mut render_watchdog: bool = true;
@@ -588,6 +595,8 @@ fn main() {
             "--settle-prune-interval" => settle_prune_interval = args.next().unwrap().parse().unwrap(),
             "--opacity-reset-floor" => opacity_reset_floor = args.next().unwrap().parse().unwrap(),
             "--opacity-reset-window-margin" => opacity_reset_window_margin = args.next().unwrap().parse().unwrap(),
+            "--freeze-sh-after-window" => freeze_sh_after_window = true,
+            "--freeze-bg-in-settle" => freeze_bg_in_settle = true,
             "--no-render-watchdog" => render_watchdog = false,
             "--gpu" => use_gpu = true,
             "--cpu" | "--no-gpu" => use_gpu = false,
@@ -602,7 +611,7 @@ fn main() {
                 eprintln!("  sugar-train --scene <sparse/0> [--images <dir>] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--image-index I] [--log-interval N] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--learn-position] [--learn-scale] [--learn-rotation] [--learn-sh] [--seed U64] [--out-dir DIR]");
                 eprintln!();
                 eprintln!("  # M8 (multi-view)");
-                eprintln!("  sugar-train --multiview --scene <sparse/0> [--images <dir>] [--max-images N] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--train-fraction F] [--val-interval N] [--max-test-views N] [--log-interval N] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--learn-position] [--learn-scale] [--learn-rotation] [--learn-sh] [--densify-interval N] [--densify-max-gaussians N] [--densify-grad-threshold F] [--prune-opacity-threshold F] [--split-sigma-threshold F] [--max-log-aniso F (default 3.0, 0=off)] [--settle-prune-interval N (default 500, 0=off)] [--opacity-reset-floor F (default 0.01)] [--seed U64] [--out-dir DIR]");
+                eprintln!("  sugar-train --multiview --scene <sparse/0> [--images <dir>] [--max-images N] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--train-fraction F] [--val-interval N] [--max-test-views N] [--log-interval N] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--learn-position] [--learn-scale] [--learn-rotation] [--learn-sh] [--densify-interval N] [--densify-max-gaussians N] [--densify-grad-threshold F] [--prune-opacity-threshold F] [--split-sigma-threshold F] [--max-log-aniso F (default 3.0, 0=off)] [--settle-prune-interval N (default 500, 0=off)] [--opacity-reset-floor F (default 0.01)] [--opacity-reset-window-margin N] [--sh-rest-lr-div N] [--freeze-sh-after-window] [--freeze-bg-in-settle] [--seed U64] [--out-dir DIR]");
                 eprintln!();
                 eprintln!("  # Auto-detect paths");
                 eprintln!("  sugar-train [--multiview] --dataset-root <root> [--iters N] ...   (auto-detects sparse/0 + images/)");
@@ -765,6 +774,8 @@ fn main() {
             opacity_reset_floor,
             opacity_reset_window_margin,
             settle_prune_interval,
+            freeze_sh_after_window,
+            freeze_bg_in_settle,
             use_gpu,
             csv_output_path: Some(final_out_dir.join("metrics.csv")),
             out_dir: final_out_dir.clone(),
