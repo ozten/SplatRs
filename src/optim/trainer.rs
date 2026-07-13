@@ -1008,6 +1008,15 @@ pub struct MultiViewTrainConfig {
     /// (iter > iters/2). bg→black mid-settle is a universal co-symptom of the decay; freezing bg
     /// at its window-close value tests whether the drifting background drives the PSNR decline.
     pub freeze_bg_in_settle: bool,
+    /// 30k settle-decay hunt: needle-prune log-anisotropy threshold used ONLY by the settle-phase
+    /// prune pass (0 disables → falls back to `needle_prune_log_anisotropy`). The normal needle
+    /// threshold sits ABOVE the `max_log_anisotropy` clamp (clamp+0.4), so needle-prune never
+    /// fires — the population parks AT the clamp (aniso_p90 climbs 17→20 over the 30k settle,
+    /// clamped but unpruned). A tighter settle threshold (e.g. 2.0, below the 3.0 clamp) makes
+    /// the settle prune actually remove the needling parked mass instead of just reshaping it
+    /// (tightening the clamp inflates scale; pruning frees capacity). Densify-time pruning is
+    /// unchanged.
+    pub settle_needle_prune_log_aniso: f32,
     /// Use GPU for forward rendering.
     pub use_gpu: bool,
     /// Optional CSV output path for metrics logging.
@@ -1776,6 +1785,12 @@ pub fn train_multiview_color_only(
             cfg.iters / 2
         );
     }
+    if cfg.settle_needle_prune_log_aniso > 0.0 {
+        eprintln!(
+            "settle-decay hunt: settle needle-prune log-aniso = {:.2} (settle prunes only; densify-time = {:.2})",
+            cfg.settle_needle_prune_log_aniso, cfg.needle_prune_log_anisotropy
+        );
+    }
     if cfg.opacity_reset_interval > 0 && cfg.opacity_reset_window_margin > 0 {
         eprintln!(
             "opacity resets: every {} iters, gated to iter <= {} (window end {} − margin {})",
@@ -2489,7 +2504,12 @@ pub fn train_multiview_color_only(
                 f32::INFINITY,
                 cfg.prune_opacity_threshold,
                 cfg.split_sigma_threshold,
-                cfg.needle_prune_log_anisotropy,
+                // 30k settle-decay hunt: tighter needle threshold for settle prunes only.
+                if cfg.settle_needle_prune_log_aniso > 0.0 {
+                    cfg.settle_needle_prune_log_aniso
+                } else {
+                    cfg.needle_prune_log_anisotropy
+                },
                 scene_extent,
             );
             sh_opt.remap_moments_keep_t(&remap);
