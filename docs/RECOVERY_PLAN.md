@@ -940,7 +940,37 @@ Read with `scripts/settle_decay_analyze.sh` PLUS the slope + (window-peak − se
 metric (peak−final is uninformative — it's noise). Success = an arm that raises the settle
 mean toward the window peak (control gap ~0.7) and/or flattens the negative settle slope.
 Also track count/aniso_p90/scale_median settle drift (the drift arm should curb them).
-Status/logs: `runs/settle_decay_hunt_30k.status`, `runs/srt30k_*.log`. RESULTS PENDING.
+
+**30k DECAY HUNT DONE (2026-07-13, ~9.5h, all rc=0) — MECHANISM CONFIRMED: the needling
+parked mass drives the 30k decay. The drift arm is a clear metric AND visual win.**
+| run | window peak | settle mean | slope | wpeak−smean | count end | aniso_p90 end |
+|---|---|---|---|---|---|---|
+| `srt30k_ctrl_banded` (fresh control) | 17.06 | 16.34 | −0.032/1k | +0.72 | 56,081 | 20.0 (clamp) |
+| `srt30k_a3_sp500_rg2500` (prior) | 17.05 | 16.41 | −0.043/1k | +0.64 | — | — |
+| `srt30k_sd_rg5000` (reset arm) | 17.25 | 16.27 | −0.011/1k | +0.98 | 56,762 | 20.0 |
+| `srt30k_sd_needle25` (drift arm) | 17.07 | **16.58** | −0.049/1k | **+0.49** | 33,995 | **7.1** |
+Fresh control re-validates the 30k baseline (settle mean 16.34 ≈ pre-banding 16.27, real
++0.72 decay, same count/aniso/scale drift) — no renderer drift at 30k either.
+- **DRIFT ARM (`--settle-needle-prune-log-aniso 2.5`) — WIN.** Settle mean +0.24 (≈4× its
+  standard error), decay gap +0.72→+0.49 (−32%), final +0.20. Mechanically exactly as
+  predicted: aniso_p90 drops from the 20.0 clamp to 7.1 (needling ELIMINATED; 24,670 needles
+  pruned over 29 settle passes), and the control's ugly early-settle dip (15.68@18000) is
+  erased (needle25 holds 16.87). VISUAL: control renders are covered in needle streaks
+  (severe on close/novel views like cam88); needle25 removes them cleanly — softer but
+  coherent, NOT PSNR hiding a regression. **The needling parked mass was net-harmful; pruning
+  it lifts the fit.** Caveats: threshold 2.5 is aggressive (count 60k→34k, −43%; the pruned
+  mass was harmful so this is OK, but a gentler threshold ~2.8 may keep the gain with less
+  loss), and survivor scale inflated more (+34% vs +5%) — the residual negative slope
+  (−0.049) is now scale-driven, a SECOND mechanism the needle prune doesn't touch.
+- **RESET ARM (`--opacity-reset-window-margin 5000`) — NEGATIVE.** Last reset 15000→9000
+  overshoots the rg2500 sweet spot: settle mean 16.27 (−0.07 vs control), worse gap +0.98
+  (though flattest slope −0.011). More margin isn't better; the window→settle level drop is
+  not the main lever (rg2500's +0.18 remains the reset optimum). Confirms the decay is
+  geometric-drift-driven, not reset-driven.
+NEXT (candidates): (1) gentler needle threshold 2.8 at 30k (keep the win, less count loss);
+(2) needle 2.5-2.8 + reset-gate 2500 COMBINED (stack the drift win with the reset optimum);
+(3) target the residual scale-inflation slope (settle oversize-prune tighten / scale reg).
+Status/logs: `runs/settle_decay_hunt_30k.status`, `runs/srt30k_*.log`.
 
 **(a) RENDER WATCHDOG LANDED (2026-07-10), ON by default (`--no-render-watchdog` to
 disable).** Three layers: (1) wgpu uncaptured-error handler now sets a global fault flag
