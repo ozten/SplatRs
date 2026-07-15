@@ -891,6 +891,19 @@ pub fn opacity_reset_due(iter1: usize, interval: usize, window_end: usize, margi
     interval > 0 && iter1 % interval == 0 && iter1 + margin <= window_end
 }
 
+/// C2 SH warmup: how many SH coefficients are active at 0-based iteration `iter`?
+/// Reference 3DGS starts DC-only and raises the active degree by one every
+/// `oneupSHdegree` interval (1000 iters) up to degree 3; degree d uses (d+1)^2
+/// coefficients, so the unlock sequence is 1 → 4 → 9 → 16. `interval == 0` disables
+/// the warmup (all 16 active from the start, the pre-C2 behavior).
+pub fn active_sh_coeffs(warmup_interval: usize, iter: usize) -> usize {
+    if warmup_interval == 0 {
+        return 16;
+    }
+    let degree = (iter / warmup_interval).min(3);
+    (degree + 1) * (degree + 1)
+}
+
 /// Render-watchdog detector: is this frame essentially dead — pure background, or a
 /// constant color (e.g. all zeros from a failed pipeline)? Samples every 7th pixel and
 /// reports true when >99% of samples sit within ~1.5/255 of the background constant OR of
@@ -1008,6 +1021,13 @@ pub struct MultiViewTrainConfig {
     /// (iter > iters/2). bg→black mid-settle is a universal co-symptom of the decay; freezing bg
     /// at its window-close value tests whether the drifting background drives the PSNR decline.
     pub freeze_bg_in_settle: bool,
+    /// C2 SH warmup: raise the active SH degree by one every this many iterations (reference
+    /// 3DGS `oneupSHdegree`, 1000), starting DC-only; degree d activates (d+1)^2 coefficients
+    /// (1 → 4 → 9 → 16). Locked coefficients are skipped by the SH optimizer entirely, which is
+    /// state-identical to reference truncated-degree rendering because rest bands init to zero
+    /// (zero coefficient ⇒ zero color contribution ⇒ zero gradient). 0 disables (all bands
+    /// train from iter 0, the pre-C2 behavior).
+    pub sh_warmup_interval: usize,
     /// Needle-prune log-anisotropy threshold used ONLY by the settle-phase prune pass
     /// (0 disables → falls back to `needle_prune_log_anisotropy`). The normal needle threshold
     /// sits ABOVE the `max_log_anisotropy` clamp (clamp+0.4), so needle-prune never fires — the
@@ -1791,6 +1811,13 @@ pub fn train_multiview_color_only(
             cfg.settle_needle_prune_log_aniso, cfg.needle_prune_log_anisotropy
         );
     }
+    if cfg.sh_warmup_interval > 0 {
+        eprintln!(
+            "C2 SH warmup: active degree 0->3, +1 every {} iters (coeffs 1->4->9->16, all 16 from iter {})",
+            cfg.sh_warmup_interval,
+            cfg.sh_warmup_interval * 3
+        );
+    }
     if cfg.opacity_reset_interval > 0 && cfg.opacity_reset_window_margin > 0 {
         eprintln!(
             "opacity resets: every {} iters, gated to iter <= {} (window end {} − margin {})",
@@ -2067,7 +2094,12 @@ pub fn train_multiview_color_only(
         let t2 = Instant::now();
         // Settle-decay hunt: optionally freeze SH once the densify window closes (iter > iters/2).
         if !(cfg.freeze_sh_after_window && (iter + 1) > cfg.iters / 2) {
-            sh_opt.step(&mut sh_params, &d_sh);
+            // C2: only the warmup-unlocked SH coefficients step (16 when warmup is off).
+            sh_opt.step_active(
+                &mut sh_params,
+                &d_sh,
+                active_sh_coeffs(cfg.sh_warmup_interval, iter),
+            );
         }
         if cfg.learn_opacity {
             opacity_opt.step(&mut opacity_logits, &d_opacity_logits);
@@ -2934,5 +2966,22 @@ mod tests {
         // Margin 2500 on a 15k run (window end 7500): only the 3000 reset survives.
         assert!(opacity_reset_due(3000, 3000, 7500, 2500));
         assert!(!opacity_reset_due(6000, 3000, 7500, 2500));
+    }
+
+    #[test]
+    fn test_active_sh_coeffs_warmup_schedule() {
+        // Disabled: all 16 coefficients from the start.
+        assert_eq!(active_sh_coeffs(0, 0), 16);
+        assert_eq!(active_sh_coeffs(0, 30000), 16);
+
+        // Reference schedule (interval 1000): DC-only, then +1 degree per 1000 iters.
+        assert_eq!(active_sh_coeffs(1000, 0), 1);
+        assert_eq!(active_sh_coeffs(1000, 999), 1);
+        assert_eq!(active_sh_coeffs(1000, 1000), 4);
+        assert_eq!(active_sh_coeffs(1000, 1999), 4);
+        assert_eq!(active_sh_coeffs(1000, 2000), 9);
+        assert_eq!(active_sh_coeffs(1000, 3000), 16);
+        // Caps at degree 3 regardless of horizon.
+        assert_eq!(active_sh_coeffs(1000, 29999), 16);
     }
 }

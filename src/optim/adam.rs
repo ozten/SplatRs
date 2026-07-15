@@ -362,7 +362,22 @@ impl AdamSh16 {
     }
 
     pub fn step(&mut self, params: &mut [[Vector3<f32>; 16]], grads: &[[Vector3<f32>; 16]]) {
+        self.step_active(params, grads, 16);
+    }
+
+    /// C2 SH warmup: step only the first `active_coeffs` coefficients (DC-first band order).
+    /// Locked slots are skipped entirely — no moment accumulation, no update — which is
+    /// state-identical to reference 3DGS, where truncated-degree rendering hands the optimizer
+    /// exactly-zero gradients for locked coefficients (m and v stay zero, param stays at its
+    /// zero init) while the shared step count advances.
+    pub fn step_active(
+        &mut self,
+        params: &mut [[Vector3<f32>; 16]],
+        grads: &[[Vector3<f32>; 16]],
+        active_coeffs: usize,
+    ) {
         assert_eq!(params.len(), grads.len());
+        assert!(active_coeffs >= 1 && active_coeffs <= 16);
         self.ensure_len(params.len());
 
         self.t += 1;
@@ -375,7 +390,7 @@ impl AdamSh16 {
         let lr_rest = self.lr / self.rest_lr_div;
 
         for i in 0..params.len() {
-            for k in 0..16 {
+            for k in 0..active_coeffs {
                 let g = grads[i][k];
                 if !g.x.is_finite() || !g.y.is_finite() || !g.z.is_finite() {
                     continue;
@@ -437,6 +452,43 @@ mod tests {
                 (params_u[0][k].x - params_u[0][0].x).abs() < 1e-7,
                 "uniform div=1.0 should step all slots equally"
             );
+        }
+    }
+
+    #[test]
+    fn test_adamsh16_step_active_locks_bands() {
+        // C2 SH warmup: with active_coeffs = 4, slots 4..16 must not move AND must not
+        // accumulate moments — unlocking later behaves exactly like reference (which feeds
+        // locked slots exactly-zero grads, leaving m = v = 0).
+        let mut opt = AdamSh16::new(0.1, 1.0, 0.9, 0.999, 1e-8);
+        let mut params = vec![[Vector3::<f32>::zeros(); 16]];
+        let grads = vec![[Vector3::new(1.0, 1.0, 1.0); 16]];
+
+        opt.step_active(&mut params, &grads, 4);
+        for k in 0..4 {
+            assert!(params[0][k].x < 0.0, "active slot {k} should have stepped");
+        }
+        for k in 4..16 {
+            assert_eq!(params[0][k].x, 0.0, "locked slot {k} must not move");
+        }
+
+        // Unlock everything: locked slots start stepping from zero moments; a fresh
+        // optimizer at the same t with the same history-of-zeros produces the same step.
+        opt.step_active(&mut params, &grads, 16);
+        for k in 4..16 {
+            assert!(params[0][k].x < 0.0, "slot {k} should step once unlocked");
+            assert!(
+                (params[0][k].x - params[0][4].x).abs() < 1e-7,
+                "all newly unlocked slots step identically"
+            );
+        }
+
+        // step() delegates to step_active(.., 16): all slots move.
+        let mut opt2 = AdamSh16::new(0.1, 1.0, 0.9, 0.999, 1e-8);
+        let mut params2 = vec![[Vector3::<f32>::zeros(); 16]];
+        opt2.step(&mut params2, &grads);
+        for k in 0..16 {
+            assert!(params2[0][k].x < 0.0, "step() must move every slot");
         }
     }
 

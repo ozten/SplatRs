@@ -58,6 +58,7 @@ fn test_m9_densify_smoke_tandt() {
         freeze_sh_after_window: false,
         freeze_bg_in_settle: false,
         settle_needle_prune_log_aniso: 0.0,
+        sh_warmup_interval: 0,
         densify_interval: 2,
         densify_max_gaussians: 2_000,
         densify_grad_threshold: -1.0, // force densify for smoke testing

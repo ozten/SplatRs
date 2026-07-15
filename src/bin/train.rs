@@ -177,6 +177,11 @@ fn main() {
     // decay gap +0.72→+0.10, only arm whose settle climbs; dominates 2.5; reset-gate combo
     // doesn't stack. Requires settle prunes (--settle-prune-interval > 0) to have any effect.
     let mut settle_needle_prune_log_aniso: f32 = 2.8;
+    // C2 SH warmup: raise active SH degree by one every N iters from DC-only (reference
+    // oneupSHdegree = 1000); locked bands don't step (state-identical to reference truncated
+    // rendering — rest bands init to zero). 0 = off (all bands from iter 0) until the 30k A/B
+    // validates; run the C2 arm with --sh-warmup-interval 1000.
+    let mut sh_warmup_interval: usize = 0;
     // Render watchdog (2026-07-10): abort + save model when the GPU pipeline dies silently
     // (wgpu fault, or consecutive background-only frames). ON by default.
     let mut render_watchdog: bool = true;
@@ -605,6 +610,7 @@ fn main() {
             "--freeze-sh-after-window" => freeze_sh_after_window = true,
             "--freeze-bg-in-settle" => freeze_bg_in_settle = true,
             "--settle-needle-prune-log-aniso" => settle_needle_prune_log_aniso = args.next().unwrap().parse().unwrap(),
+            "--sh-warmup-interval" => sh_warmup_interval = args.next().unwrap().parse().unwrap(),
             "--no-render-watchdog" => render_watchdog = false,
             "--gpu" => use_gpu = true,
             "--cpu" | "--no-gpu" => use_gpu = false,
@@ -785,6 +791,7 @@ fn main() {
             freeze_sh_after_window,
             freeze_bg_in_settle,
             settle_needle_prune_log_aniso,
+            sh_warmup_interval,
             use_gpu,
             csv_output_path: Some(final_out_dir.join("metrics.csv")),
             out_dir: final_out_dir.clone(),
