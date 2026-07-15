@@ -972,6 +972,36 @@ NEXT (candidates): (1) gentler needle threshold 2.8 at 30k (keep the win, less c
 (3) target the residual scale-inflation slope (settle oversize-prune tighten / scale reg).
 Status/logs: `runs/settle_decay_hunt_30k.status`, `runs/srt30k_*.log`.
 
+**30k DECAY HUNT ROUND 2 (2026-07-13/14) — NEEDLE 2.8 DOMINATES 2.5: decay gap essentially
+eliminated, best 30k final ever.** Batch `scripts/settle_decay_hunt_30k_r2.sh` (commit
+8758baf): needle 2.8 alone, then needle 2.5 + reset-gate 2500. The first arm completed;
+the second was killed at iter ~2100 by the 2026-07-13 21:30 OS-update reboot (log truncates
+mid-iteration, no error — the machine went down, nothing to fix in the harness).
+| run | final | window peak | settle mean | slope | wpeak−smean | count end | aniso_p90 | scale drift |
+|---|---|---|---|---|---|---|---|---|
+| `srt30k_ctrl_banded` | 16.00 | 17.06 | 16.34 | −0.032/1k | +0.72 | 56k | 20.0 (clamp) | +5% |
+| `srt30k_sd_needle25` | 16.20 | 17.07 | 16.58 | −0.049/1k | +0.49 | 33k | 7.1 | +33% |
+| `srt30k_sd_needle28` | **16.74** | 16.78 | **16.68** | **+0.018/1k** | **+0.10** | 37k | 8.9 | +28% |
+- **`--settle-needle-prune-log-aniso 2.8` improves on 2.5 across the board**: settle mean
+  +0.34 over control (vs 2.5's +0.24), the only arm whose settle CLIMBS (+0.018/1k), final
+  16.74 = best 30k result of the campaign (prior best 16.48 rg2500), needling still
+  eliminated (p90 8.9, well off the clamp), count retention slightly better (37k vs 34k).
+- **Scale-inflation "second mechanism" weakened**: needle28 inflates survivor scale nearly
+  as much as 2.5 (+28% vs +33%) yet its settle slope is POSITIVE — scale drift alone doesn't
+  force decay; the round-1 negative-slope attribution to scale is likely noise or interacts
+  with the extra mass 2.5 removed.
+- Caveat: needle28's window peak (16.78) sits 0.3 below control's — the window is pre-lever
+  and should match, but GPU atomicAdd nondeterminism makes arms diverge; cross-arm settle
+  mean is the robust comparison, per-arm gap less so.
+- VISUAL (cam 88, the round-1 needle-streak view): needle28 matches needle25's cleanup —
+  no needle streaks, coherent structure; not PSNR masking a regression.
+**ROUND 2b (2026-07-14, IN PROGRESS)**: combo arm relaunched as **needle 2.8 + rg2500**
+(`scripts/settle_decay_hunt_30k_r2b.sh` → `runs/srt30k_sd_needle28_rg2500`) — base switched
+from the scripted 2.5 to 2.8 since 2.8 dominates; combining the gate with a config we would
+no longer ship answers a stale question. One lever different from known needle28. If the
+combo stacks (settle mean >16.7-16.8), it becomes the 30k config; if not, needle28 alone is.
+Pending decision after 2b: flip `--settle-needle-prune-log-aniso` default 3.4→2.8.
+
 **(a) RENDER WATCHDOG LANDED (2026-07-10), ON by default (`--no-render-watchdog` to
 disable).** Three layers: (1) wgpu uncaptured-error handler now sets a global fault flag
 (`gpu::gpu_fault_seen`) instead of only printing; (2) NEW device-lost callback (same
