@@ -1011,6 +1011,22 @@ baselines unchanged; unit tests pin 0.0 explicitly). Open next: the settle scale
 watch (+26-28% in both needle arms, but slope stayed ≥0 — deprioritized), C2 SH warmup,
 full-res @400k rerun on the new defaults, all-views at 30k.
 
+**C2 SH WARMUP REFUTED at 30k (2026-07-15, `runs/srt30k_c2`).** Lever landed commit a2ba9a4
+(`--sh-warmup-interval N`, reference oneupSHdegree=1000: active degree 0→3 rises every N
+iters, coeffs 1→4→9→16; `active_sh_coeffs` predicate + `AdamSh16::step_active` skip locked
+coefficients entirely — state-identical to reference truncated rendering since rest bands
+init to zero; default-off path verified bit-identical; unit tests for schedule + locked-band
+optimizer). 30k A/B vs needle28 control (one lever different, same binary semantics):
+final 16.44 vs 16.74, settle mean 16.40 vs 16.68 (−0.28, ~4-5 SE), slope back to −0.044/1k,
+gap +0.78 — the settle decay REAPPEARS despite the needle prune staying active (a90 10.2,
+count 34k). The window itself was fine (peak 17.18@12000, early climb comparable or better —
+DC-only start costs nothing early); the loss is all settle-phase. Pattern now three-for-three
+with D3 (div20 lost at 15k AND 30k) and freezesh (−0.60): **at our view counts every
+constraint on SH training costs PSNR — reference's SH schedule assumes reference-scale data.
+DEFAULT STAYS 0 (off).** The full reference-parity feature list is now exhausted; remaining
+gaps to reference quality are data/capacity-regime, not schedule. bg→black mid-settle
+persists in BOTH arms (darkest bg 0.00 @15500-16000) — still open, all-views known to fix it.
+
 **(a) RENDER WATCHDOG LANDED (2026-07-10), ON by default (`--no-render-watchdog` to
 disable).** Three layers: (1) wgpu uncaptured-error handler now sets a global fault flag
 (`gpu::gpu_fault_seen`) instead of only printing; (2) NEW device-lost callback (same
