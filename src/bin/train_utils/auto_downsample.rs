@@ -77,14 +77,18 @@ pub fn is_power_of_2_downsample(factor: f32) -> Option<u32> {
     None
 }
 
-/// Get GPU max storage buffer binding size by initializing a minimal GPU context.
+/// Get GPU max storage buffer binding size from the ADAPTER, without creating a device.
 ///
-/// Falls back to 128 MB (Apple Silicon Metal limit) if GPU init fails.
+/// Must NOT create a `GpuContext`: dropping its probe device fires the device-lost callback
+/// (reason `Unknown` since the 2026-07-13 macOS update), which sets the global GPU fault flag
+/// and makes the render watchdog abort training at iter 1 (see `gpu::context`).
+///
+/// Falls back to 128 MB (Apple Silicon Metal limit) if no adapter is found.
 #[cfg(feature = "gpu")]
 pub fn get_gpu_max_buffer_size() -> u64 {
-    match sugar_rs::gpu::GpuContext::new_blocking() {
-        Ok(ctx) => ctx.device.limits().max_storage_buffer_binding_size as u64,
-        Err(_) => {
+    match sugar_rs::gpu::adapter_max_storage_buffer_binding_size() {
+        Some(size) => size,
+        None => {
             eprintln!("Warning: Failed to initialize GPU, assuming 128 MB buffer limit");
             128 * 1024 * 1024
         }
