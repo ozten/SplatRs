@@ -1027,6 +1027,45 @@ DEFAULT STAYS 0 (off).** The full reference-parity feature list is now exhausted
 gaps to reference quality are data/capacity-regime, not schedule. bg→black mid-settle
 persists in BOTH arms (darkest bg 0.00 @15500-16000) — still open, all-views known to fix it.
 
+**ALL-VIEWS @30k on new defaults (2026-07-15, `runs/srt30k_allviews_nd28`, 301 images,
+76-view test denominator — NOT comparable to 100-img numbers).** Final 15.36 ≈ the 15k
+all-views run's 15.44: doubling the horizon bought nothing on this axis either. Confirms
+all-views' known virtues at zero cost: bg→black FIXED (darkest settle bg 0.48 vs 0.00 in
+both 100-img arms), aniso healthy (a90 8.8), final render coherent ("WESTERN PACIFIC"
+lettering legible, clean gray bg). NEW SHAPE — deep settle crater: PSNR 14.59 at settle
+entry (window had already slid from its 16.59@10000 peak after the LAST RESET AT 15000 —
+default margin 0 fires a reset exactly at window end), first settle prune @15500 removes
+7.4k (6.2k needles), PSNR craters to 12.78@22000, then recovers at +0.19/1k to a ~15.4
+plateau (abrupt +2.8 jump 22000→23000). The crater is the reset-at-window-end mechanism
+amplified by 3× views (slower per-view re-earning); an all-views arm with
+`--opacity-reset-window-margin 2500` is the obvious (unrun) fix candidate if all-views
+becomes the production config.
+
+**FULL-RES @400k v3 LAUNCHED (2026-07-15 ~04:00, `runs/srt15k_fullres_400k_v3`, ~25h,
+detached + monitor).** Exact v2 config (15k iters, 100 img, 980×545, 400k cap, rg2500
+gate, sp500, aniso 3.0, seed 42); the ONLY behavioral delta vs v2 is the new needle-2.8
+settle-prune default → clean A/B of the decay-hunt winner at full-res against v2's
+15.01 final / flat-15.0 settle. C2 off (refuted). Watchdog on; banded dispatches proven
+at 211k+.
+
+**WATCHDOG FALSE POSITIVE found & fixed on the way (2026-07-15, commit 42e0f4b).** The
+first two v3 launches died at iter 1: `[wgpu] DEVICE LOST (Unknown): Device dropped.` →
+watchdog abort. Forensics: forward renders of the abort model were CLEAN at full res
+(gpu_render_repeat, 224ms, deterministic), and with `--no-render-watchdog` training ran
+perfectly — the device-lost fired during STARTUP, before iter 1. Root cause: the
+auto-downsample probe (`get_gpu_max_buffer_size`) created a full `GpuContext` (fault
+callbacks registered) just to read the buffer limit, then dropped it; since the
+2026-07-13 macOS update, that deliberate drop fires the device-lost callback with reason
+`Unknown`, permanently poisoning the global fault flag the watchdog polls. Explicit
+`--downsample` runs skip the probe — which is why all the half-res campaign runs were
+untouched and only full-res (auto-downsample) died. Fix: new
+`gpu::adapter_max_storage_buffer_binding_size()` probes instance→adapter→limits with NO
+device (adapters fire no device-lost); regression test
+`test_adapter_limit_probe_sets_no_fault` pins it. Verified: watchdog-on full-res run
+trains past iter 1 (loss bit-identical to v2's iter 1, 0.527753). NOTE for future OS
+updates: a deliberate device drop now reports reason `Unknown`, not `Dropped` — never
+filter device-lost by reason; keep probes deviceless instead.
+
 **(a) RENDER WATCHDOG LANDED (2026-07-10), ON by default (`--no-render-watchdog` to
 disable).** Three layers: (1) wgpu uncaptured-error handler now sets a global fault flag
 (`gpu::gpu_fault_seen`) instead of only printing; (2) NEW device-lost callback (same
