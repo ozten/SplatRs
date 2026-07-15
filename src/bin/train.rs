@@ -170,11 +170,13 @@ fn main() {
     // Freeze the learnable bg once the densify window closes — tests bg→black drift (a universal
     // co-symptom of the decay) as the driver.
     let mut freeze_bg_in_settle: bool = false;
-    // 30k settle-decay hunt (2026-07-13): needle-prune log-aniso threshold for SETTLE prunes only
-    // (0 = off). The real (30k) decay tracks aniso_p90 climbing into the max_log_aniso clamp
-    // (needle_prune = clamp+0.4 never fires); a tighter settle threshold (e.g. 2.0) prunes the
-    // needling parked mass. Densify-time pruning unchanged.
-    let mut settle_needle_prune_log_aniso: f32 = 0.0;
+    // Needle-prune log-aniso threshold for SETTLE prunes only (0 = off). The 30k decay tracks
+    // aniso_p90 climbing into the max_log_aniso clamp (needle_prune = clamp+0.4 never fires);
+    // a settle threshold below the clamp prunes the needling parked mass. Densify-time pruning
+    // unchanged. Default 2.8 from the 2026-07-13/14 30k A/B: settle mean +0.34 over control,
+    // decay gap +0.72→+0.10, only arm whose settle climbs; dominates 2.5; reset-gate combo
+    // doesn't stack. Requires settle prunes (--settle-prune-interval > 0) to have any effect.
+    let mut settle_needle_prune_log_aniso: f32 = 2.8;
     // Render watchdog (2026-07-10): abort + save model when the GPU pipeline dies silently
     // (wgpu fault, or consecutive background-only frames). ON by default.
     let mut render_watchdog: bool = true;

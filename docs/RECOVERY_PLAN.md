@@ -995,12 +995,21 @@ mid-iteration, no error — the machine went down, nothing to fix in the harness
   mean is the robust comparison, per-arm gap less so.
 - VISUAL (cam 88, the round-1 needle-streak view): needle28 matches needle25's cleanup —
   no needle streaks, coherent structure; not PSNR masking a regression.
-**ROUND 2b (2026-07-14, IN PROGRESS)**: combo arm relaunched as **needle 2.8 + rg2500**
-(`scripts/settle_decay_hunt_30k_r2b.sh` → `runs/srt30k_sd_needle28_rg2500`) — base switched
-from the scripted 2.5 to 2.8 since 2.8 dominates; combining the gate with a config we would
-no longer ship answers a stale question. One lever different from known needle28. If the
-combo stacks (settle mean >16.7-16.8), it becomes the 30k config; if not, needle28 alone is.
-Pending decision after 2b: flip `--settle-needle-prune-log-aniso` default 3.4→2.8.
+**ROUND 2b DONE (2026-07-14) — combo does NOT stack; needle 2.8 alone is the 30k config;
+DEFAULT FLIPPED.** Combo arm relaunched as **needle 2.8 + rg2500** (base switched from the
+scripted 2.5 since 2.8 dominates; `scripts/settle_decay_hunt_30k_r2b.sh` →
+`runs/srt30k_sd_needle28_rg2500`, one lever different from known needle28):
+final 16.57 (−0.17 vs needle28 alone), settle mean 16.60 (−0.08, ≈1.3 SE — tie at best),
+slope −0.001/1k, count 37k, a90 8.6, render clean. The gate DID what it does — highest
+window peak of any arm (17.33@13000, last reset 12000) and the best settle floor
+(smin 16.21 vs needle28's 15.94, control's 15.68) — but a recovered settle entry doesn't
+buy a higher plateau once the needle prune is active; the two levers address the same
+symptom and the needle prune subsumes the gate's benefit. rg2500 stays opt-in.
+**DECISION: `--settle-needle-prune-log-aniso` default 0 (off) → 2.8** (train.rs; startup
+log confirms; inert unless settle prunes run — default sp500 — and only in settle, so 2k
+baselines unchanged; unit tests pin 0.0 explicitly). Open next: the settle scale-inflation
+watch (+26-28% in both needle arms, but slope stayed ≥0 — deprioritized), C2 SH warmup,
+full-res @400k rerun on the new defaults, all-views at 30k.
 
 **(a) RENDER WATCHDOG LANDED (2026-07-10), ON by default (`--no-render-watchdog` to
 disable).** Three layers: (1) wgpu uncaptured-error handler now sets a global fault flag

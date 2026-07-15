@@ -1008,14 +1008,14 @@ pub struct MultiViewTrainConfig {
     /// (iter > iters/2). bg→black mid-settle is a universal co-symptom of the decay; freezing bg
     /// at its window-close value tests whether the drifting background drives the PSNR decline.
     pub freeze_bg_in_settle: bool,
-    /// 30k settle-decay hunt: needle-prune log-anisotropy threshold used ONLY by the settle-phase
-    /// prune pass (0 disables → falls back to `needle_prune_log_anisotropy`). The normal needle
-    /// threshold sits ABOVE the `max_log_anisotropy` clamp (clamp+0.4), so needle-prune never
-    /// fires — the population parks AT the clamp (aniso_p90 climbs 17→20 over the 30k settle,
-    /// clamped but unpruned). A tighter settle threshold (e.g. 2.0, below the 3.0 clamp) makes
-    /// the settle prune actually remove the needling parked mass instead of just reshaping it
-    /// (tightening the clamp inflates scale; pruning frees capacity). Densify-time pruning is
-    /// unchanged.
+    /// Needle-prune log-anisotropy threshold used ONLY by the settle-phase prune pass
+    /// (0 disables → falls back to `needle_prune_log_anisotropy`). The normal needle threshold
+    /// sits ABOVE the `max_log_anisotropy` clamp (clamp+0.4), so needle-prune never fires — the
+    /// population parks AT the clamp (aniso_p90 climbs 17→20 over the 30k settle, clamped but
+    /// unpruned). A tighter settle threshold (below the clamp) makes the settle prune actually
+    /// remove the needling parked mass instead of just reshaping it (tightening the clamp
+    /// inflates scale; pruning frees capacity). Densify-time pruning is unchanged. CLI default
+    /// 2.8 (2026-07-14 30k A/B: settle decay eliminated, needling decile pruned, renders clean).
     pub settle_needle_prune_log_aniso: f32,
     /// Use GPU for forward rendering.
     pub use_gpu: bool,
