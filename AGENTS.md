@@ -427,6 +427,92 @@ Before implementing anything, ask:
 
 ---
 
+## Gas Town Workflow (Multi-Agent Coordination)
+
+### Overview
+Gas Town is a distributed agent system where:
+- **Mayor**: Coordinator (you, when reading this in a mayor session)
+- **Polecats**: Ephemeral workers (spawned per task, nuked when done)
+- **Crew**: Persistent workers (long-running, multi-task)
+- **Deacon**: Manager of "dogs" (helper workers)
+- **Witness**: Health monitor for polecats
+- **Refinery**: Merge queue processor
+
+### Slinging Work: The Critical Pattern
+
+**❌ WRONG - Work comes back to you:**
+```bash
+gt sling hq-abc --create    # Defaults to "self", mayor ends up doing it!
+```
+
+**✅ RIGHT - Work goes to a polecat:**
+```bash
+gt sling hq-abc SplatRs     # Spawns polecat in SplatRs rig
+```
+
+**Key Insight**: If you omit the target, `gt sling` defaults to **self** (the current agent). To distribute work, you **must specify a rig name** as the target.
+
+### Parallel Work Distribution
+
+To spawn multiple polecats working in parallel:
+
+```bash
+# Option 1: Sling one at a time
+gt sling hq-abc SplatRs -m "Context for task ABC"
+gt sling hq-def SplatRs -m "Context for task DEF"
+gt sling hq-ghi SplatRs -m "Context for task GHI"
+
+# Option 2: Batch sling (multiple beads, one rig)
+gt sling hq-abc hq-def hq-ghi SplatRs
+
+# Each gets its own polecat!
+```
+
+### Checking on Polecats
+
+```bash
+gt polecat list SplatRs           # List active polecats in rig
+gt convoy list                     # See all work convoys (tracking)
+gt polecat status SplatRs/furiosa  # Detailed status of specific polecat
+gt peek SplatRs/furiosa            # View recent output from polecat
+```
+
+### When to Use Mayor vs Polecats
+
+**Mayor should:**
+- Plan work (create issues, design specs)
+- Coordinate and sling work to others
+- Review completed work
+- Handle complex decision-making
+
+**Polecats should:**
+- Implement well-defined tasks
+- Write code with clear requirements
+- Run tests and fix issues
+- Work in parallel on independent tasks
+
+**Rule of thumb**: If 3+ independent tasks need doing, sling them to polecats rather than doing them yourself sequentially.
+
+### Common Pitfalls
+
+1. **Forgetting the rig target** - Work defaults to self
+2. **Not checking convoy list** - Lose track of distributed work
+3. **Sequential work when parallel is possible** - Wastes time
+4. **Over-coordinating** - Let polecats work autonomously
+
+### Polecat Lifecycle
+
+```
+Spawn → Work → Done → Push → Nuke
+  ↓       ↓      ↓      ↓      ↓
+ gt    Hook   Tests  Merge   Auto
+sling  work   pass   queue  cleanup
+```
+
+Polecats are **ephemeral**: They spawn for one task, complete it, push to merge queue, and get nuked. They don't wait for more work.
+
+---
+
 **End of Agent Context - Keep this updated as project evolves!**
 
 ## Landing the Plane (Session Completion)
