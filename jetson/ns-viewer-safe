@@ -1,0 +1,7 @@
+#!/usr/bin/env python3
+import torch
+_original_load = torch.load
+torch.load = lambda *args, **kwargs: _original_load(*args, **{**kwargs, 'weights_only': False})
+
+from nerfstudio.scripts.viewer.run_viewer import main
+main()
