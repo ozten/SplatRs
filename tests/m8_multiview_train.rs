@@ -44,6 +44,7 @@ fn test_m8_multiview_train_smoke_tandt() {
         max_images: 5,
         rng_seed: Some(0),
         train_fraction: 0.8,
+        eval_interval: 0,
         val_interval: 1000, // Only validates at the end (iters=5)
         max_test_views_for_metrics: 2,
         log_interval: 1,
@@ -66,6 +67,7 @@ fn test_m8_multiview_train_smoke_tandt() {
         use_gpu: cfg!(feature = "gpu"),
         csv_output_path: None,
         out_dir: PathBuf::from("test_output"),
+        save_interval: 0,
         disable_sh: false,
     };
 
@@ -141,6 +143,7 @@ fn test_m8_multiview_train_quality_tandt() {
         max_images: 0,
         rng_seed: Some(0),
         train_fraction: 0.8,
+        eval_interval: 0,
         val_interval: 50,
         max_test_views_for_metrics: 0, // Evaluate all held-out views
         log_interval: 10,
@@ -163,6 +166,7 @@ fn test_m8_multiview_train_quality_tandt() {
         use_gpu: cfg!(feature = "gpu"),
         csv_output_path: None,
         out_dir: PathBuf::from("test_output"),
+        save_interval: 0,
         disable_sh: false,
     };
 

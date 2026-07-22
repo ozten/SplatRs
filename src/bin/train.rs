@@ -125,6 +125,8 @@ fn main() {
     let mut dataset_root: Option<std::path::PathBuf> = None;
     let mut multiview: bool = false;
     let mut train_fraction: f32 = 0.8;
+    let mut eval_interval: usize = 0;
+    let mut save_interval: usize = 0;
     let mut val_interval: usize = 50;
     let mut max_test_views_for_metrics: usize = 0;
     let mut max_images: usize = 0;
@@ -593,6 +595,8 @@ fn main() {
             }
             "--multiview" => multiview = true,
             "--train-fraction" => train_fraction = args.next().unwrap().parse().unwrap(),
+            "--eval-interval" => eval_interval = args.next().unwrap().parse().unwrap(),
+            "--save-interval" => save_interval = args.next().unwrap().parse().unwrap(),
             "--val-interval" => val_interval = args.next().unwrap().parse().unwrap(),
             "--max-test-views" => max_test_views_for_metrics = args.next().unwrap().parse().unwrap(),
             "--max-images" => max_images = args.next().unwrap().parse().unwrap(),
@@ -625,7 +629,7 @@ fn main() {
                 eprintln!("  sugar-train --scene <sparse/0> [--images <dir>] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--image-index I] [--log-interval N] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--learn-position] [--learn-scale] [--learn-rotation] [--learn-sh] [--seed U64] [--out-dir DIR]");
                 eprintln!();
                 eprintln!("  # M8 (multi-view)");
-                eprintln!("  sugar-train --multiview --scene <sparse/0> [--images <dir>] [--max-images N] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--train-fraction F] [--val-interval N] [--max-test-views N] [--log-interval N] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--learn-position] [--learn-scale] [--learn-rotation] [--learn-sh] [--densify-interval N] [--densify-max-gaussians N] [--densify-grad-threshold F] [--prune-opacity-threshold F] [--split-sigma-threshold F] [--max-log-aniso F (default 3.0, 0=off)] [--settle-prune-interval N (default 500, 0=off)] [--opacity-reset-floor F (default 0.01)] [--opacity-reset-window-margin N] [--sh-rest-lr-div N] [--freeze-sh-after-window] [--freeze-bg-in-settle] [--settle-needle-prune-log-aniso F] [--seed U64] [--out-dir DIR]");
+                eprintln!("  sugar-train --multiview --scene <sparse/0> [--images <dir>] [--max-images N] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--train-fraction F] [--eval-interval N (0=seeded shuffle; N=every-Nth-by-filename test split, nerfstudio convention)] [--save-interval N (0=off; save model_<step>.gs every N iters for the iteration grid)] [--val-interval N] [--max-test-views N] [--log-interval N] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--learn-position] [--learn-scale] [--learn-rotation] [--learn-sh] [--densify-interval N] [--densify-max-gaussians N] [--densify-grad-threshold F] [--prune-opacity-threshold F] [--split-sigma-threshold F] [--max-log-aniso F (default 3.0, 0=off)] [--settle-prune-interval N (default 500, 0=off)] [--opacity-reset-floor F (default 0.01)] [--opacity-reset-window-margin N] [--sh-rest-lr-div N] [--freeze-sh-after-window] [--freeze-bg-in-settle] [--settle-needle-prune-log-aniso F] [--seed U64] [--out-dir DIR]");
                 eprintln!();
                 eprintln!("  # Auto-detect paths");
                 eprintln!("  sugar-train [--multiview] --dataset-root <root> [--iters N] ...   (auto-detects sparse/0 + images/)");
@@ -769,6 +773,7 @@ fn main() {
             max_images,
             rng_seed: seed,
             train_fraction,
+            eval_interval,
             val_interval,
                 max_test_views_for_metrics,
                 log_interval,
@@ -795,6 +800,7 @@ fn main() {
             use_gpu,
             csv_output_path: Some(final_out_dir.join("metrics.csv")),
             out_dir: final_out_dir.clone(),
+            save_interval,
             disable_sh,
             render_watchdog,
         };

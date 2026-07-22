@@ -939,6 +939,27 @@ pub fn frame_is_background_only(img: &[Vector3<f32>], bg: &Vector3<f32>) -> bool
     (bg_px as f32) > limit || (const_px as f32) > limit
 }
 
+/// Deterministic interval train/test split matching the nerfstudio/gsplat/MipNeRF360
+/// convention (`--eval-mode interval`): indices are ordered by image filename and
+/// every Nth position (position % interval == 0, so the lexicographically first image
+/// is held out) becomes a test view. Returns (train, test) as indices into `names`,
+/// which lets the caller keep its own image ordering (COLMAP `images.bin` is in
+/// registration order, not filename order).
+pub fn interval_split_by_name(names: &[&str], interval: usize) -> (Vec<usize>, Vec<usize>) {
+    let mut by_name: Vec<usize> = (0..names.len()).collect();
+    by_name.sort_by(|&a, &b| names[a].cmp(names[b]));
+    let mut train = Vec::new();
+    let mut test = Vec::new();
+    for (pos, &idx) in by_name.iter().enumerate() {
+        if pos % interval == 0 {
+            test.push(idx);
+        } else {
+            train.push(idx);
+        }
+    }
+    (train, test)
+}
+
 pub struct MultiViewTrainConfig {
     pub sparse_dir: PathBuf,
     pub images_dir: PathBuf,
@@ -967,6 +988,12 @@ pub struct MultiViewTrainConfig {
     /// Optional RNG seed for deterministic train/test splits and view sampling.
     pub rng_seed: Option<u64>,
     pub train_fraction: f32, // Fraction of images for training (rest for testing)
+    /// If non-zero, replace the seeded-shuffle split with the deterministic interval
+    /// split used by nerfstudio/gsplat/MipNeRF360 (`--eval-mode interval`): images are
+    /// sorted by filename and every Nth position (position % N == 0, so the
+    /// lexicographically first image is held out) becomes a test view. Ignores
+    /// `train_fraction` for the split; `rng_seed` still drives train-view sampling.
+    pub eval_interval: usize,
     pub val_interval: usize,  // Validate every N iterations
     /// Limit how many held-out views are used for PSNR reporting.
     /// Use `0` to evaluate all test views (can be slow on large datasets).
@@ -1043,6 +1070,11 @@ pub struct MultiViewTrainConfig {
     pub csv_output_path: Option<PathBuf>,
     /// Output directory for incremental renders.
     pub out_dir: PathBuf,
+    /// Save an intermediate `model_<step>.gs` every N iterations (0 = only the final
+    /// model). Lets a single run produce the whole iteration grid (e.g. 3k/15k/30k) for
+    /// equal-iteration comparison instead of just the final model. `<step>` is the
+    /// completed-iteration count; the final iteration is written as `model.gs`, not here.
+    pub save_interval: usize,
     /// Disable SH: treat sh_coeffs[0] as RGB color directly, ignore higher bands.
     pub disable_sh: bool,
     /// Render watchdog: abort (saving the model for forensics) when a wgpu fault is
@@ -1465,7 +1497,7 @@ pub fn train_multiview_color_only(
     }
 
     // Split images into train/test sets
-    let mut image_indices: Vec<usize> = (0..available_images).collect();
+    let image_indices: Vec<usize> = (0..available_images).collect();
 
     // Generate seed if not provided (for reproducibility)
     let actual_seed = cfg.rng_seed.unwrap_or_else(|| {
@@ -1477,11 +1509,30 @@ pub fn train_multiview_color_only(
     });
 
     let mut rng = StdRng::seed_from_u64(actual_seed);
-    image_indices.shuffle(&mut rng);
 
-    let num_train = ((available_images as f32) * cfg.train_fraction).max(1.0) as usize;
-    let train_indices = &image_indices[..num_train];
-    let test_indices = &image_indices[num_train..];
+    let (train_indices, test_indices): (Vec<usize>, Vec<usize>) = if cfg.eval_interval > 0 {
+        let names: Vec<&str> = image_indices
+            .iter()
+            .map(|&i| scene.images[i].name.as_str())
+            .collect();
+        let (train, test) = interval_split_by_name(&names, cfg.eval_interval);
+        let first_test: Vec<&str> = test.iter().take(3).map(|&i| names[i]).collect();
+        eprintln!(
+            "Split mode: interval:{} over filename order ({} test views, first: {:?})",
+            cfg.eval_interval,
+            test.len(),
+            first_test
+        );
+        (train, test)
+    } else {
+        let mut shuffled = image_indices.clone();
+        shuffled.shuffle(&mut rng);
+        let num_train = ((available_images as f32) * cfg.train_fraction).max(1.0) as usize;
+        let test = shuffled.split_off(num_train);
+        (shuffled, test)
+    };
+    let train_indices = &train_indices[..];
+    let test_indices = &test_indices[..];
 
     eprintln!(
         "Multi-view training: {} train views, {} test views",
@@ -2567,6 +2618,49 @@ pub fn train_multiview_color_only(
                 );
             }
         }
+
+        // Periodic checkpoint save (opt-in via --save-interval): write model_<step>.gs so a
+        // single run yields the whole iteration grid (e.g. 3k/15k/30k) for equal-iteration
+        // comparison, not just the final model. Re-sync gaussians from the live param arrays
+        // first (they hold this iter's post-step/densify state); the final iteration is left
+        // to the post-loop save as model.gs.
+        if cfg.save_interval > 0 && (iter + 1) % cfg.save_interval == 0 && (iter + 1) < cfg.iters {
+            for (i, g) in gaussians.iter_mut().enumerate() {
+                for k in 0..16 {
+                    g.sh_coeffs[k][0] = sh_params[i][k].x;
+                    g.sh_coeffs[k][1] = sh_params[i][k].y;
+                    g.sh_coeffs[k][2] = sh_params[i][k].z;
+                }
+                g.opacity = opacity_logits[i].clamp(-10.0, 10.0);
+                g.position = positions[i];
+                g.scale = log_scales[i];
+                g.rotation = rotations[i];
+            }
+            let cloud = crate::core::GaussianCloud { gaussians: gaussians.clone() };
+            let (bounds_min, bounds_max) = crate::io::compute_bounds(&cloud.gaussians);
+            let metadata = crate::io::ModelMetadata {
+                num_gaussians: cloud.gaussians.len() as u64,
+                sh_degree: 3,
+                bounds_min,
+                bounds_max,
+                training_iterations: (iter + 1) as u64,
+                training_psnr: train_psnr,
+                compression: crate::io::Compression::None,
+                training_width: train_camera.width,
+                training_height: train_camera.height,
+                training_downsample_factor: cfg.downsample_factor,
+                dataset_path: String::new(),
+            };
+            let ckpt_path = cfg.out_dir.join(format!("model_{:06}.gs", iter + 1));
+            match crate::io::save_model(&ckpt_path, &cloud, &metadata) {
+                Ok(_) => eprintln!(
+                    "checkpoint saved: {:?} ({} gaussians)",
+                    ckpt_path,
+                    cloud.gaussians.len()
+                ),
+                Err(e) => eprintln!("Warning: failed to save checkpoint {:?}: {}", ckpt_path, e),
+            }
+        }
     }
 
     // Final validation
@@ -2680,6 +2774,34 @@ mod tests {
 
     fn empty_sh() -> [[f32; 3]; 16] {
         [[0.0; 3]; 16]
+    }
+
+    #[test]
+    fn interval_split_matches_nerfstudio_convention() {
+        // 301 images like tandt/train: interval 8 -> 38 test / 263 train,
+        // lexicographically first image held out.
+        let names: Vec<String> = (1..=301).map(|i| format!("{:05}.jpg", i)).collect();
+        let refs: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+        let (train, test) = interval_split_by_name(&refs, 8);
+        assert_eq!(test.len(), 38);
+        assert_eq!(train.len(), 263);
+        assert_eq!(test[0], 0); // "00001.jpg" is a test view
+        assert_eq!(test[1], 8);
+        // Partition is complete and disjoint.
+        let mut all: Vec<usize> = train.iter().chain(test.iter()).copied().collect();
+        all.sort_unstable();
+        assert_eq!(all, (0..301).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn interval_split_follows_filename_order_not_index_order() {
+        // Indices are in registration order (like images.bin); the split must be
+        // computed over filename order.
+        let refs = ["c.jpg", "a.jpg", "d.jpg", "b.jpg"];
+        let (train, test) = interval_split_by_name(&refs, 2);
+        // Sorted: a(1) b(3) c(0) d(2); positions 0,2 -> test = indices [1, 0]
+        assert_eq!(test, vec![1, 0]);
+        assert_eq!(train, vec![3, 2]);
     }
 
     #[test]

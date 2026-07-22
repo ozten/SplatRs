@@ -47,6 +47,7 @@ fn test_m9_densify_smoke_tandt() {
         max_images: 5,
         rng_seed: Some(0),
         train_fraction: 0.8,
+        eval_interval: 0,
         val_interval: 3,
         max_test_views_for_metrics: 1,
         log_interval: 0,
@@ -69,6 +70,7 @@ fn test_m9_densify_smoke_tandt() {
         use_gpu: cfg!(feature = "gpu"),
         csv_output_path: None,
         out_dir: PathBuf::from("test_output"),
+        save_interval: 0,
         disable_sh: false,
     };
 
