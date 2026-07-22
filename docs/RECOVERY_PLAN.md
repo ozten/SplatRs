@@ -1220,10 +1220,15 @@ per-checkpoint PLY headers). Findings:
    0.005/0.01 — expect short-horizon numbers to shift; re-baseline before comparing.
    Note for step 2: the healthy population sits far under the 60k cap, so the 150k-cap
    overlap run should inherit these thresholds (now the defaults).
-2. **Create the missing overlap point.** Re-run the 15k config with `--densify-max-gaussians 150000`
-   (and `--eval-interval 8` + `--save-interval` from the one-metric harness) so SplatRs and
-   splatfacto curves finally share a count range, measuring SplatRs's actual dB-per-doubling.
-   Multi-hour run — schedule deliberately.
+2. **Create the missing overlap point — LAUNCHED 2026-07-22 (`scripts/step2_cap150k_int8.sh`,
+   queued behind the 10× dose-response arm).** 30k iters, cap 150k, all 301 images with
+   `--eval-interval 8` (the exact 263/38 nerfstudio split splatfacto used → PSNR directly
+   comparable to the hebot ns-eval grid for the first time), `--max-test-views 0` (full
+   38-view eval), `--save-interval 1500` (checkpoint grid mirroring splatfacto's cadence),
+   opacity thresholds = the §6.1 winners (explicit flags, same binary as the dose-response
+   arms). Output `runs/srt30k_cap150k_int8`. Analysis on completion:
+   `scripts/plot_count_vs_quality.py` overlaying the splatfacto grid — measures SplatRs's
+   actual dB-per-doubling and how much of the ~2.5–3.5 dB capacity term is real.
 3. **Tile-binned GPU rasterization.** Still required for the capacity term (~2.5–3.5 dB) and the
    throughput ceiling (60k-cap training exists only because the current rasterizer is too slow at
    200k+), but it is no longer the sole road to quality — steps 1–2 are cheaper and come first.
