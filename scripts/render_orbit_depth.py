@@ -269,6 +269,12 @@ def create_camera_json(camera: Dict, camera_intrinsics: Dict, output_path: Path)
         camera['view_dir'].tolist(),
     ]
 
+    # Flatten rotation matrix to row-major array for nalgebra Matrix3
+    # sugar-render expects rotation as flat array: [r00, r01, r02, r10, r11, r12, r20, r21, r22]
+    rotation_flat = []
+    for row in rotation:
+        rotation_flat.extend(row)
+
     camera_json = {
         'width': camera_intrinsics['width'],
         'height': camera_intrinsics['height'],
@@ -276,8 +282,8 @@ def create_camera_json(camera: Dict, camera_intrinsics: Dict, output_path: Path)
         'fy': camera_intrinsics['fy'],
         'cx': camera_intrinsics['cx'],
         'cy': camera_intrinsics['cy'],
-        'position': camera['position'].tolist(),
-        'rotation': rotation,
+        'translation': camera['position'].tolist(),  # Fixed: "translation" not "position"
+        'rotation': rotation_flat,  # Fixed: flat array not nested
     }
 
     json_path = output_path.parent / f"camera_{camera['frame']:04d}.json"
@@ -322,6 +328,8 @@ def main():
                        help="Camera elevation angle in degrees (0=ground level, 90=top-down, default: 0)")
     parser.add_argument("--radius", type=float, default=None,
                        help="Orbit radius (default: auto-computed from scene)")
+    parser.add_argument("--downsample", type=float, default=4.0,
+                       help="Image downsample factor (default: 4.0 for faster rendering)")
 
     args = parser.parse_args()
 
@@ -349,9 +357,22 @@ def main():
 
     # Read camera intrinsics from COLMAP
     print("\nReading camera intrinsics from COLMAP...")
-    camera_intrinsics = read_colmap_camera(dataset_root)
+    camera_intrinsics_full = read_colmap_camera(dataset_root)
+
+    # Apply downsampling to make rendering faster
+    downsample = args.downsample
+    camera_intrinsics = {
+        'width': int(camera_intrinsics_full['width'] / downsample),
+        'height': int(camera_intrinsics_full['height'] / downsample),
+        'fx': camera_intrinsics_full['fx'] / downsample,
+        'fy': camera_intrinsics_full['fy'] / downsample,
+        'cx': camera_intrinsics_full['cx'] / downsample,
+        'cy': camera_intrinsics_full['cy'] / downsample,
+    }
+
     print(f"Camera: {camera_intrinsics['width']}x{camera_intrinsics['height']}, "
-          f"fx={camera_intrinsics['fx']:.1f}, fy={camera_intrinsics['fy']:.1f}")
+          f"fx={camera_intrinsics['fx']:.1f}, fy={camera_intrinsics['fy']:.1f} "
+          f"(downsampled {downsample}x from {camera_intrinsics_full['width']}x{camera_intrinsics_full['height']})")
 
     # Compute scene center and radius
     center, auto_radius = compute_scene_center_and_radius(dataset_root)
