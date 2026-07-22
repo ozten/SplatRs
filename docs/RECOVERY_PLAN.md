@@ -1188,10 +1188,28 @@ per-checkpoint PLY headers). Findings:
      <0.005 / floors at 0.01 (20× lower): 90–93% of the settle population sits below 0.1,
      median parked on the floor, even under needle-2.8 (opacity_low_pct 93.1% @30000). That
      near-transparent cohort is exactly the kind of capacity that memorizes train views.
-   **Prepared test (not yet run):** `scripts/settle_decay_hunt_30k_optfloor.sh` — one arm,
-   `--opacity-reset-floor 0.05 --prune-opacity-threshold 0.025` (5× toward splatfacto, same
-   2× ratio) vs a fresh same-binary control. Success = smaller settle-vs-peak gap and
-   opacity_low_pct@30000 visibly below 93%. Multi-hour Metal run — schedule deliberately.
+   **CONFIRMED — the opacity-floor arm is the biggest single lever since the backward fix
+   (2026-07-22, `scripts/settle_decay_hunt_30k_optfloor.sh`).** `--opacity-reset-floor 0.05
+   --prune-opacity-threshold 0.025` (5× toward splatfacto, same 2× ratio) vs fresh same-binary
+   control (needle-2.8 defaults):
+
+   | | window peak | settle mean | gap (peak−settle) | final | opacity_low_pct | count@30k |
+   |---|---|---|---|---|---|---|
+   | control `srt30k_ctrl_needle28def` | 17.05 | 16.18 | +0.87 | 16.58 | 93.2% | 37,741 |
+   | arm `srt30k_sd_optfloor05` | 17.01 | **17.25** | **−0.24** | **17.21** | 60.7% | 20,517 |
+
+   Identical window peaks (lever is settle/reset-only → clean A/B). The gap going *negative* is
+   the first 30k settle phase ever to climb above its own window peak — and it is still climbing
+   at 30000 (settle 2nd half 17.33 vs 1st half 16.16→17.16), i.e. SplatRs finally shows the
+   splatfacto-style "optimization keeps paying at fixed population" behavior the schedule diff
+   predicted. Final 17.21 beats the prior 30k best (16.74) *and* the 15k best (16.76). Population
+   halved (20.5k) with median opacity at the new visible floor — fewer, more-opaque, better-trained
+   gaussians. Visual check (m8 test view): chevron stripes, ladder rungs, "713" plate all crisper
+   than control; not metric gaming. Dose-response arm at full splatfacto levels
+   (`--prune-opacity-threshold 0.1 --opacity-reset-floor 0.2`,
+   `scripts/settle_decay_hunt_30k_optfloor2.sh`) queued to locate the optimum before flipping
+   defaults. Note for step 2: the healthy population sits far under the 60k cap, so the 150k-cap
+   overlap run should inherit these thresholds.
 2. **Create the missing overlap point.** Re-run the 15k config with `--densify-max-gaussians 150000`
    (and `--eval-interval 8` + `--save-interval` from the one-metric harness) so SplatRs and
    splatfacto curves finally share a count range, measuring SplatRs's actual dB-per-doubling.
