@@ -1143,8 +1143,40 @@ also stuck low).
 
 ---
 
-## 5. Recommended immediate next step
+## 5. Count-vs-quality diagnostic (2026-07-21): the gap is recipe first, capacity second
 
-Run **Phase 0, step 1 (forward-render isolation)**. It is a few hours of work, cleanly partitions
-"can we render splats?" from "can we train them?", and decides whether Group A or Group D is the
-priority. Everything else is faster once we know which side of that line the base-fidelity loss is on.
+`scripts/plot_count_vs_quality.py` plots PSNR vs Gaussian count for SplatRs runs against the
+splatfacto baseline (hebot ns-eval grid, 20 checkpoints @1.5k intervals, counts from the
+per-checkpoint PLY headers). Findings:
+
+- **The count ranges never overlap.** SplatRs runs were capped at `--densify-max-gaussians 60000`
+  (observed ≤~58k); splatfacto's *earliest* checkpoint is already ~119k, plateauing ~302–307k.
+  No honest equal-count delta exists in current data (hence next step 2).
+- **The training-dynamics asymmetry is the verdict.** Splatfacto's count freezes at ~304k by
+  iter 15k yet its held-out PSNR keeps climbing through pure optimization (21.3 → 22.3 dB by 30k).
+  SplatRs at fixed ~57k count *regresses*: 16.76 dB @15k iters → 16.30 @30k. A pure-capacity gap
+  would improve monotonically at fixed count; SplatRs doesn't. Rough decomposition of the ~5.5 dB
+  held-out gap: capacity (5.2× count, ~2.4 doublings @ a generous 1–1.5 dB/doubling) explains
+  ~2.5–3.5 dB, leaving **~2–3 dB of recipe/optimization gap** — including whatever drives the
+  15k→30k regression.
+- **Metric hygiene:** the splatfacto run synced locally as
+  `baselines/nerfstudio/ns-t1_half_int8_20260717_run1` has `dataparser.eval_mode: all` — its
+  24.71 dB "eval" is computed on train views and must not be quoted; the honest baseline is
+  **22.2–22.3 dB** (hebot ns-eval, interval-8 held-out). SplatRs's `psnr` CSV column mixes a noisy
+  single-view proxy (100-iter cadence) with the real multi-view eval (settle cadence); the plot
+  script filters to the latter.
+
+## 6. Next steps
+
+1. **Chase the fixed-count regression (in progress).** Find why SplatRs loses ~0.5 dB between 15k
+   and 30k iterations at frozen ~57k count while splatfacto gains ~1 dB in the same window at
+   frozen count. Suspects live in the settle phase (LR schedule, opacity floor drift, needle prune,
+   SH freeze); compare `runs/srt15k_a3_sp500` vs `runs/srt30k_a3_sp500` population stats and diff
+   the two recipes' late-phase schedules against splatfacto's config.
+2. **Create the missing overlap point.** Re-run the 15k config with `--densify-max-gaussians 150000`
+   (and `--eval-interval 8` + `--save-interval` from the one-metric harness) so SplatRs and
+   splatfacto curves finally share a count range, measuring SplatRs's actual dB-per-doubling.
+   Multi-hour run — schedule deliberately.
+3. **Tile-binned GPU rasterization.** Still required for the capacity term (~2.5–3.5 dB) and the
+   throughput ceiling (60k-cap training exists only because the current rasterizer is too slow at
+   200k+), but it is no longer the sole road to quality — steps 1–2 are cheaper and come first.
