@@ -1168,11 +1168,30 @@ per-checkpoint PLY headers). Findings:
 
 ## 6. Next steps
 
-1. **Chase the fixed-count regression (in progress).** Find why SplatRs loses ~0.5 dB between 15k
-   and 30k iterations at frozen ~57k count while splatfacto gains ~1 dB in the same window at
-   frozen count. Suspects live in the settle phase (LR schedule, opacity floor drift, needle prune,
-   SH freeze); compare `runs/srt15k_a3_sp500` vs `runs/srt30k_a3_sp500` population stats and diff
-   the two recipes' late-phase schedules against splatfacto's config.
+1. **Chase the fixed-count regression — investigated 2026-07-22; hypothesis: opacity-floor
+   magnitude.** Telemetry forensics (srt15k/srt30k_a3_sp500) plus a full late-phase schedule
+   diff against splatfacto's resolved config refined the story in three ways:
+   - *The headline 16.76→16.30 is mostly not a settle slide.* The two runs have genuinely
+     different schedules (window = iters/2, absolute 3000-iter reset cadence → 2 vs 5 resets).
+     Within the 30k run, −0.51 dB of the −0.75 peak→final drop is one discrete step at
+     14500→15000 (the known reset-at-window-close pathology); settle after 15000 is ~flat
+     (−0.0065 dB/1k). And the needle-2.8 default (landed after these runs) already recovers the
+     endpoint: srt30k_sd_needle28 ends 16.74.
+   - *The real residual asymmetry is slope, with an overfit signature.* splatfacto gains
+     ~+0.067 dB/1k during its frozen 15k–30k window; SplatRs even post-needle-fix manages only
+     ~+0.018/1k, while its train loss improves ~33% as held-out PSNR stalls/dips — capacity is
+     memorizing train views. Schedules are otherwise near-identical (position-LR decay is the
+     same ported formula; rot/scale/opacity/SH-dc LRs match; refuted levers — sh-rest-div-20,
+     freeze-SH, freeze-bg, reset-margin standalone, SH warmup — correctly stay refuted).
+   - *The one unrefuted difference is absolute opacity levels.* splatfacto culls <0.1 and
+     resets to 0.2, so its frozen population contains nothing dimmer than 0.1. SplatRs prunes
+     <0.005 / floors at 0.01 (20× lower): 90–93% of the settle population sits below 0.1,
+     median parked on the floor, even under needle-2.8 (opacity_low_pct 93.1% @30000). That
+     near-transparent cohort is exactly the kind of capacity that memorizes train views.
+   **Prepared test (not yet run):** `scripts/settle_decay_hunt_30k_optfloor.sh` — one arm,
+   `--opacity-reset-floor 0.05 --prune-opacity-threshold 0.025` (5× toward splatfacto, same
+   2× ratio) vs a fresh same-binary control. Success = smaller settle-vs-peak gap and
+   opacity_low_pct@30000 visibly below 93%. Multi-hour Metal run — schedule deliberately.
 2. **Create the missing overlap point.** Re-run the 15k config with `--densify-max-gaussians 150000`
    (and `--eval-interval 8` + `--save-interval` from the one-metric harness) so SplatRs and
    splatfacto curves finally share a count range, measuring SplatRs's actual dB-per-doubling.
