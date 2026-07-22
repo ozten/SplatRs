@@ -135,7 +135,7 @@ fn main() {
     let mut densify_interval: usize = 0;
     let mut densify_max_gaussians: usize = 0;
     let mut densify_grad_threshold: f32 = 0.1;
-    let mut prune_opacity_threshold: f32 = 0.01;
+    let mut prune_opacity_threshold: f32 = 0.025;
     let mut split_sigma_threshold: f32 = 0.05;
     let mut seed: Option<u64> = None;
     let mut use_gpu: bool = true;
@@ -153,9 +153,12 @@ fn main() {
     // settle mean, no health cost; removes sub-threshold opacity early, then oversize regrowth
     // (~100/pass) that was previously frozen in for the whole settle phase.
     let mut settle_prune_interval: usize = 500;
-    // Opacity resets cap down to this value; reference 0.01. Below the prune threshold
-    // (micro: 0.005) makes never-recovering mass prunable.
-    let mut opacity_reset_floor: f32 = 0.01;
+    // Opacity resets cap down to this value. Reference uses 0.01, but splatfacto culls at
+    // 0.1/resets to 0.2; the 2026-07-22 A/B showed our 0.01 floor left 93% of the settle
+    // population below visible opacity (unprunable at the old 0.005 threshold) and that
+    // 0.05/0.025 (same 2x floor:prune ratio) turns the settle decay into a climb
+    // (+1.07 dB settle mean, RECOVERY_PLAN.md §6.1). Full splatfacto 0.2/0.1 overshoots.
+    let mut opacity_reset_floor: f32 = 0.05;
     // Skip opacity resets in the last N iters of the densify window (0 = reference behavior,
     // last reset can land AT the window end → population enters settle freshly floored; the
     // 30k control's settle flatlined 0.75 dB below peak). A/B lever: try 2500.
@@ -364,7 +367,7 @@ fn main() {
                 *densify_interval = 500;  // Densify at 500, 1000, 1500
                 *densify_max_gaussians = 15_000;  // Higher cap for realistic growth
                 *densify_grad_threshold = 0.0002;
-                *prune_opacity_threshold = 0.005;
+                *prune_opacity_threshold = 0.025;
                 *split_sigma_threshold = 0.1;
                 *seed = Some(123);  // Fixed seed for reproducible, stable training (seed 0 has bad train/test splits)
             }
@@ -396,7 +399,7 @@ fn main() {
                 *densify_interval = 500;
                 *densify_max_gaussians = 50_000;
                 *densify_grad_threshold = 0.0002;
-                *prune_opacity_threshold = 0.005;
+                *prune_opacity_threshold = 0.025;
                 *split_sigma_threshold = 0.1;
                 *seed = Some(123);  // Fixed seed for reproducible, stable training (seed 0 has bad train/test splits)
             }
@@ -428,7 +431,7 @@ fn main() {
                 *densify_interval = 500;
                 *densify_max_gaussians = 150_000;
                 *densify_grad_threshold = 0.0002;
-                *prune_opacity_threshold = 0.005;
+                *prune_opacity_threshold = 0.025;
                 *split_sigma_threshold = 0.1;
                 *seed = Some(123);  // Fixed seed for reproducible, stable training
             }
@@ -629,7 +632,7 @@ fn main() {
                 eprintln!("  sugar-train --scene <sparse/0> [--images <dir>] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--image-index I] [--log-interval N] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--learn-position] [--learn-scale] [--learn-rotation] [--learn-sh] [--seed U64] [--out-dir DIR]");
                 eprintln!();
                 eprintln!("  # M8 (multi-view)");
-                eprintln!("  sugar-train --multiview --scene <sparse/0> [--images <dir>] [--max-images N] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--train-fraction F] [--eval-interval N (0=seeded shuffle; N=every-Nth-by-filename test split, nerfstudio convention)] [--save-interval N (0=off; save model_<step>.gs every N iters for the iteration grid)] [--val-interval N] [--max-test-views N] [--log-interval N] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--learn-position] [--learn-scale] [--learn-rotation] [--learn-sh] [--densify-interval N] [--densify-max-gaussians N] [--densify-grad-threshold F] [--prune-opacity-threshold F] [--split-sigma-threshold F] [--max-log-aniso F (default 3.0, 0=off)] [--settle-prune-interval N (default 500, 0=off)] [--opacity-reset-floor F (default 0.01)] [--opacity-reset-window-margin N] [--sh-rest-lr-div N] [--freeze-sh-after-window] [--freeze-bg-in-settle] [--settle-needle-prune-log-aniso F] [--seed U64] [--out-dir DIR]");
+                eprintln!("  sugar-train --multiview --scene <sparse/0> [--images <dir>] [--max-images N] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--train-fraction F] [--eval-interval N (0=seeded shuffle; N=every-Nth-by-filename test split, nerfstudio convention)] [--save-interval N (0=off; save model_<step>.gs every N iters for the iteration grid)] [--val-interval N] [--max-test-views N] [--log-interval N] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--learn-position] [--learn-scale] [--learn-rotation] [--learn-sh] [--densify-interval N] [--densify-max-gaussians N] [--densify-grad-threshold F] [--prune-opacity-threshold F (default 0.025)] [--split-sigma-threshold F] [--max-log-aniso F (default 3.0, 0=off)] [--settle-prune-interval N (default 500, 0=off)] [--opacity-reset-floor F (default 0.05)] [--opacity-reset-window-margin N] [--sh-rest-lr-div N] [--freeze-sh-after-window] [--freeze-bg-in-settle] [--settle-needle-prune-log-aniso F] [--seed U64] [--out-dir DIR]");
                 eprintln!();
                 eprintln!("  # Auto-detect paths");
                 eprintln!("  sugar-train [--multiview] --dataset-root <root> [--iters N] ...   (auto-detects sparse/0 + images/)");

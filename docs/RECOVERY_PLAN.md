@@ -1205,11 +1205,21 @@ per-checkpoint PLY headers). Findings:
    predicted. Final 17.21 beats the prior 30k best (16.74) *and* the 15k best (16.76). Population
    halved (20.5k) with median opacity at the new visible floor — fewer, more-opaque, better-trained
    gaussians. Visual check (m8 test view): chevron stripes, ladder rungs, "713" plate all crisper
-   than control; not metric gaming. Dose-response arm at full splatfacto levels
-   (`--prune-opacity-threshold 0.1 --opacity-reset-floor 0.2`,
-   `scripts/settle_decay_hunt_30k_optfloor2.sh`) queued to locate the optimum before flipping
-   defaults. Note for step 2: the healthy population sits far under the 60k cap, so the 150k-cap
-   overlap run should inherit these thresholds.
+   than control; not metric gaming.
+
+   **Dose-response (same binary, same fresh control):** full splatfacto levels overshoot —
+   20× arm (`srt30k_sd_optfloor20`, prune 0.1/floor 0.2) posts the best *window* peak of the
+   three (17.31) but settle decays again (mean 16.77, gap +0.54, final 16.31; opacity_low 0.4%):
+   at our capacity the aggressive cull removes genuinely useful dim mass. 10× arm
+   (`srt30k_sd_optfloor10`, prune 0.05/floor 0.1, `scripts/settle_decay_hunt_30k_optfloor3.sh`)
+   running to bracket the optimum.
+
+   **DEFAULTS FLIPPED (2026-07-22):** `--opacity-reset-floor` 0.01 → **0.05**,
+   `--prune-opacity-threshold` 0.005 → **0.025** in the micro/onehour/full presets and the
+   global CLI defaults (m9/m10 milestone presets untouched). Pre-flip 2k/15k baselines used
+   0.005/0.01 — expect short-horizon numbers to shift; re-baseline before comparing.
+   Note for step 2: the healthy population sits far under the 60k cap, so the 150k-cap
+   overlap run should inherit these thresholds (now the defaults).
 2. **Create the missing overlap point.** Re-run the 15k config with `--densify-max-gaussians 150000`
    (and `--eval-interval 8` + `--save-interval` from the one-metric harness) so SplatRs and
    splatfacto curves finally share a count range, measuring SplatRs's actual dB-per-doubling.
