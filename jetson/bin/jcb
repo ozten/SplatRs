@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Run a command in the nerfstudio jetson-container with ~/SplatRsBaseline mounted
+# as /workspace. Executable script, NOT a .bashrc function: tmux/cron/ssh run
+# non-interactive shells where functions don't exist.
+# If a non-interactive run fails with `autotag: command not found`, replace
+# "$(autotag nerfstudio)" with the resolved tag from baseline-env/container-tag.txt.
+#
+# TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1: torch>=2.6 defaults torch.load to
+# weights_only=True, which rejects nerfstudio's checkpoints (they pickle
+# numpy._core.multiarray.scalar) — ns-eval/ns-export die with
+# "Weights only load failed ... Unsupported global". This env var forces
+# weights_only=False (torch honors it because nerfstudio's loader doesn't pass
+# the arg explicitly). Safe here: every checkpoint is one we trained locally.
+# Replaces the per-entrypoint torch.load monkeypatch shims (ns-*-safe).
+#
+# Set it TWO ways because `jetson-containers run` is not a thin docker passthrough:
+# depending on its version a `-e` before the image may be eaten by its own CLI
+# instead of reaching `docker run` (observed: the `-e` alone had no effect,
+# 2026-07-17). The `env VAR=val` prefix rides in as part of the container COMMAND
+# ("$@", which demonstrably reaches the container), so it works regardless.
+exec jetson-containers run \
+  -e TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 \
+  -v "$HOME/SplatRsBaseline:/workspace" \
+  -w /workspace \
+  "$(autotag nerfstudio)" \
+  env TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1 "$@"
