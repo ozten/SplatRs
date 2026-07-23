@@ -103,3 +103,8 @@ applies; prefer the half-res showcase.
   settle-prune × DSSIM interaction. Baseline LPIPS curve computed
   (runs/srt30k_optfloor05_l1dssim/lpips.csv): best 0.460@25.5k, final 0.496 — LPIPS also
   bottoms mid-settle then worsens.
+- 2026-07-23 10:39 **arm 1 DONE (dssim+rg2500)**: window peak 17.51 (= baseline), settle
+  mean PSNR 16.69 / SSIM 0.520 (peaks 17.51/0.577), final 16.31 (+0.43 vs baseline
+  15.88), count 60k→14.3k, best LPIPS 0.418@10.5k (in-window; beats baseline's 0.460).
+  Verdict: better endpoint, mechanism NOT fixed — settle decays on all three metrics and
+  the population still melts. Render remains crisp. Arm 2 (no-resets) running (~13:45).
