@@ -50,7 +50,7 @@ impl CsvLogger {
         let mut file = std::fs::File::create(path)?;
         writeln!(
             file,
-            "iteration,loss,psnr,num_gaussians,forward_ms,backward_ms,step_ms,total_ms,densify_split,densify_clone,densify_prune,grad_p50,grad_p90,bg_r,bg_g,bg_b,scale_median,aniso_median,aniso_p90,aniso_max,opacity_median,opacity_low_pct,pos_grad_median,scale_grad_median,rot_grad_median"
+            "iteration,loss,psnr,num_gaussians,forward_ms,backward_ms,step_ms,total_ms,densify_split,densify_clone,densify_prune,grad_p50,grad_p90,bg_r,bg_g,bg_b,scale_median,aniso_median,aniso_p90,aniso_max,opacity_median,opacity_low_pct,pos_grad_median,scale_grad_median,rot_grad_median,eval_ssim"
         )?;
         // Make the header visible immediately even if the process runs for a long time
         // before the first row is written (e.g., when `val_interval` is large).
@@ -75,10 +75,13 @@ impl CsvLogger {
         grad_p90: f32,
         bg: &Vector3<f32>,
         stats: &GaussianStats,
+        // Multi-view eval SSIM for real eval rows; -1.0 on proxy/train-psnr rows (SSIM is
+        // only computed when the full test-view eval runs).
+        eval_ssim: f32,
     ) -> std::io::Result<()> {
         writeln!(
             self.file,
-            "{},{:.6},{:.2},{},{:.2},{:.2},{:.2},{:.2},{},{},{},{:.4},{:.4},{:.6},{:.6},{:.6},{:.4},{:.2},{:.2},{:.2},{:.3},{:.1},{:.6},{:.6},{:.6}",
+            "{},{:.6},{:.2},{},{:.2},{:.2},{:.2},{:.2},{},{},{},{:.4},{:.4},{:.6},{:.6},{:.6},{:.4},{:.2},{:.2},{:.2},{:.3},{:.1},{:.6},{:.6},{:.6},{:.4}",
             iter + 1,
             loss,
             psnr,
@@ -104,6 +107,7 @@ impl CsvLogger {
             stats.pos_grad_median,
             stats.scale_grad_median,
             stats.rot_grad_median,
+            eval_ssim,
         )?;
         self.file.flush()
     }
@@ -776,6 +780,7 @@ pub fn train_single_image_color_only(cfg: &TrainConfig) -> anyhow::Result<TrainO
                     0.0, // grad_p90
                     &bg,
                     &stats,
+                    -1.0, // eval_ssim: single-view path, no multi-view eval
                 ) {
                     eprintln!("Warning: Failed to write CSV row: {}", e);
                 }
@@ -1125,6 +1130,82 @@ fn compute_psnr(rendered: &[Vector3<f32>], target: &[Vector3<f32>]) -> f32 {
     // PSNR = 10 * log10(MAX^2 / MSE)
     // For linear RGB in [0, 1], MAX = 1
     10.0 * (1.0 / mse).log10()
+}
+
+/// Standard SSIM (Wang et al.): 11×11 Gaussian window (σ=1.5), C1=0.01², C2=0.03²,
+/// computed per RGB channel on the same linear [0,1] values as `compute_psnr` (so the two
+/// columns share a domain), averaged over channels and pixels. Separable convolution with
+/// clamp-to-edge padding. `rendered`/`target` are row-major width×height.
+pub fn compute_ssim(
+    rendered: &[Vector3<f32>],
+    target: &[Vector3<f32>],
+    width: usize,
+    height: usize,
+) -> f32 {
+    if rendered.len() != target.len() || rendered.len() != width * height || rendered.is_empty() {
+        return 0.0;
+    }
+    const RADIUS: i64 = 5; // 11-tap window
+    const C1: f32 = 0.01 * 0.01;
+    const C2: f32 = 0.03 * 0.03;
+    let kernel: Vec<f32> = {
+        let sigma = 1.5f32;
+        let mut k: Vec<f32> = (-RADIUS..=RADIUS)
+            .map(|i| (-(i as f32).powi(2) / (2.0 * sigma * sigma)).exp())
+            .collect();
+        let sum: f32 = k.iter().sum();
+        k.iter_mut().for_each(|v| *v /= sum);
+        k
+    };
+    // Gaussian blur with clamp-to-edge, horizontal then vertical.
+    let blur = |src: &[f32]| -> Vec<f32> {
+        let mut tmp = vec![0.0f32; src.len()];
+        for y in 0..height as i64 {
+            for x in 0..width as i64 {
+                let mut acc = 0.0;
+                for (ki, &kv) in kernel.iter().enumerate() {
+                    let sx = (x + ki as i64 - RADIUS).clamp(0, width as i64 - 1);
+                    acc += kv * src[(y * width as i64 + sx) as usize];
+                }
+                tmp[(y * width as i64 + x) as usize] = acc;
+            }
+        }
+        let mut out = vec![0.0f32; src.len()];
+        for y in 0..height as i64 {
+            for x in 0..width as i64 {
+                let mut acc = 0.0;
+                for (ki, &kv) in kernel.iter().enumerate() {
+                    let sy = (y + ki as i64 - RADIUS).clamp(0, height as i64 - 1);
+                    acc += kv * tmp[(sy * width as i64 + x) as usize];
+                }
+                out[(y * width as i64 + x) as usize] = acc;
+            }
+        }
+        out
+    };
+    let n = rendered.len();
+    let mut ssim_sum = 0.0f64;
+    for c in 0..3 {
+        let x: Vec<f32> = rendered.iter().map(|v| v[c]).collect();
+        let y: Vec<f32> = target.iter().map(|v| v[c]).collect();
+        let xx: Vec<f32> = x.iter().map(|v| v * v).collect();
+        let yy: Vec<f32> = y.iter().map(|v| v * v).collect();
+        let xy: Vec<f32> = x.iter().zip(y.iter()).map(|(a, b)| a * b).collect();
+        let mu_x = blur(&x);
+        let mu_y = blur(&y);
+        let m_xx = blur(&xx);
+        let m_yy = blur(&yy);
+        let m_xy = blur(&xy);
+        for i in 0..n {
+            let var_x = (m_xx[i] - mu_x[i] * mu_x[i]).max(0.0);
+            let var_y = (m_yy[i] - mu_y[i] * mu_y[i]).max(0.0);
+            let cov = m_xy[i] - mu_x[i] * mu_y[i];
+            let num = (2.0 * mu_x[i] * mu_y[i] + C1) * (2.0 * cov + C2);
+            let den = (mu_x[i] * mu_x[i] + mu_y[i] * mu_y[i] + C1) * (var_x + var_y + C2);
+            ssim_sum += (num / den) as f64;
+        }
+    }
+    (ssim_sum / (3.0 * n as f64)) as f32
 }
 
 fn mean_world_sigma(g: &Gaussian) -> f32 {
@@ -2252,6 +2333,7 @@ pub fn train_multiview_color_only(
                     last_grad_p90,
                     &bg,
                     &last_gaussian_stats,
+                    -1.0, // eval_ssim: proxy row (train psnr), no multi-view eval
                 );
             }
         }
@@ -2283,6 +2365,7 @@ pub fn train_multiview_color_only(
         // Validation
         if is_validation_iter {
             let mut test_psnr_sum = 0.0f32;
+            let mut test_ssim_sum = 0.0f32;
             let mut first_test_rendered: Option<RgbImage> = None;
 
             for (i, &test_idx) in test_indices_for_metrics.iter().enumerate() {
@@ -2334,6 +2417,12 @@ pub fn train_multiview_color_only(
                 let rendered = render(&gaussians, &test_camera, &bg);
                 let psnr = compute_psnr(&rendered, &test_target_linear);
                 test_psnr_sum += psnr;
+                test_ssim_sum += compute_ssim(
+                    &rendered,
+                    &test_target_linear,
+                    test_camera.width as usize,
+                    test_camera.height as usize,
+                );
 
                 // Capture first test view for incremental rendering
                 if i == 0 {
@@ -2345,6 +2434,7 @@ pub fn train_multiview_color_only(
                 }
             }
             let avg_test_psnr = test_psnr_sum / (test_indices_for_metrics.len() as f32);
+            let avg_test_ssim = test_ssim_sum / (test_indices_for_metrics.len() as f32);
 
             // Log to CSV if logger is enabled
             if let Some(ref mut logger) = csv_logger {
@@ -2382,6 +2472,7 @@ pub fn train_multiview_color_only(
                     last_grad_p90,
                     &bg,
                     &last_gaussian_stats,
+                    avg_test_ssim,
                 );
             }
 
@@ -2665,6 +2756,7 @@ pub fn train_multiview_color_only(
 
     // Final validation
     let mut final_psnr_sum = 0.0f32;
+    let mut final_ssim_sum = 0.0f32;
     let mut test_view_sample = None;
     let mut test_view_target = None;
 
@@ -2724,6 +2816,12 @@ pub fn train_multiview_color_only(
         let rendered = render(&gaussians, &test_camera, &bg);
         let psnr = compute_psnr(&rendered, &test_target_linear);
         final_psnr_sum += psnr;
+        final_ssim_sum += compute_ssim(
+            &rendered,
+            &test_target_linear,
+            test_camera.width as usize,
+            test_camera.height as usize,
+        );
 
         // Save first test view for visual inspection
         if i == 0 {
@@ -2737,10 +2835,12 @@ pub fn train_multiview_color_only(
     }
 
     let final_psnr = final_psnr_sum / (test_indices_for_metrics.len() as f32);
+    let final_ssim = final_ssim_sum / (test_indices_for_metrics.len() as f32);
 
     eprintln!("\n✅ Multi-view training complete!");
     eprintln!("Initial test PSNR: {:.2} dB", initial_psnr);
     eprintln!("Final test PSNR:   {:.2} dB", final_psnr);
+    eprintln!("Final test SSIM:   {:.4}", final_ssim);
     eprintln!("Improvement:       {:.2} dB", final_psnr - initial_psnr);
 
     // Get training resolution from the first cached view (all have same resolution)
@@ -2774,6 +2874,54 @@ mod tests {
 
     fn empty_sh() -> [[f32; 3]; 16] {
         [[0.0; 3]; 16]
+    }
+
+    #[test]
+    fn ssim_identical_images_is_one() {
+        let (w, h) = (32, 24);
+        let img: Vec<Vector3<f32>> = (0..w * h)
+            .map(|i| {
+                let v = (i % 17) as f32 / 17.0;
+                Vector3::new(v, 1.0 - v, 0.5 * v)
+            })
+            .collect();
+        let s = compute_ssim(&img, &img, w, h);
+        assert!((s - 1.0).abs() < 1e-4, "SSIM of identical images = {}", s);
+    }
+
+    #[test]
+    fn ssim_orders_degradations_sensibly() {
+        // Structured target; a lightly-noised copy must score far above an inverted copy,
+        // and both must be strictly below 1.
+        let (w, h) = (32, 24);
+        let target: Vec<Vector3<f32>> = (0..w * h)
+            .map(|i| {
+                let x = (i % w) as f32 / w as f32;
+                let y = (i / w) as f32 / h as f32;
+                Vector3::new(x, y, ((x * 8.0).sin() * 0.5 + 0.5) * 0.9)
+            })
+            .collect();
+        let noisy: Vec<Vector3<f32>> = target
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                let n = if i % 2 == 0 { 0.02 } else { -0.02 };
+                Vector3::new(
+                    (v.x + n).clamp(0.0, 1.0),
+                    (v.y + n).clamp(0.0, 1.0),
+                    (v.z + n).clamp(0.0, 1.0),
+                )
+            })
+            .collect();
+        let inverted: Vec<Vector3<f32>> = target
+            .iter()
+            .map(|v| Vector3::new(1.0 - v.x, 1.0 - v.y, 1.0 - v.z))
+            .collect();
+        let s_noisy = compute_ssim(&noisy, &target, w, h);
+        let s_inv = compute_ssim(&inverted, &target, w, h);
+        assert!(s_noisy < 1.0 && s_noisy > 0.8, "noisy SSIM = {}", s_noisy);
+        assert!(s_inv < 0.3, "inverted SSIM = {}", s_inv);
+        assert!(s_noisy > s_inv + 0.4);
     }
 
     #[test]
