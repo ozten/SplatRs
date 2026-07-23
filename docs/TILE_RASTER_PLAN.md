@@ -87,8 +87,11 @@ raster with shared-memory batches.
    must exist in CPU-only builds cannot live under src/gpu/). `tile_touch_rect` /
    `tile_touch_count` / `tile_grid_dims`, TILE_SIZE=16. Gate passed: 7 unit tests
    (inside/spanning/clipped/off-screen/NaN/screen-filling), both feature builds compile.
-1. GPU counting kernel (`tile_bin.wgsl::count_tile_touches`) + debug readback. Gate:
-   EXACT integer match vs CPU counts on regression_scene.
+1. **DONE (2026-07-23).** `tile_bin.wgsl::count_tile_touches` + lazily-built pipeline in
+   `GpuRenderer::debug_tile_touch_counts` (returns unsorted projected values + counts so the
+   test validates on identical f32 bits; culled convention = `!(cov.w > 0)`, NaN-safe guard).
+   Gate passed: exact match on smoke + regression fixtures (tests/unit_gpu_tile_counting.rs),
+   with live and multi-tile coverage asserts.
 2. Prefix sum + pair emission + PairSorter + range kernel. Gate: per-tile depth
    monotonicity, pair conservation vs Stage-1 counts, padding regression — all exact.
 3. `rasterize_tiled.wgsl` + render_with_options. Gate: oracle parity per above on both

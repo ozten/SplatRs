@@ -375,6 +375,159 @@ impl GpuRenderer {
         })
     }
 
+    /// Tile-binning Stage-1 validation surface (docs/TILE_RASTER_PLAN.md): project
+    /// `gaussians` for `camera`, run the tile-touch counting kernel over the UNSORTED
+    /// projection output (index i in the result corresponds to `gaussians[i]`), and
+    /// return `(projected, touch_counts)` so tests can validate the GPU kernel against
+    /// the CPU oracle (`render::tile_math`) on the exact f32 values the GPU consumed.
+    /// Debug/test-only: builds its pipeline lazily per call, never used by rendering.
+    pub fn debug_tile_touch_counts(
+        &self,
+        gaussians: &[Gaussian],
+        camera: &Camera,
+    ) -> Result<(Vec<Gaussian2DGPU>, Vec<u32>), String> {
+        let num_gaussians = gaussians.len();
+        if num_gaussians == 0 {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        let (tiles_x, tiles_y) =
+            crate::render::tile_math::tile_grid_dims(camera.width, camera.height);
+
+        let gaussians_gpu: Vec<GaussianGPU> =
+            gaussians.iter().map(GaussianGPU::from_gaussian).collect();
+        let camera_gpu = CameraGPU::from_camera(camera);
+
+        let camera_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "TileBin Camera Buffer",
+            &[camera_gpu],
+            BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        );
+        let gaussians_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "TileBin Gaussians Buffer",
+            &gaussians_gpu,
+            BufferUsages::STORAGE | BufferUsages::COPY_DST,
+        );
+        let projected_bytes = ((num_gaussians as u32).next_power_of_two() as usize)
+            * std::mem::size_of::<Gaussian2DGPU>();
+        let projected_buffer = buffers::create_buffer(
+            &self.ctx.device,
+            "TileBin Projected Buffer",
+            projected_bytes as u64,
+            BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+        );
+        let settings_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "TileBin Settings Buffer",
+            &[SettingsGPU::full_sh()],
+            BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        );
+
+        let project_bind_group = self.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("TileBin Project Bind Group"),
+            layout: &self.project_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: camera_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: gaussians_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: projected_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: settings_buffer.as_entire_binding() },
+            ],
+        });
+
+        // Counting kernel: lazily built pipeline (auto layout), debug path only.
+        #[repr(C)]
+        #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+        struct TileBinParams {
+            tiles_x: u32,
+            tiles_y: u32,
+            num_gaussians: u32,
+            pad: u32,
+        }
+        let params_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "TileBin Params Buffer",
+            &[TileBinParams { tiles_x, tiles_y, num_gaussians: num_gaussians as u32, pad: 0 }],
+            BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        );
+        let counts_buffer = buffers::create_buffer(
+            &self.ctx.device,
+            "TileBin Counts Buffer",
+            (num_gaussians * std::mem::size_of::<u32>()) as u64,
+            BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+        );
+
+        self.ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let tile_bin_shader = shaders::create_tile_bin_shader(&self.ctx.device);
+        let count_pipeline =
+            self.ctx
+                .device
+                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("Tile Count Pipeline"),
+                    layout: None,
+                    module: &tile_bin_shader,
+                    entry_point: "count_tile_touches",
+                });
+        if let Some(err) = pollster::block_on(self.ctx.device.pop_error_scope()) {
+            return Err(format!("GPU pipeline `Tile Count Pipeline` failed: {}", err));
+        }
+        let count_bind_group = self.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Tile Count Bind Group"),
+            layout: &count_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: params_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: projected_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: counts_buffer.as_entire_binding() },
+            ],
+        });
+
+        let mut encoder = self
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("TileBin Encoder"),
+            });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("TileBin Project Pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.project_pipeline);
+            pass.set_bind_group(0, &project_bind_group, &[]);
+            pass.dispatch_workgroups(
+                ((num_gaussians as u32).next_power_of_two() + 255) / 256,
+                1,
+                1,
+            );
+        }
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Tile Count Pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&count_pipeline);
+            pass.set_bind_group(0, &count_bind_group, &[]);
+            pass.dispatch_workgroups((num_gaussians as u32 + 255) / 256, 1, 1);
+        }
+        self.ctx.queue.submit(Some(encoder.finish()));
+
+        let projected: Vec<Gaussian2DGPU> = buffers::read_buffer_blocking(
+            &self.ctx.device,
+            &self.ctx.queue,
+            &projected_buffer,
+            num_gaussians,
+        )
+        .map_err(|e| format!("Failed to read projected Gaussians: {e}"))?;
+        let counts: Vec<u32> = buffers::read_buffer_blocking(
+            &self.ctx.device,
+            &self.ctx.queue,
+            &counts_buffer,
+            num_gaussians,
+        )
+        .map_err(|e| format!("Failed to read tile touch counts: {e}"))?;
+        Ok((projected, counts))
+    }
+
     /// Render Gaussians from a camera viewpoint.
     ///
     /// Returns linear RGB pixel values (matching CPU renderer format).

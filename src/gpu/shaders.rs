@@ -344,6 +344,16 @@ pub fn create_project_shader(device: &Device) -> ShaderModule {
     })
 }
 
+/// WGSL shader for tile binning (docs/TILE_RASTER_PLAN.md Part B).
+pub const TILE_BIN_SHADER: &str = include_str!("tile_bin.wgsl");
+
+pub fn create_tile_bin_shader(device: &Device) -> ShaderModule {
+    device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Tile Bin Shader"),
+        source: wgpu::ShaderSource::Wgsl(TILE_BIN_SHADER.into()),
+    })
+}
+
 /// WGSL shader for rasterizing 2D Gaussians to pixels.
 pub const RASTERIZE_SHADER: &str = include_str!("rasterize.wgsl");
 
