@@ -91,3 +91,8 @@ applies; prefer the half-res showcase.
   exact. RenderOptions + render_with_options landed; naive renderer untouched as oracle.
   P1 arm 1 at ~11.4k/30k. Next: Stage 4 perf bench (tile vs naive at 60k/150k/400k) —
   the payoff measurement — then P1 arm analyses as they land.
+- 2026-07-23 ~09:45: Stage-4 bench binary built (examples/bench_tile_raster.rs) — will
+  RUN at the P1 batch boundary (~20:15), never beside a training arm. P1 arm 1
+  (dssim+rg2500) at 15.3k/30k entering settle; eval_ssim column confirmed live
+  (0.541→0.577 climbing through window close; window PSNR 17.26@15000). Arm-1 analysis
+  on its DONE event (~11:40).
