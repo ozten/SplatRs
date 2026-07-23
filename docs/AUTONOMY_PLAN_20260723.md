@@ -63,3 +63,10 @@ applies; prefer the half-res showcase.
   ~9h serial): rg2500 → no-resets → floor25, all l1-dssim on the §6.1 winner config, judged
   SSIM+LPIPS+visual vs baseline `srt30k_optfloor05_l1dssim` (17.51 peak / 0.496 LPIPS /
   15.88 final). Next: P2(a) golden parity harness while the arms run.
+- 2026-07-23 ~08:45: P2 spec committed (docs/TILE_RASTER_PLAN.md, source-verified design).
+  Part A (golden harness) delegated to a subagent (tests/golden*, compute_psnr pub
+  promotion, .gitignore carve-out — report pending). **Tile raster Stage 0 DONE** by hand:
+  TileGaussianPair + src/render/tile_math.rs oracle (7 tests; discovered lib.rs gates the
+  whole gpu module — stub is dead code — so CPU-visible code cannot live under src/gpu/).
+  P1 arm 1 (rg2500) still training. Next: review harness agent's work when it reports;
+  then Stage 1 (GPU counting kernel vs the oracle, exact-match gate).
