@@ -56,3 +56,10 @@ applies; prefer the half-res showcase.
 ## Log (append-only, newest last)
 
 - 2026-07-23 ~07:30: plan written; GPU idle; starting P0.
+- 2026-07-23 07:35: **P0 DONE** — `compute_ssim` (11×11 Gaussian window, unit-tested) wired
+  into the multi-view eval as the `eval_ssim` CSV column (proxy rows log −1); 600-iter smoke
+  verified (ssim 0.37 @600). `scripts/compute_lpips_run.py` batch-scores saved checkpoint
+  renders. Committed + pushed. **P1 batch launched** (`scripts/dssim_settle_retune.sh`,
+  ~9h serial): rg2500 → no-resets → floor25, all l1-dssim on the §6.1 winner config, judged
+  SSIM+LPIPS+visual vs baseline `srt30k_optfloor05_l1dssim` (17.51 peak / 0.496 LPIPS /
+  15.88 final). Next: P2(a) golden parity harness while the arms run.
