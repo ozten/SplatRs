@@ -1,0 +1,58 @@
+# Autonomous work plan — 2026-07-23 → 2026-07-26 (user AFK 3 days)
+
+Standing goal: **maximize validated quality progress on SplatRs** while the user is away,
+keeping the GPU saturated with one serial training arm at a time and doing code work in the
+idle CPU hours. Every result is analyzed (PSNR + SSIM + LPIPS + visual render check),
+recorded in RECOVERY_PLAN.md, committed, and pushed to main. Auto-memory updated at every
+milestone so any future session can resume from cold.
+
+## Priorities (in order)
+
+**P0 — Metric instrumentation (no GPU).** Add SSIM to the multi-view eval (reuse the DSSIM
+loss's SSIM implementation) as a new metrics.csv column; add a post-run LPIPS batch script
+(scratchpad venv has lpips+torch) over the saved per-checkpoint renders. Rationale: the
+L1+DSSIM re-test proved the harness is PSNR-blind — PSNR and perception split, and every
+future A/B must be judged on all three + visual. Unit test + 2k smoke before relying on it.
+
+**P1 — DSSIM settle re-tune.** The L1+DSSIM arm has the best window peak (17.51) and best
+LPIPS (0.496) ever but decays −0.87 in settle under L2-tuned settings. One lever per arm vs
+`runs/srt30k_optfloor05_l1dssim` as baseline, ~3h each on the micro/100-img/60k config:
+  - reset-window-margin 2500 (resets end early)
+  - margin 15000 (= no resets at all; DSSIM population is healthy without them — old
+    "reset-free overfits" verdict was L2/pre-backward-fix era)
+  - DSSIM-aware floor: --opacity-reset-floor 0.25 (≈2× cut for a 0.5-median population,
+    mirroring what 0.05 is for L2)
+  - then combine winners / iterate based on SSIM+LPIPS, not PSNR alone.
+Success: a config whose settle holds or climbs on SSIM/LPIPS and beats LPIPS 0.496.
+
+**P2 — Step 3: tile-binned rasterizer (code, interleaved with P1 GPU arms).** Per the
+roadmap decision (RECOVERY_PLAN): golden parity/regression harness FIRST, naive renderer
+kept as a switchable oracle. Order: (a) golden parity harness — render fixed models through
+CPU + GPU naive paths, assert pixel parity + PSNR floors, runnable in minutes; (b) forward
+tile-binned path behind a flag (tile lists, per-tile depth-sorted splats), parity-checked
+against the oracle on real models; (c) backward path if (b) lands clean; (d) bench at 150k+
+gaussians — the payoff is step-2's throughput ceiling. Use short GPU parity tests between
+arms; never run heavy GPU work concurrently with a training arm.
+
+**P3 — Showcase run (only after P1 yields a winner).** All-views interval-8 half-res 30k
+with the best recipe (directly comparable to splatfacto's 22.21). Full-res only if timing
+clearly allows and the recipe is stable — the standing "ask before full-res relaunch" note
+applies; prefer the half-res showcase.
+
+## Operating rules
+
+- One training process at a time (Metal watchdog); launch detached (nohup); monitor each
+  run's status file; always have the next arm decided before the current one finishes.
+- Rebuild `--release --features gpu` before any launch (CPU-only-binary gotcha).
+- Tests green before every push; main only; no force-push; no destructive ops.
+- Analysis discipline: eval-row filtering (500-cadence), fresh same-binary controls when the
+  binary changes, ALWAYS a visual render check + LPIPS alongside PSNR/SSIM.
+- Delegate parallelizable code/analysis legwork to cheaper-model subagents; review GPU
+  kernel changes personally.
+- Push notification only for: a major result, a blocker, or the end-of-plan summary.
+- If a run/session dies: everything needed to resume is in this doc, RECOVERY_PLAN.md §5–6,
+  runs/*.status, and auto-memory.
+
+## Log (append-only, newest last)
+
+- 2026-07-23 ~07:30: plan written; GPU idle; starting P0.
