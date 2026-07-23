@@ -114,3 +114,10 @@ applies; prefer the half-res showcase.
   cull-regrow treadmill (renders crisp, no streaks — the anisotropy is signal, not
   pathology, under DSSIM). Queued via scripts/post_batch_20260723.sh after the P1 batch:
   Stage-4 bench on idle GPU, then arm 4 = baseline + --settle-needle-prune-log-aniso 0.
+- 2026-07-23 13:48 **arm 2 DONE (no-resets): NET LOSS — resets stay.** Window peak only
+  16.70/0.562 (vs 17.51/0.577 with resets: the reset/re-earn cycle HELPS window quality
+  under DSSIM), settle mean 15.98/0.493, final 15.92 (=baseline), LPIPS best 0.441
+  in-window / final ~0.52 (worse than baseline 0.496), count melted to 17k regardless,
+  final opacity median 0.81 (over-opaque; soft detail loss suspected in LPIPS). Confirms
+  the decay driver is not resets → needle-treadmill hypothesis (arm 4) is live. Arm 3
+  (floor25) training until ~17:00, then bench + arm 4 fire automatically.
