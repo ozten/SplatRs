@@ -10,6 +10,10 @@
 pub mod full;
 pub mod full_diff;
 pub mod simple;
+// CPU reference math for GPU tile-binned rasterization (docs/TILE_RASTER_PLAN.md).
+// Lives here rather than src/gpu/ because lib.rs feature-gates the entire gpu module,
+// and this must be available to CPU-only builds/tests as the tile-binning oracle.
+pub mod tile_math;
 
 // Re-export
 pub use full::FullRenderer;

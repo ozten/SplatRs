@@ -81,8 +81,12 @@ raster with shared-memory batches.
 
 ### Stages (each with a gate)
 
-0. `TileGaussianPair` in types.rs + CPU `cpu_tile_touch_range` in new src/gpu/tile_math.rs.
-   Gate: pure-CPU unit tests (inside/spanning/clipped cases).
+0. **DONE (2026-07-23).** `TileGaussianPair` in src/gpu/types.rs + CPU reference math in
+   **src/render/tile_math.rs** (NOT src/gpu/ as originally planned: lib.rs:47 feature-gates
+   the ENTIRE gpu module — the non-gpu stub in gpu/mod.rs is dead code — so anything that
+   must exist in CPU-only builds cannot live under src/gpu/). `tile_touch_rect` /
+   `tile_touch_count` / `tile_grid_dims`, TILE_SIZE=16. Gate passed: 7 unit tests
+   (inside/spanning/clipped/off-screen/NaN/screen-filling), both feature builds compile.
 1. GPU counting kernel (`tile_bin.wgsl::count_tile_touches`) + debug readback. Gate:
    EXACT integer match vs CPU counts on regression_scene.
 2. Prefix sum + pair emission + PairSorter + range kernel. Gate: per-tile depth

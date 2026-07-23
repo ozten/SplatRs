@@ -81,6 +81,25 @@ pub struct Gaussian2DGPU {
     pub gaussian_idx_pad: [u32; 4],
 }
 
+/// One (tile, gaussian) incidence for tile-binned rasterization
+/// (docs/TILE_RASTER_PLAN.md Part B). The pair buffer is bitonic-sorted by the
+/// lexicographic key `(key_tile, key_depth)`; padding entries use
+/// `key_tile = num_tiles` (one past every real tile) so they sort last and the
+/// tile-range kernel never sees them.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct TileGaussianPair {
+    /// Tile id (`ty * tiles_x + tx`), or `num_tiles` for sort padding.
+    pub key_tile: u32,
+    /// `bitcast<u32>` of camera-space depth. Depth is always positive post-cull
+    /// (near plane > 0), and positive IEEE-754 floats order identically to their
+    /// raw bit patterns as u32 — no sign-flip trick needed.
+    pub key_depth: u32,
+    /// Index into the projected/gaussian buffers.
+    pub gaussian_idx: u32,
+    pub pad: u32,
+}
+
 /// Camera parameters for GPU shaders.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
