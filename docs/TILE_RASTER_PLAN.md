@@ -103,8 +103,14 @@ raster with shared-memory batches.
    scattered lost boundary writes). tile_ranges is a flat array<u32> now.** This
    constraint also applies to Stage 3+ kernel design (per-pixel state, gradient
    buffers already use scalar/atomic patterns).
-3. `rasterize_tiled.wgsl` + render_with_options. Gate: oracle parity per above on both
-   fixtures; Part A harness re-run with tile path substituted.
+3. **DONE (2026-07-23) — BIT-EXACT.** `rasterize_tiled.wgsl` (16×16 workgroup/tile,
+   256-pair shared-memory batches at 40 B/pair = 10 KiB < the 16 KiB default limit,
+   workgroup-uniform barriers, per-thread `done` flag) + `RenderOptions` +
+   `render_with_options` + `render_tiled` (v1 reuses the binning debug path). Gate
+   passed at **mean/max = 0.0 exactly** on both fixtures — beat the 1e-5 target; the
+   per-pixel math replicates the oracle expression-for-expression and the ceil-first
+   binning convention (fixed this stage in tile_math + both binning kernels: the rect
+   must cover pixel `ceil(m+r)`, which can land one tile past `floor((m+r)/16)`).
 4. Bench 60k/150k/400k × half/full res, naive vs tile; decide BATCH_SIZE=512 and
    early-exit levers from data. Gate: recorded numbers in RECOVERY_PLAN.
 5. (outline only) Backward: reuse tile_ranges+pairs to bound the per-pixel re-walk;

@@ -5,6 +5,16 @@ use crate::gpu::{buffers, context::GpuContext, shaders, types::*};
 use nalgebra::{Vector2, Vector3};
 use wgpu::{BindGroup, BindGroupLayout, BufferUsages, ComputePipeline};
 
+/// Options for [`GpuRenderer::render_with_options`] (docs/TILE_RASTER_PLAN.md Part B).
+/// Defaults select the naive oracle rasterizer with full SH — identical to `render()`.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct RenderOptions {
+    /// Use only the SH DC term for color (view-independent).
+    pub disable_sh: bool,
+    /// Use the tile-binned rasterizer instead of the naive per-pixel-loop oracle.
+    pub tile_rasterizer: bool,
+}
+
 pub struct GpuRenderer {
     ctx: GpuContext,
     project_pipeline: ComputePipeline,
@@ -386,6 +396,15 @@ impl GpuRenderer {
         gaussians: &[Gaussian],
         camera: &Camera,
     ) -> Result<(Vec<Gaussian2DGPU>, Vec<u32>), String> {
+        self.tile_touch_counts_impl(gaussians, camera, false)
+    }
+
+    fn tile_touch_counts_impl(
+        &self,
+        gaussians: &[Gaussian],
+        camera: &Camera,
+        disable_sh: bool,
+    ) -> Result<(Vec<Gaussian2DGPU>, Vec<u32>), String> {
         let num_gaussians = gaussians.len();
         if num_gaussians == 0 {
             return Ok((Vec::new(), Vec::new()));
@@ -420,7 +439,11 @@ impl GpuRenderer {
         let settings_buffer = buffers::create_buffer_init(
             &self.ctx.device,
             "TileBin Settings Buffer",
-            &[SettingsGPU::full_sh()],
+            &[if disable_sh {
+                SettingsGPU::dc_only()
+            } else {
+                SettingsGPU::full_sh()
+            }],
             BufferUsages::UNIFORM | BufferUsages::COPY_DST,
         );
 
@@ -546,7 +569,24 @@ impl GpuRenderer {
         ),
         String,
     > {
-        let (projected, counts) = self.debug_tile_touch_counts(gaussians, camera)?;
+        self.tile_binning_impl(gaussians, camera, false)
+    }
+
+    fn tile_binning_impl(
+        &self,
+        gaussians: &[Gaussian],
+        camera: &Camera,
+        disable_sh: bool,
+    ) -> Result<
+        (
+            Vec<Gaussian2DGPU>,
+            Vec<u32>,
+            Vec<TileGaussianPair>,
+            Vec<[u32; 2]>,
+        ),
+        String,
+    > {
+        let (projected, counts) = self.tile_touch_counts_impl(gaussians, camera, disable_sh)?;
         let num_gaussians = gaussians.len();
         let (tiles_x, tiles_y) =
             crate::render::tile_math::tile_grid_dims(camera.width, camera.height);
@@ -731,6 +771,140 @@ impl GpuRenderer {
         Ok((projected, counts, sorted_pairs, tile_ranges))
     }
 
+    /// Render with the tile-binned rasterizer (docs/TILE_RASTER_PLAN.md Part B Stage 3).
+    /// Correctness-first v1: reuses the debug binning path (CPU prefix sum + readbacks),
+    /// then one tiled dispatch. Stage 4 restructures for performance. The naive
+    /// `render()` remains the oracle; parity enforced by unit_gpu_tile_raster_parity.
+    fn render_tiled(
+        &self,
+        gaussians: &[Gaussian],
+        camera: &Camera,
+        background: &Vector3<f32>,
+        disable_sh: bool,
+    ) -> Result<Vec<Vector3<f32>>, String> {
+        let (projected, _counts, pairs, ranges) =
+            self.tile_binning_impl(gaussians, camera, disable_sh)?;
+        let (tiles_x, tiles_y) =
+            crate::render::tile_math::tile_grid_dims(camera.width, camera.height);
+        let width = camera.width as usize;
+        let height = camera.height as usize;
+        let pixel_count = width * height;
+
+        #[repr(C)]
+        #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+        struct TileRasterParams {
+            width: u32,
+            height: u32,
+            tiles_x: u32,
+            tiles_y: u32,
+            background: [f32; 4],
+        }
+        let params_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "TileRaster Params",
+            &[TileRasterParams {
+                width: camera.width,
+                height: camera.height,
+                tiles_x,
+                tiles_y,
+                background: [background.x, background.y, background.z, 0.0],
+            }],
+            BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        );
+        let projected_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "TileRaster Projected",
+            &projected,
+            BufferUsages::STORAGE | BufferUsages::COPY_DST,
+        );
+        // Empty tiles read ranges (0,0) and blend nothing; an empty pairs buffer still
+        // needs one element to bind.
+        let pairs_upload: &[TileGaussianPair] = if pairs.is_empty() {
+            &[TileGaussianPair {
+                key_tile: u32::MAX,
+                key_depth: u32::MAX,
+                gaussian_idx: u32::MAX,
+                pad: 0,
+            }]
+        } else {
+            &pairs
+        };
+        let pairs_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "TileRaster Pairs",
+            pairs_upload,
+            BufferUsages::STORAGE | BufferUsages::COPY_DST,
+        );
+        let ranges_flat: Vec<u32> = ranges.iter().flat_map(|r| [r[0], r[1]]).collect();
+        let ranges_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "TileRaster Ranges",
+            &ranges_flat,
+            BufferUsages::STORAGE | BufferUsages::COPY_DST,
+        );
+        let output_buffer = buffers::create_buffer(
+            &self.ctx.device,
+            "TileRaster Output",
+            (pixel_count * std::mem::size_of::<[f32; 4]>()) as u64,
+            BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+        );
+
+        self.ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let shader = shaders::create_rasterize_tiled_shader(&self.ctx.device);
+        let pipeline = self
+            .ctx
+            .device
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("Rasterize Tiled Pipeline"),
+                layout: None,
+                module: &shader,
+                entry_point: "rasterize_tiled",
+            });
+        if let Some(err) = pollster::block_on(self.ctx.device.pop_error_scope()) {
+            return Err(format!("Rasterize Tiled pipeline failed: {}", err));
+        }
+        let bind_group = self.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Rasterize Tiled Bind Group"),
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: params_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: projected_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: pairs_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: ranges_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: output_buffer.as_entire_binding() },
+            ],
+        });
+
+        let mut encoder = self
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Rasterize Tiled Encoder"),
+            });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Rasterize Tiled Pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(tiles_x, tiles_y, 1);
+        }
+        self.ctx.queue.submit(Some(encoder.finish()));
+
+        let output: Vec<[f32; 4]> = buffers::read_buffer_blocking(
+            &self.ctx.device,
+            &self.ctx.queue,
+            &output_buffer,
+            pixel_count,
+        )
+        .map_err(|e| format!("Failed to read tiled output: {e}"))?;
+        Ok(output
+            .into_iter()
+            .map(|p| Vector3::new(p[0], p[1], p[2]))
+            .collect())
+    }
+
     /// Render Gaussians from a camera viewpoint.
     ///
     /// Returns linear RGB pixel values (matching CPU renderer format).
@@ -743,6 +917,22 @@ impl GpuRenderer {
         background: &Vector3<f32>,
     ) -> Result<Vec<Vector3<f32>>, String> {
         self.render_with_sh_mode(gaussians, camera, background, false)
+    }
+
+    /// Render with explicit options (docs/TILE_RASTER_PLAN.md Part B): selects between
+    /// the naive oracle rasterizer (default) and the flag-gated tile-binned path.
+    pub fn render_with_options(
+        &self,
+        gaussians: &[Gaussian],
+        camera: &Camera,
+        background: &Vector3<f32>,
+        opts: RenderOptions,
+    ) -> Result<Vec<Vector3<f32>>, String> {
+        if opts.tile_rasterizer {
+            self.render_tiled(gaussians, camera, background, opts.disable_sh)
+        } else {
+            self.render_with_sh_mode(gaussians, camera, background, opts.disable_sh)
+        }
     }
 
     /// Render with explicit SH mode control.

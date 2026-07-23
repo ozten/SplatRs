@@ -59,10 +59,12 @@ fn count_tile_touches(@builtin(global_invocation_id) gid: vec3<u32>) {
         touch_counts[i] = 0u;
         return;
     }
+    // High edge takes ceil FIRST — must cover pixel ceil(m + r), which can land one tile
+    // past floor((m + r)/16); mirrors render::tile_math::tile_touch_rect exactly.
     let x0 = floor((g.mean.x - radius) / TILE_SIZE);
-    let x1 = floor((g.mean.x + radius) / TILE_SIZE);
+    let x1 = floor(ceil(g.mean.x + radius) / TILE_SIZE);
     let y0 = floor((g.mean.y - radius) / TILE_SIZE);
-    let y1 = floor((g.mean.y + radius) / TILE_SIZE);
+    let y1 = floor(ceil(g.mean.y + radius) / TILE_SIZE);
     let max_x = f32(params.tiles_x - 1u);
     let max_y = f32(params.tiles_y - 1u);
     if (x1 < 0.0 || y1 < 0.0 || x0 > max_x || y0 > max_y) {
@@ -90,10 +92,12 @@ fn emit_tile_pairs(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (!(radius > 0.0)) {
         return;
     }
+    // High edge takes ceil FIRST — must cover pixel ceil(m + r), which can land one tile
+    // past floor((m + r)/16); mirrors render::tile_math::tile_touch_rect exactly.
     let x0 = floor((g.mean.x - radius) / TILE_SIZE);
-    let x1 = floor((g.mean.x + radius) / TILE_SIZE);
+    let x1 = floor(ceil(g.mean.x + radius) / TILE_SIZE);
     let y0 = floor((g.mean.y - radius) / TILE_SIZE);
-    let y1 = floor((g.mean.y + radius) / TILE_SIZE);
+    let y1 = floor(ceil(g.mean.y + radius) / TILE_SIZE);
     let max_x = f32(params.tiles_x - 1u);
     let max_y = f32(params.tiles_y - 1u);
     if (x1 < 0.0 || y1 < 0.0 || x0 > max_x || y0 > max_y) {

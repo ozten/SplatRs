@@ -29,7 +29,7 @@ pub use context::{adapter_max_storage_buffer_binding_size, gpu_fault_seen, GpuCo
 #[cfg(feature = "gpu")]
 pub use gradients::{GaussianGradients2D, chain_2d_to_3d_gradients, chain_2d_to_3d_gradients_cpu};
 #[cfg(feature = "gpu")]
-pub use renderer::GpuRenderer;
+pub use renderer::{GpuRenderer, RenderOptions};
 #[cfg(feature = "gpu")]
 pub use types::{CameraGPU, Gaussian2DGPU, GaussianGPU, GradientGPU, TileGaussianPair};
 

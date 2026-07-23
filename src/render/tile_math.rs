@@ -18,9 +18,13 @@ pub fn tile_grid_dims(width: u32, height: u32) -> (u32, u32) {
 /// clipped to the tile grid. `None` when the AABB misses the image entirely or
 /// `radius <= 0` (culled / degenerate).
 ///
-/// Convention (the WGSL kernel mirrors this exactly): the AABB is the closed interval
-/// `[m - radius, m + radius]`; a tile `t` spans pixel interval `[16t, 16t + 15]` and is
-/// touched when `floor((m - radius)/16) <= t <= floor((m + radius)/16)` after clipping.
+/// Convention (the WGSL kernels mirror this exactly): the rect must cover every pixel the
+/// rasterizer's per-pixel bbox test can accept, which is `floor(m - r) <= px <= ceil(m + r)`
+/// in INTEGER pixels (rasterize.wgsl). Hence tiles
+/// `floor((m - r)/16) <= t <= floor(ceil(m + r)/16)` after clipping — the high edge takes
+/// `ceil` FIRST because pixel `ceil(m + r)` can land one tile past `floor((m + r)/16)`
+/// (e.g. m + r = 31.7 → pixel 32 → tile 2, while floor(31.7/16) = 1). The low edge needs no
+/// inner floor: `floor(floor(x)/16) == floor(x/16)`.
 pub fn tile_touch_rect(
     mx: f32,
     my: f32,
@@ -33,9 +37,9 @@ pub fn tile_touch_rect(
     }
     let t = TILE_SIZE as f32;
     let x0 = ((mx - radius) / t).floor() as i64;
-    let x1 = ((mx + radius) / t).floor() as i64;
+    let x1 = ((mx + radius).ceil() / t).floor() as i64;
     let y0 = ((my - radius) / t).floor() as i64;
-    let y1 = ((my + radius) / t).floor() as i64;
+    let y1 = ((my + radius).ceil() / t).floor() as i64;
     let max_x = tiles_x as i64 - 1;
     let max_y = tiles_y as i64 - 1;
     if x1 < 0 || y1 < 0 || x0 > max_x || y0 > max_y {
@@ -81,6 +85,18 @@ mod tests {
         // AABB [15, 17] crosses the x=16 boundary: tiles 0 and 1 in x, tile 0 in y.
         assert_eq!(tile_touch_rect(16.0, 8.0, 1.0, 31, 18), Some((0, 1, 0, 0)));
         assert_eq!(tile_touch_count(16.0, 8.0, 1.0, 31, 18), 2);
+    }
+
+    #[test]
+    fn high_edge_ceil_reaches_next_tile() {
+        // The rasterizer's per-pixel test accepts px <= ceil(m + r): with m + r = 31.7 the
+        // accepted pixel 32 lives in tile 2, one past floor(31.7/16) = 1. The rect must
+        // include it or the tiled rasterizer drops a contributor the oracle blends.
+        assert_eq!(tile_touch_rect(30.7, 8.0, 1.0, 31, 18), Some((1, 2, 0, 0)));
+        // Exactly on the boundary (m + r = 32.0): ceil is a no-op, pixel 32 → tile 2.
+        assert_eq!(tile_touch_rect(31.0, 8.0, 1.0, 31, 18), Some((1, 2, 0, 0)));
+        // Well inside a tile stays put.
+        assert_eq!(tile_touch_rect(24.0, 8.0, 1.0, 31, 18), Some((1, 1, 0, 0)));
     }
 
     #[test]
