@@ -108,3 +108,9 @@ applies; prefer the half-res showcase.
   15.88), count 60k→14.3k, best LPIPS 0.418@10.5k (in-window; beats baseline's 0.460).
   Verdict: better endpoint, mechanism NOT fixed — settle decays on all three metrics and
   the population still melts. Render remains crisp. Arm 2 (no-resets) running (~13:45).
+- 2026-07-23 ~13:20 **MECHANISM PINNED (arm-2 settle logs)**: the melt is the NEEDLE PRUNE
+  — needles=~1k/pass sustained (opacity ~100, oversize ~25) with ZERO resets; the
+  L2-tuned 2.8 threshold fights DSSIM's functional edge-following anisotropy in a
+  cull-regrow treadmill (renders crisp, no streaks — the anisotropy is signal, not
+  pathology, under DSSIM). Queued via scripts/post_batch_20260723.sh after the P1 batch:
+  Stage-4 bench on idle GPU, then arm 4 = baseline + --settle-needle-prune-log-aniso 0.
