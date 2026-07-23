@@ -1108,7 +1108,7 @@ pub struct MultiViewTrainOutputs {
 }
 
 /// Compute PSNR between two linear RGB images.
-fn compute_psnr(rendered: &[Vector3<f32>], target: &[Vector3<f32>]) -> f32 {
+pub fn compute_psnr(rendered: &[Vector3<f32>], target: &[Vector3<f32>]) -> f32 {
     if rendered.len() != target.len() || rendered.is_empty() {
         return 0.0;
     }

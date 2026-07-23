@@ -43,3 +43,7 @@ perf.data.old
 
 # README/docs images are tracked despite the global *.png ignore
 !docs/images/*.png
+
+# Golden parity/regression harness images are tracked despite the global *.png ignore
+# (docs/TILE_RASTER_PLAN.md Part A)
+!/tests/golden/goldens/*.png
