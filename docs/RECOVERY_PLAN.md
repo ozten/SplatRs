@@ -1207,12 +1207,18 @@ per-checkpoint PLY headers). Findings:
    gaussians. Visual check (m8 test view): chevron stripes, ladder rungs, "713" plate all crisper
    than control; not metric gaming.
 
-   **Dose-response (same binary, same fresh control):** full splatfacto levels overshoot —
-   20× arm (`srt30k_sd_optfloor20`, prune 0.1/floor 0.2) posts the best *window* peak of the
-   three (17.31) but settle decays again (mean 16.77, gap +0.54, final 16.31; opacity_low 0.4%):
-   at our capacity the aggressive cull removes genuinely useful dim mass. 10× arm
-   (`srt30k_sd_optfloor10`, prune 0.05/floor 0.1, `scripts/settle_decay_hunt_30k_optfloor3.sh`)
-   running to bracket the optimum.
+   **Dose-response COMPLETE (same binary, same fresh control) — clean peak at 5×:**
+
+   | dose (floor/prune) | window peak | settle mean | gap | final | opacity_low | count@30k |
+   |---|---|---|---|---|---|---|
+   | 1× (0.01/0.005) | 17.05 | 16.18 | +0.87 | 16.58 | 93.2% | 37.7k |
+   | **5× (0.05/0.025)** | 17.01 | **17.25** | **−0.24** | **17.21** | 60.7% | 20.5k |
+   | 10× (0.1/0.05) | 17.07 | 16.88 | +0.19 | 16.43 | 15.7% | 18.2k |
+   | 20× (0.2/0.1) | 17.31 | 16.77 | +0.54 | 16.31 | 0.4% | 20.7k |
+
+   Monotonic story: raising the floor helps until the cull starts eating useful dim mass;
+   only 5× has a negative gap (settle above window peak). Comparison renders:
+   `renders/20260722_optfloor/`.
 
    **DEFAULTS FLIPPED (2026-07-22):** `--opacity-reset-floor` 0.01 → **0.05**,
    `--prune-opacity-threshold` 0.005 → **0.025** in the micro/onehour/full presets and the
