@@ -1248,10 +1248,26 @@ per-checkpoint PLY headers). Findings:
    mild settle slide returned (16.19→15.76) — the §6.1 negative-gap result does not fully
    transfer to the 150k/all-views regime. Plot: count_vs_quality overlay (same-split panel).
 
-   **Next recipe lever queued (2026-07-23, `scripts/loss_retest_30k.sh`): L1+DSSIM re-test.**
-   Splatfacto trains L1 + 0.2·(1−SSIM); every srt run trains L2. The old "L1Dssim loses"
-   verdict was 2k-iters on the pre-backward-fix renderer — stale. One arm: the §6.1 winner's
-   exact config + `--loss l1-dssim` vs `srt30k_sd_optfloor05` (17.21/17.25) as control.
+   **L1+DSSIM re-test RESULT (2026-07-23, `runs/srt30k_optfloor05_l1dssim` vs the §6.1
+   winner as control): PSNR and perception split — DSSIM wins where it counts.** The old 2k
+   pre-backward-fix refutation is dead; the modern picture is nuanced:
+
+   | | window peak | settle mean | gap | final PSNR | LPIPS (m8 view) | count | opac_med |
+   |---|---|---|---|---|---|---|---|
+   | L2 (control, §6.1 winner) | 17.01 | 17.25 | −0.24 | **17.21** | 0.556 | 20.5k | 0.050 |
+   | L1+DSSIM | **17.51** | 16.64 | +0.87 | 15.88 | **0.496** | 12.2k | **0.499** |
+
+   L1+DSSIM posts the best window peak of any run ever, the best perceptual quality (LPIPS
+   0.496; render visibly crisper — chevrons, port-hole, background structure), and the
+   healthiest population ever seen (median opacity 0.50, only 12.2k gaussians). But its
+   settle phase decays −0.87 under settings tuned for L2 — plausible culprit: with the
+   population living at opacity ~0.5, the 0.05 reset floor is a 10× cut (vs 2× for the L2
+   population), so resets/settle interact very differently. PSNR also structurally favors
+   the L2-trained model (it optimizes the test metric directly). NOT a refutation — an
+   open settle-interaction problem + a metrics question: if the goal is perceptual quality,
+   L1+DSSIM with a re-tuned settle (gentler/no resets, DSSIM-aware floor) is the most
+   promising open lever; consider adding SSIM/LPIPS columns to metrics.csv so the harness
+   stops being PSNR-blind.
 3. **Tile-binned GPU rasterization.** Still required for the capacity term (~2.5–3.5 dB) and the
    throughput ceiling (60k-cap training exists only because the current rasterizer is too slow at
    200k+), but it is no longer the sole road to quality — steps 1–2 are cheaper and come first.
