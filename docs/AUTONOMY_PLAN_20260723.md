@@ -84,3 +84,10 @@ applies; prefer the half-res showcase.
   array<u32> now, constraint recorded for all future kernels. P1 arm 1 at ~7k/30k
   (~0.53s/iter → arm1 ~11:45, batch complete ~20:15). Next tick: Stage 3
   (rasterize_tiled.wgsl + render_with_options + oracle parity gate).
+- 2026-07-23 ~09:45: **Tile raster Stage 3 DONE — BIT-EXACT parity** (mean/max diff 0.0
+  vs oracle on both fixtures, target was 1e-5). Second convention bug found by design
+  review before it could bite: binning rect must cover pixel ceil(m+r) (oracle's bbox is
+  integer-pixel floor/ceil), high edge now ceil-first everywhere, Stage 1/2 gates still
+  exact. RenderOptions + render_with_options landed; naive renderer untouched as oracle.
+  P1 arm 1 at ~11.4k/30k. Next: Stage 4 perf bench (tile vs naive at 60k/150k/400k) —
+  the payoff measurement — then P1 arm analyses as they land.
