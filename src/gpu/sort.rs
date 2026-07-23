@@ -180,6 +180,135 @@ struct SortParams {
     pad: u32,
 }
 
+/// Bitonic sorter for `TileGaussianPair` buffers, keyed lexicographically
+/// `(key_tile, key_depth)` (docs/TILE_RASTER_PLAN.md Part B Stage 2). Same network and
+/// dispatch structure as [`BitonicSorter`]; the buffer must be power-of-two padded with
+/// `key_tile = num_tiles` sentinel entries (the host fills these before upload).
+pub struct PairSorter {
+    pipeline: ComputePipeline,
+    bind_group_layout: BindGroupLayout,
+}
+
+impl PairSorter {
+    pub fn new(device: &Device) -> Self {
+        let shader = device.create_shader_module(ShaderModuleDescriptor {
+            label: Some("Pair Sort Shader"),
+            source: ShaderSource::Wgsl(include_str!("sort_pairs.wgsl").into()),
+        });
+
+        let bind_group_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+            label: Some("Pair Sort Bind Group Layout"),
+            entries: &[
+                BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: ShaderStages::COMPUTE,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: ShaderStages::COMPUTE,
+                    ty: BindingType::Buffer {
+                        ty: BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+            label: Some("Pair Sort Pipeline Layout"),
+            bind_group_layouts: &[&bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        let pipeline = device.create_compute_pipeline(&ComputePipelineDescriptor {
+            label: Some("Pair Sort Pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: "bitonic_sort_pairs",
+        });
+
+        Self {
+            pipeline,
+            bind_group_layout,
+        }
+    }
+
+    /// Sort a power-of-two padded `TileGaussianPair` buffer in place.
+    /// `count` is the number of REAL pairs; the pad region must already hold
+    /// `key_tile = num_tiles` sentinels.
+    pub fn sort(
+        &self,
+        device: &Device,
+        encoder: &mut CommandEncoder,
+        buffer: &Buffer,
+        count: u32,
+    ) {
+        if count <= 1 {
+            return;
+        }
+        let padded_count = count.next_power_of_two();
+        debug_assert!(
+            buffer.size()
+                >= (padded_count as u64)
+                    * (std::mem::size_of::<crate::gpu::types::TileGaussianPair>() as u64),
+            "pair sort requires a power-of-two padded buffer ({} entries, buffer holds {} bytes)",
+            padded_count,
+            buffer.size()
+        );
+        let num_stages = (padded_count as f32).log2() as u32;
+
+        for stage in 0..num_stages {
+            for step in 0..=stage {
+                let step_within_stage = stage - step;
+                let params = SortParams {
+                    padded_count,
+                    stage,
+                    step_within_stage,
+                    pad: 0,
+                };
+                let params_buffer = device.create_buffer_init(&util::BufferInitDescriptor {
+                    label: Some("Pair Sort Params"),
+                    contents: bytemuck::cast_slice(&[params]),
+                    usage: BufferUsages::UNIFORM,
+                });
+                let bind_group = device.create_bind_group(&BindGroupDescriptor {
+                    label: Some("Pair Sort Bind Group"),
+                    layout: &self.bind_group_layout,
+                    entries: &[
+                        BindGroupEntry {
+                            binding: 0,
+                            resource: buffer.as_entire_binding(),
+                        },
+                        BindGroupEntry {
+                            binding: 1,
+                            resource: params_buffer.as_entire_binding(),
+                        },
+                    ],
+                });
+                let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor {
+                    label: Some("Pair Sort Pass"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(&self.pipeline);
+                pass.set_bind_group(0, &bind_group, &[]);
+                let workgroup_size = 256;
+                let num_pairs = padded_count / 2;
+                let num_workgroups = (num_pairs + workgroup_size - 1) / workgroup_size;
+                pass.dispatch_workgroups(num_workgroups, 1, 1);
+                drop(pass);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

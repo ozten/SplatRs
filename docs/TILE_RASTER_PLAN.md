@@ -92,8 +92,17 @@ raster with shared-memory batches.
    test validates on identical f32 bits; culled convention = `!(cov.w > 0)`, NaN-safe guard).
    Gate passed: exact match on smoke + regression fixtures (tests/unit_gpu_tile_counting.rs),
    with live and multi-tile coverage asserts.
-2. Prefix sum + pair emission + PairSorter + range kernel. Gate: per-tile depth
-   monotonicity, pair conservation vs Stage-1 counts, padding regression — all exact.
+2. **DONE (2026-07-23).** CPU prefix sum → emit_tile_pairs → PairSorter
+   (sort_pairs.wgsl, byte-for-byte copy of the proven network incl. the 836f4d0
+   direction bit) → identify_tile_ranges. Gate passed (tests/unit_gpu_tile_sort.rs):
+   global sortedness, per-tile depth monotonicity, pair conservation vs counts +
+   rect membership + depth-key bitcast check, range partition, no sentinel leak —
+   all exact, both fixtures. **BUG FOUND & FIXED en route: never let two threads
+   write different components of one storage vec2 — naga/Metal compiles a component
+   store as load-modify-write of the whole vector, silently racing (observed as
+   scattered lost boundary writes). tile_ranges is a flat array<u32> now.** This
+   constraint also applies to Stage 3+ kernel design (per-pixel state, gradient
+   buffers already use scalar/atomic patterns).
 3. `rasterize_tiled.wgsl` + render_with_options. Gate: oracle parity per above on both
    fixtures; Part A harness re-run with tile path substituted.
 4. Bench 60k/150k/400k × half/full res, naive vs tile; decide BATCH_SIZE=512 and

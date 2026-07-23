@@ -528,6 +528,209 @@ impl GpuRenderer {
         Ok((projected, counts))
     }
 
+    /// Tile-binning Stage-2 validation surface (docs/TILE_RASTER_PLAN.md): full binning
+    /// pipeline — project → count → CPU exclusive prefix sum → pair emission →
+    /// (tile, depth) bitonic sort → tile-range boundary detection — returning
+    /// `(projected, counts, sorted_pairs, tile_ranges)` for property tests.
+    /// Debug/test-only; pipelines built lazily per call.
+    pub fn debug_tile_binning(
+        &self,
+        gaussians: &[Gaussian],
+        camera: &Camera,
+    ) -> Result<
+        (
+            Vec<Gaussian2DGPU>,
+            Vec<u32>,
+            Vec<TileGaussianPair>,
+            Vec<[u32; 2]>,
+        ),
+        String,
+    > {
+        let (projected, counts) = self.debug_tile_touch_counts(gaussians, camera)?;
+        let num_gaussians = gaussians.len();
+        let (tiles_x, tiles_y) =
+            crate::render::tile_math::tile_grid_dims(camera.width, camera.height);
+        let num_tiles = (tiles_x * tiles_y) as usize;
+
+        // CPU exclusive prefix sum (v1 simplification per the plan: 4·N bytes readback).
+        let mut offsets = vec![0u32; num_gaussians];
+        let mut total_pairs: u32 = 0;
+        for (i, &c) in counts.iter().enumerate() {
+            offsets[i] = total_pairs;
+            total_pairs += c;
+        }
+        if total_pairs == 0 {
+            return Ok((projected, counts, Vec::new(), vec![[0u32; 2]; num_tiles]));
+        }
+        let padded = total_pairs.next_power_of_two();
+
+        // Re-upload projected values so the emit kernel reads the same f32 bits the
+        // counting kernel consumed (avoids a second projection dispatch drifting state).
+        let projected_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "TileBin Projected (re-upload)",
+            &projected,
+            BufferUsages::STORAGE | BufferUsages::COPY_DST,
+        );
+        let offsets_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "TileBin Offsets Buffer",
+            &offsets,
+            BufferUsages::STORAGE | BufferUsages::COPY_DST,
+        );
+        // Pad region pre-filled with key_tile = num_tiles sentinels (sort last).
+        let sentinel = TileGaussianPair {
+            key_tile: num_tiles as u32,
+            key_depth: u32::MAX,
+            gaussian_idx: u32::MAX,
+            pad: 0,
+        };
+        let pairs_init = vec![sentinel; padded as usize];
+        let pairs_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "TileBin Pairs Buffer",
+            &pairs_init,
+            BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
+        );
+        let ranges_buffer = buffers::create_buffer_zeroed::<[u32; 2]>(
+            &self.ctx.device,
+            "TileBin Ranges Buffer",
+            num_tiles,
+            BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+        );
+
+        #[repr(C)]
+        #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+        struct TileBinParams {
+            tiles_x: u32,
+            tiles_y: u32,
+            num_gaussians: u32,
+            total_pairs: u32,
+        }
+        let params_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "TileBin Params Buffer (stage 2)",
+            &[TileBinParams {
+                tiles_x,
+                tiles_y,
+                num_gaussians: num_gaussians as u32,
+                total_pairs,
+            }],
+            BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        );
+
+        self.ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let tile_bin_shader = shaders::create_tile_bin_shader(&self.ctx.device);
+        let emit_pipeline =
+            self.ctx
+                .device
+                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("Tile Pair Emit Pipeline"),
+                    layout: None,
+                    module: &tile_bin_shader,
+                    entry_point: "emit_tile_pairs",
+                });
+        let ranges_pipeline =
+            self.ctx
+                .device
+                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("Tile Ranges Pipeline"),
+                    layout: None,
+                    module: &tile_bin_shader,
+                    entry_point: "identify_tile_ranges",
+                });
+        if let Some(err) = pollster::block_on(self.ctx.device.pop_error_scope()) {
+            return Err(format!("Tile bin stage-2 pipeline creation failed: {}", err));
+        }
+
+        let emit_bind_group = self.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Tile Pair Emit Bind Group"),
+            layout: &emit_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: params_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: projected_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: offsets_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: pairs_buffer.as_entire_binding() },
+            ],
+        });
+        let ranges_bind_group = self.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Tile Ranges Bind Group"),
+            layout: &ranges_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: params_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: pairs_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: ranges_buffer.as_entire_binding() },
+            ],
+        });
+
+        let sorter = crate::gpu::sort::PairSorter::new(&self.ctx.device);
+
+        // Three separate submissions, matching the render() path's phase-per-submission
+        // convention (queue.submit boundaries are hard sync points). Note: the lost-write
+        // bug originally observed here was NOT an encoder-ordering hazard — it was the
+        // vec2<u32> component-store race documented in tile_bin.wgsl (two threads writing
+        // .x/.y of one vector); the split submissions are kept for convention/defense.
+        let mut encoder = self
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("TileBin Emit Encoder"),
+            });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Tile Pair Emit Pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&emit_pipeline);
+            pass.set_bind_group(0, &emit_bind_group, &[]);
+            pass.dispatch_workgroups((num_gaussians as u32 + 255) / 256, 1, 1);
+        }
+        self.ctx.queue.submit(Some(encoder.finish()));
+
+        let mut encoder = self
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("TileBin Sort Encoder"),
+            });
+        sorter.sort(&self.ctx.device, &mut encoder, &pairs_buffer, total_pairs);
+        self.ctx.queue.submit(Some(encoder.finish()));
+
+        let mut encoder = self
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("TileBin Ranges Encoder"),
+            });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Tile Ranges Pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&ranges_pipeline);
+            pass.set_bind_group(0, &ranges_bind_group, &[]);
+            pass.dispatch_workgroups((total_pairs + 255) / 256, 1, 1);
+        }
+        self.ctx.queue.submit(Some(encoder.finish()));
+
+        let sorted_pairs: Vec<TileGaussianPair> = buffers::read_buffer_blocking(
+            &self.ctx.device,
+            &self.ctx.queue,
+            &pairs_buffer,
+            total_pairs as usize,
+        )
+        .map_err(|e| format!("Failed to read sorted pairs: {e}"))?;
+        let tile_ranges: Vec<[u32; 2]> = buffers::read_buffer_blocking(
+            &self.ctx.device,
+            &self.ctx.queue,
+            &ranges_buffer,
+            num_tiles,
+        )
+        .map_err(|e| format!("Failed to read tile ranges: {e}"))?;
+
+        Ok((projected, counts, sorted_pairs, tile_ranges))
+    }
+
     /// Render Gaussians from a camera viewpoint.
     ///
     /// Returns linear RGB pixel values (matching CPU renderer format).
