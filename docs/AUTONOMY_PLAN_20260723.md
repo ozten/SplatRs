@@ -77,3 +77,10 @@ applies; prefer the half-res showcase.
   the CPU oracle (0 mismatches, 2k+20k fixtures). P1 arm 1 at ~5k/30k (~0.5s/iter, DSSIM
   is pricier) — batch ETA ~18:00-19:00. Next: Stage 2 (pair emission + (tile,depth)
   bitonic sort + tile ranges), then arm-1 analysis when it lands.
+- 2026-07-23 ~11:00: **Tile raster Stage 2 DONE** (pair emit + PairSorter + ranges, all
+  properties exact on both fixtures). Real GPU bug found & fixed en route: naga/Metal
+  compiles vec2 component stores in storage as whole-vector load-modify-write → two
+  threads writing .x/.y of one tile's range raced and lost writes; tile_ranges is a flat
+  array<u32> now, constraint recorded for all future kernels. P1 arm 1 at ~7k/30k
+  (~0.53s/iter → arm1 ~11:45, batch complete ~20:15). Next tick: Stage 3
+  (rasterize_tiled.wgsl + render_with_options + oracle parity gate).
