@@ -70,3 +70,10 @@ applies; prefer the half-res showcase.
   whole gpu module — stub is dead code — so CPU-visible code cannot live under src/gpu/).
   P1 arm 1 (rg2500) still training. Next: review harness agent's work when it reports;
   then Stage 1 (GPU counting kernel vs the oracle, exact-match gate).
+- 2026-07-23 ~09:40: **P2(a) golden harness LANDED** (cf898ea, subagent-built, reviewed):
+  CPU AND GPU forward proven bit-exact deterministic (measured drift 0.0 on Metal) —
+  parity 0.0/6.3e-5 vs the 2e-3/1e-2 gates; 40 dB PSNR floors vs 16-bit goldens.
+  **Tile raster Stage 1 DONE by hand**: count_tile_touches kernel + exact-match gate vs
+  the CPU oracle (0 mismatches, 2k+20k fixtures). P1 arm 1 at ~5k/30k (~0.5s/iter, DSSIM
+  is pricier) — batch ETA ~18:00-19:00. Next: Stage 2 (pair emission + (tile,depth)
+  bitonic sort + tile ranges), then arm-1 analysis when it lands.
