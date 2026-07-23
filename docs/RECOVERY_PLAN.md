@@ -1232,9 +1232,26 @@ per-checkpoint PLY headers). Findings:
    comparable to the hebot ns-eval grid for the first time), `--max-test-views 0` (full
    38-view eval), `--save-interval 1500` (checkpoint grid mirroring splatfacto's cadence),
    opacity thresholds = the §6.1 winners (explicit flags, same binary as the dose-response
-   arms). Output `runs/srt30k_cap150k_int8`. Analysis on completion:
-   `scripts/plot_count_vs_quality.py` overlaying the splatfacto grid — measures SplatRs's
-   actual dB-per-doubling and how much of the ~2.5–3.5 dB capacity term is real.
+   arms). Output `runs/srt30k_cap150k_int8`.
+
+   **RESULT (2026-07-23): the capacity term is far smaller than estimated — the gap is
+   overwhelmingly recipe.** First direct same-protocol numbers (identical 38-view interval-8
+   test set, 490×273): SplatRs **15.76** final (peak 16.19 @15000) vs splatfacto **22.21** —
+   measured gap **~6.1–6.5 dB**. The curves finally touch at ~150k count, and the touchpoint
+   is damning: splatfacto @150.7k count with only **1,500** iterations scores 16.34; SplatRs
+   @149.9k with **15,000** iterations scores 16.19. From there splatfacto gains +6 dB at
+   near-constant count (250→305k) through optimization; SplatRs sits flat at ~16 for 27k
+   iterations. Measured capacity yield inside the SplatRs run: 28k→150k count (2.4 doublings,
+   including the extra training time) bought +1.9 dB ⇒ **≲0.8 dB/doubling**, well under the
+   1–1.5 assumed in §5 — the capacity share of the gap is ~1.5–2 dB, not 2.5–3.5. Also: the
+   cap bound hard (149.9k from iter 3000), settle melted the population back to 77k, and a
+   mild settle slide returned (16.19→15.76) — the §6.1 negative-gap result does not fully
+   transfer to the 150k/all-views regime. Plot: count_vs_quality overlay (same-split panel).
+
+   **Next recipe lever queued (2026-07-23, `scripts/loss_retest_30k.sh`): L1+DSSIM re-test.**
+   Splatfacto trains L1 + 0.2·(1−SSIM); every srt run trains L2. The old "L1Dssim loses"
+   verdict was 2k-iters on the pre-backward-fix renderer — stale. One arm: the §6.1 winner's
+   exact config + `--loss l1-dssim` vs `srt30k_sd_optfloor05` (17.21/17.25) as control.
 3. **Tile-binned GPU rasterization.** Still required for the capacity term (~2.5–3.5 dB) and the
    throughput ceiling (60k-cap training exists only because the current rasterizer is too slow at
    200k+), but it is no longer the sole road to quality — steps 1–2 are cheaper and come first.
