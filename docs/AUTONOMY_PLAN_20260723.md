@@ -96,3 +96,10 @@ applies; prefer the half-res showcase.
   (dssim+rg2500) at 15.3k/30k entering settle; eval_ssim column confirmed live
   (0.541→0.577 climbing through window close; window PSNR 17.26@15000). Arm-1 analysis
   on its DONE event (~11:40).
+- 2026-07-23 ~10:15 interim: arm 1 (rg2500) settle still DECAYS under DSSIM — SSIM
+  0.577@15k → 0.482@21k, PSNR 17.26→16.57, count melting 60k→24.8k (settle prunes remove
+  ~2k/pass under the DSSIM population; margin-2500 alone is not the fix). Arm 2
+  (no-resets) is the discriminator: if decay persists with zero resets, the driver is the
+  settle-prune × DSSIM interaction. Baseline LPIPS curve computed
+  (runs/srt30k_optfloor05_l1dssim/lpips.csv): best 0.460@25.5k, final 0.496 — LPIPS also
+  bottoms mid-settle then worsens.
