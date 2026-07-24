@@ -111,8 +111,27 @@ raster with shared-memory batches.
    per-pixel math replicates the oracle expression-for-expression and the ceil-first
    binning convention (fixed this stage in tile_math + both binning kernels: the rect
    must cover pixel `ceil(m+r)`, which can land one tile past `floor((m+r)/16)`).
-4. Bench 60k/150k/400k × half/full res, naive vs tile; decide BATCH_SIZE=512 and
-   early-exit levers from data. Gate: recorded numbers in RECOVERY_PLAN.
+4. **DONE (2026-07-23, runs/bench_tile_raster_20260723.txt, M2 Max):**
+
+   | N | res | naive ms | tiled ms | speedup | pairs | K |
+   |---|---|---|---|---|---|---|
+   | 60k | 490×273 | 125.5 | 26.8 | 4.7× | 268k | 5.3 |
+   | 60k | 980×545 | 467.2 | 32.5 | 14.4× | 645k | 12.9 |
+   | 150k | 490×273 | 495.8 | 43.6 | 11.4× | 668k | 5.3 |
+   | 150k | 980×545 | 1568.4 | 61.1 | **25.7×** | 1.61M | 12.9 |
+   | 400k | 490×273 | 487.6 | 87.9 | 5.5× | 1.77M | 5.3 |
+   | 400k | 980×545 | 899.7 | 237.8 | 3.8× | 4.27M | 12.8 |
+
+   Notes: (a) tiled numbers INCLUDE the v1 overhead (lazy pipelines, CPU prefix sum,
+   readbacks) — production integration will be faster still; (b) naive scales
+   sub-linearly at 400k because per-pixel early termination (T<1e-4) saturates in dense
+   scenes — real effect, benefits both paths; (c) bench parity max ~5e-4..8e-3 on the
+   random synthetic scenes is a DEPTH-TIE artifact (random f32 depths collide; tie order
+   differs between the depth-only sort and the (tile,depth) sort; both orders are
+   legitimate) — the structured golden fixtures remain bit-exact 0.0; (d) 400k full-res
+   in ONE un-banded dispatch at 238 ms — the Metal-watchdog ceiling that motivated
+   banding is gone on the tile path; (e) BATCH_SIZE=512 / workgroup early-exit levers
+   deferred — current numbers already clear the bar for Stage 5.
 5. (outline only) Backward: reuse tile_ranges+pairs to bound the per-pixel re-walk;
    atomicAdd accumulation scheme unchanged; pixel_state's contributor index becomes
    tile-local. Workgroup-shared gradient accumulation is the follow-on optimization.

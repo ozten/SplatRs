@@ -1268,6 +1268,26 @@ per-checkpoint PLY headers). Findings:
    L1+DSSIM with a re-tuned settle (gentler/no resets, DSSIM-aware floor) is the most
    promising open lever; consider adding SSIM/LPIPS columns to metrics.csv so the harness
    stops being PSNR-blind.
+
+   **DSSIM settle re-tune round 1 (2026-07-23, `scripts/dssim_settle_retune.sh`, judged on
+   PSNR + the new eval_ssim column + batch LPIPS):** the reset levers are NOT the fix.
+
+   | arm (all l1-dssim) | window peak (PSNR/SSIM) | settle mean | final | best LPIPS | count@30k |
+   |---|---|---|---|---|---|
+   | baseline (margin 0) | 17.51 / — | 16.64 / — | 15.88 | 0.460 @25.5k | 12.2k |
+   | rg2500 | 17.51 / 0.577 | 16.69 / 0.520 | 16.31 | **0.418** @10.5k | 14.3k |
+   | no-resets (margin 15000) | 16.70 / 0.562 | 15.98 / 0.493 | 15.92 | 0.441 @13k | 17.0k |
+   | floor 0.25 | 17.10 / 0.567 | 16.12 / 0.505 | 15.40 | 0.432 @15.5k | 16.7k |
+
+   Findings: (1) **resets HELP the DSSIM window** (no-resets loses ~0.8 window peak — the
+   floor/re-earn cycle is constructive here); (2) every arm still decays in settle on all
+   three metrics with the population melting to ~15k; (3) **the melt is the needle prune**:
+   arm-2 settle logs show needles≈1k/pass sustained with ZERO resets (opacity≈100,
+   oversize≈25/pass) — the L2-tuned `--settle-needle-prune-log-aniso 2.8` culls DSSIM's
+   *functional* edge-following anisotropy in a cull-regrow treadmill (renders are crisp,
+   no streaks — under DSSIM high aniso is signal, not pathology). Round 2 arm running:
+   baseline + `--settle-needle-prune-log-aniso 0` (needle prune off in settle only,
+   opacity/oversize prunes intact), `scripts/post_batch_20260723.sh`.
 3. **Tile-binned GPU rasterization.** Still required for the capacity term (~2.5–3.5 dB) and the
    throughput ceiling (60k-cap training exists only because the current rasterizer is too slow at
    200k+), but it is no longer the sole road to quality — steps 1–2 are cheaper and come first.
