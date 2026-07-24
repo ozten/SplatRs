@@ -1316,6 +1316,18 @@ per-checkpoint PLY headers). Findings:
    overlay. Remaining gap decomposition unchanged in kind (capacity ≲2 dB, recipe the
    rest) — next levers: tile-rasterizer backward (throughput → bigger caps/full-res
    feasible), densification quality (absgrad-style), further DSSIM recipe stacking.
+
+   **P3-v2 (2026-07-24): the TILED trainer reproduces the showcase at 8.4× speed —
+   standard pipeline from now on.** `runs/srt30k_p3v2_tiled` (identical config +
+   `--tile-raster`): final **16.91**/0.550 vs naive 16.72 (equal-or-better, within
+   noise), settle mean 16.93 (flat), count 112.8k, best LPIPS 0.2407 (vs 0.2429) —
+   in **1.5h vs 12.5h** (~194ms/iter at 123k gaussians vs ~1.9s). Tile-raster Stage 5
+   (docs/TILE_RASTER_PLAN.md) is complete: forward+backward bit-exact vs the oracle,
+   500-iter training equivalence 0.0000 dB, no watchdog banding to 400k full-res.
+   Every future 30k experiment is now a ~1.5-2h iteration instead of overnight.
+   Full-res training is now practically feasible (~4× pixels ⇒ est. 6-8h) but stays
+   user-gated per the standing note. rg2500 does NOT stack with needle-off (17.19 vs
+   17.35) — recipe unchanged.
 3. **Tile-binned GPU rasterization.** Still required for the capacity term (~2.5–3.5 dB) and the
    throughput ceiling (60k-cap training exists only because the current rasterizer is too slow at
    200k+), but it is no longer the sole road to quality — steps 1–2 are cheaper and come first.

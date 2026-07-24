@@ -156,3 +156,6 @@ applies; prefer the half-res showcase.
   proxy). **P3-v2 launched with --tile-raster**: same showcase config, iter 1 at 115ms
   total vs ~1.9s naive — projected ~2-3h vs 12.5h. If it reproduces ~16.7, the tiled
   trainer becomes the standard pipeline.
+- 2026-07-24 15:07 **P3-v2 DONE — TILED TRAINER VALIDATED AT FULL SCALE**: 16.91 final
+  (naive: 16.72), settle mean 16.93 flat, LPIPS 0.2407, in 1.5h vs 12.5h (8.4×). The
+  tiled path is the standard pipeline. All plan priorities + Stage 5 + P3-v2 complete.
