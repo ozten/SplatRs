@@ -159,3 +159,9 @@ applies; prefer the half-res showcase.
 - 2026-07-24 15:07 **P3-v2 DONE — TILED TRAINER VALIDATED AT FULL SCALE**: 16.91 final
   (naive: 16.72), settle mean 16.93 flat, LPIPS 0.2407, in 1.5h vs 12.5h (8.4×). The
   tiled path is the standard pipeline. All plan priorities + Stage 5 + P3-v2 complete.
+- 2026-07-24 15:56: absgrad densification landed (--densify-absgrad, abs |d_mean| atomic
+  slots in both backward kernels, gates green; two empirically-forced fixes documented:
+  fixed-point scale + signed visibility gate). A/B launched on the TILED pipeline
+  (scripts/absgrad_ab_tiled.sh): fresh tiled control (also revalidates tiled at the
+  100-img config vs naive 17.35) then absgrad arm @0.0004 — ~2h total, the last planned
+  experiment of the AFK window.
