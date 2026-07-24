@@ -132,9 +132,47 @@ raster with shared-memory batches.
    in ONE un-banded dispatch at 238 ms — the Metal-watchdog ceiling that motivated
    banding is gone on the tile path; (e) BATCH_SIZE=512 / workgroup early-exit levers
    deferred — current numbers already clear the bar for Stage 5.
-5. (outline only) Backward: reuse tile_ranges+pairs to bound the per-pixel re-walk;
-   atomicAdd accumulation scheme unchanged; pixel_state's contributor index becomes
-   tile-local. Workgroup-shared gradient accumulation is the follow-on optimization.
+5. **Full staged plan (2026-07-24, source-verified — see git history of this section for
+   the long form; key decisions below are the contract):**
+   - **5a** Tiled forward-with-intermediates + lifecycle: pixel_state binding in
+     rasterize_tiled.wgsl storing (bitcast(T_final), ABSOLUTE last pair index; sentinel
+     0xFFFFFFFF), one whole-vec2 store per owning thread (race-safe). Cache all tile
+     pipelines + PairSorter as GpuRenderer fields (built in new()); new GPU-resident
+     tile_binning_gpu() reading back ONLY counts (projected/pairs/ranges stay on GPU —
+     kills the v1 32-68MB round-trips). Gates: existing parity/count/sort tests + new
+     unit_gpu_tile_pixel_state_parity (T within 1e-5; resolved-identity match:
+     sorted_buffer[naive.y].gaussian_idx_pad.x == pairs[tiled.y].gaussian_idx) + bench
+     non-regression.
+   - **5b** backward_tiled.wgsl: one workgroup/tile, batched BACK-TO-FRONT walk of the
+     full tile range (batch_end→range_start), per-pixel gate `pair_idx > last_pair_idx →
+     continue` (valid because pairs are depth-ascending in-tile), helpers/constants copied
+     VERBATIM from backward.wgsl, shared memory = read-only cache (batch_a/b/c + NEW
+     batch_idx u32 = 44B×256 = 11KiB < 16KiB), gradients go straight to the UNCHANGED
+     global fixed-point atomic buffer. gaussian_idx needs NO indirection (projection never
+     reorders on the tile path — pairs carry original indices). 7 storage buffers + 1
+     uniform = exact fit under max_storage_buffers_per_shader_stage=8 (VERIFY with a
+     pipeline-creation smoke FIRST; fallback = two bind groups). Gate: new
+     unit_gpu_tile_backward_gradients — naive-GPU vs tiled-GPU on smoke/regression +
+     deep_stack_scene (factored from unit_gpu_deep_blend_gradients), tolerance start
+     0.02·max+1e-3 (half the naive-vs-CPU precedent; measure, log, loosen only with
+     numbers); plus a hand-computed 2-3-gaussian single-tile tripwire.
+   - **5c** bench_tile_raster_backward.rs (same matrix as Stage 4). Banding trigger: any
+     unbanded dispatch > ~1s → band by TILE ROWS (tile_row_offset param), else ship
+     unbanded. Top empirical risk: atomic contention on tile-spanning gaussians
+     (unforecastable from forward's atomic-free numbers).
+   - **5d** MultiViewTrainConfig.tile_rasterizer + --tile-raster CLI +
+     SUGAR_GPU_TILE_RASTER env default + startup log; only the two render call sites in
+     the training loop change (render_with_options / new
+     render_with_gradients_and_options; naive body renamed _naive). All config literals
+     updated (m8/m9 tests). Single-view TrainConfig explicitly out of scope.
+   - **5e** 500-iter training-equivalence smoke (#[ignore], fully procedural — no COLMAP:
+     bespoke loop from pub pieces: regression_scene target, perturbed init, loss.rs +
+     adam.rs + compute_psnr). CALIBRATE the naive-vs-naive noise floor before locking the
+     threshold (start ~0.3 dB final-PSNR delta).
+   Ranked risks: (1) 8-buffer exact fit, (2) atomic contention, (3) batch-boundary
+   off-by-one in the back-to-front walk (silently drops one boundary pair — the tripwire
+   fixture exists for this), (4) uncalibrated 5e threshold, (5) the lifecycle refactor
+   touches two passing gates — re-run them in isolation before 5b builds on top.
 
 ### Top risks
 
