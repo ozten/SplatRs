@@ -26,6 +26,16 @@ pub struct GpuRenderer {
     backward_bind_group_layout: BindGroupLayout,
     project_backward_bind_group_layout: BindGroupLayout,
     sorter: crate::gpu::sort::BitonicSorter,
+    // Tile-binned path (docs/TILE_RASTER_PLAN.md Part B Stage 5a): cached here (built once
+    // in `new()`) instead of lazily per-call like the Stage 0-2 debug paths, so the
+    // production render_tiled()/debug_render_tiled_pixel_state() paths don't pay pipeline
+    // creation cost on every frame. Bind group layouts are fetched per-call via
+    // `pipeline.get_bind_group_layout(0)` (auto `layout: None` pipelines).
+    pair_sorter: crate::gpu::sort::PairSorter,
+    tile_bin_count_pipeline: ComputePipeline,
+    tile_bin_emit_pipeline: ComputePipeline,
+    tile_bin_ranges_pipeline: ComputePipeline,
+    rasterize_tiled_pipeline: ComputePipeline,
 }
 
 /// Rows per banded rasterize/backward submission. The naive per-pixel kernels do
@@ -41,6 +51,20 @@ fn watchdog_rows_per_band(width: u32, height: u32, num_gaussians: usize) -> u32 
     let per_row = (width as u64).max(1) * (num_gaussians as u64).max(1);
     let rows = (PIXEL_GAUSSIAN_BUDGET / per_row).max(16) as u32;
     (rows / 16 * 16).min(height.max(1))
+}
+
+/// GPU-resident tile-binning result (docs/TILE_RASTER_PLAN.md Part B Stage 5a):
+/// `projected`/`pairs`/`ranges` stay on the GPU end-to-end — the only readback in
+/// [`GpuRenderer::tile_binning_gpu`] is the per-gaussian touch-count array needed for the
+/// CPU exclusive prefix sum. This kills the v1 `tile_binning_impl` path's 32-68 MB
+/// round-trips (projected re-upload + sorted-pairs/ranges readback) for every render.
+struct TileBinningGpu {
+    projected_buffer: wgpu::Buffer,
+    pairs_buffer: wgpu::Buffer,
+    ranges_buffer: wgpu::Buffer,
+    total_pairs: u32,
+    tiles_x: u32,
+    tiles_y: u32,
 }
 
 impl GpuRenderer {
@@ -302,9 +326,12 @@ impl GpuRenderer {
                     push_constant_ranges: &[],
                 });
 
-        // Create compute pipelines with explicit validation error capture.
+        // Create compute pipelines with explicit validation error capture. `layout: None`
+        // (auto layout) is used for the tile-binned pipelines below — their bind group
+        // layouts are fetched per-call via `pipeline.get_bind_group_layout(0)`, matching
+        // the Stage 0-2 debug paths' convention.
         let mut create_pipeline = |label: &str,
-                                   layout: &wgpu::PipelineLayout,
+                                   layout: Option<&wgpu::PipelineLayout>,
                                    module: &wgpu::ShaderModule,
                                    entry: &str|
          -> Result<wgpu::ComputePipeline, String> {
@@ -314,7 +341,7 @@ impl GpuRenderer {
                 .device
                 .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                     label: Some(label),
-                    layout: Some(layout),
+                    layout,
                     module,
                     entry_point: entry,
                 });
@@ -326,14 +353,14 @@ impl GpuRenderer {
 
         let project_pipeline = create_pipeline(
             "Project Pipeline",
-            &project_pipeline_layout,
+            Some(&project_pipeline_layout),
             &project_shader,
             "project_gaussians",
         )?;
 
         let rasterize_pipeline = create_pipeline(
             "Rasterize Pipeline",
-            &rasterize_pipeline_layout,
+            Some(&rasterize_pipeline_layout),
             &rasterize_shader,
             "rasterize",
         )?;
@@ -348,7 +375,7 @@ impl GpuRenderer {
 
         let backward_pipeline = create_pipeline(
             "Backward Pipeline",
-            &backward_pipeline_layout,
+            Some(&backward_pipeline_layout),
             &backward_shader,
             "backward_pass",
         )?;
@@ -363,13 +390,48 @@ impl GpuRenderer {
 
         let project_backward_pipeline = create_pipeline(
             "Project Backward Pipeline",
-            &project_backward_pipeline_layout,
+            Some(&project_backward_pipeline_layout),
             &project_backward_shader,
             "project_backward",
         )?;
 
         // Create bitonic sorter for GPU-side sorting
         let sorter = crate::gpu::sort::BitonicSorter::new(&ctx.device);
+
+        // Tile-binned path (docs/TILE_RASTER_PLAN.md Part B Stage 5a): cache the pipelines
+        // and the pair sorter up front instead of building them lazily per call (the
+        // Stage 0-2 debug_tile_* paths still do that — left untouched, they back the
+        // Stage 0-2 gates). One shared tile_bin_shader module backs three entry points;
+        // wgpu's auto (`layout: None`) reflection derives a distinct bind group layout per
+        // entry point from only the bindings that entry point actually references.
+        let tile_bin_shader = shaders::create_tile_bin_shader(&ctx.device);
+        let rasterize_tiled_shader = shaders::create_rasterize_tiled_shader(&ctx.device);
+
+        let tile_bin_count_pipeline = create_pipeline(
+            "Tile Count Pipeline",
+            None,
+            &tile_bin_shader,
+            "count_tile_touches",
+        )?;
+        let tile_bin_emit_pipeline = create_pipeline(
+            "Tile Pair Emit Pipeline",
+            None,
+            &tile_bin_shader,
+            "emit_tile_pairs",
+        )?;
+        let tile_bin_ranges_pipeline = create_pipeline(
+            "Tile Ranges Pipeline",
+            None,
+            &tile_bin_shader,
+            "identify_tile_ranges",
+        )?;
+        let rasterize_tiled_pipeline = create_pipeline(
+            "Rasterize Tiled Pipeline",
+            None,
+            &rasterize_tiled_shader,
+            "rasterize_tiled",
+        )?;
+        let pair_sorter = crate::gpu::sort::PairSorter::new(&ctx.device);
 
         Ok(Self {
             ctx,
@@ -382,6 +444,11 @@ impl GpuRenderer {
             backward_bind_group_layout,
             project_backward_bind_group_layout,
             sorter,
+            pair_sorter,
+            tile_bin_count_pipeline,
+            tile_bin_emit_pipeline,
+            tile_bin_ranges_pipeline,
+            rasterize_tiled_pipeline,
         })
     }
 
@@ -771,10 +838,292 @@ impl GpuRenderer {
         Ok((projected, counts, sorted_pairs, tile_ranges))
     }
 
-    /// Render with the tile-binned rasterizer (docs/TILE_RASTER_PLAN.md Part B Stage 3).
-    /// Correctness-first v1: reuses the debug binning path (CPU prefix sum + readbacks),
-    /// then one tiled dispatch. Stage 4 restructures for performance. The naive
-    /// `render()` remains the oracle; parity enforced by unit_gpu_tile_raster_parity.
+    /// Full GPU-resident tile-binning pipeline (docs/TILE_RASTER_PLAN.md Part B Stage 5a):
+    /// project → count → read back ONLY counts (4·N bytes) → CPU exclusive prefix sum →
+    /// upload offsets → emit (reusing the SAME projected buffer the counting kernel wrote,
+    /// no reupload) → `self.pair_sorter.sort` → identify ranges. Never reads
+    /// projected/pairs/ranges back — callers that need pairs (e.g. the Stage 5a pixel-state
+    /// debug accessor) read them back themselves afterward.
+    ///
+    /// `total_pairs == 0` (no gaussian touches any tile) returns an empty-but-valid
+    /// 1-element pairs buffer and a zeroed ranges buffer: every tile's range stays (0, 0),
+    /// so the raster kernel blends nothing for any pixel, matching an all-background frame.
+    fn tile_binning_gpu(
+        &self,
+        gaussians: &[Gaussian],
+        camera: &Camera,
+        disable_sh: bool,
+    ) -> Result<TileBinningGpu, String> {
+        let num_gaussians = gaussians.len();
+        let (tiles_x, tiles_y) =
+            crate::render::tile_math::tile_grid_dims(camera.width, camera.height);
+        let num_tiles = (tiles_x * tiles_y) as usize;
+
+        let gaussians_gpu: Vec<GaussianGPU> =
+            gaussians.iter().map(GaussianGPU::from_gaussian).collect();
+        let camera_gpu = CameraGPU::from_camera(camera);
+
+        let camera_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "TileBinGpu Camera",
+            &[camera_gpu],
+            BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        );
+        let gaussians_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "TileBinGpu Gaussians",
+            &gaussians_gpu,
+            BufferUsages::STORAGE | BufferUsages::COPY_DST,
+        );
+        let projected_bytes = ((num_gaussians as u32).next_power_of_two() as usize)
+            * std::mem::size_of::<Gaussian2DGPU>();
+        // No COPY_SRC: unlike the Stage 0-2 debug paths, tile_binning_gpu never reads the
+        // projected buffer back — it stays resident on the GPU for the emit kernel and the
+        // raster dispatch to consume directly.
+        let projected_buffer = buffers::create_buffer(
+            &self.ctx.device,
+            "TileBinGpu Projected",
+            projected_bytes as u64,
+            BufferUsages::STORAGE,
+        );
+        let settings_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "TileBinGpu Settings",
+            &[if disable_sh {
+                SettingsGPU::dc_only()
+            } else {
+                SettingsGPU::full_sh()
+            }],
+            BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        );
+
+        let project_bind_group = self.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("TileBinGpu Project Bind Group"),
+            layout: &self.project_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: camera_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: gaussians_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: projected_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: settings_buffer.as_entire_binding() },
+            ],
+        });
+
+        #[repr(C)]
+        #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+        struct TileBinParams {
+            tiles_x: u32,
+            tiles_y: u32,
+            num_gaussians: u32,
+            total_pairs: u32,
+        }
+        let count_params_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "TileBinGpu Count Params",
+            &[TileBinParams { tiles_x, tiles_y, num_gaussians: num_gaussians as u32, total_pairs: 0 }],
+            BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        );
+        let counts_buffer = buffers::create_buffer(
+            &self.ctx.device,
+            "TileBinGpu Counts",
+            (num_gaussians * std::mem::size_of::<u32>()) as u64,
+            BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+        );
+        let count_bind_group = self.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("TileBinGpu Count Bind Group"),
+            layout: &self.tile_bin_count_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: count_params_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: projected_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: counts_buffer.as_entire_binding() },
+            ],
+        });
+
+        let mut encoder = self
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("TileBinGpu Project+Count Encoder"),
+            });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("TileBinGpu Project Pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.project_pipeline);
+            pass.set_bind_group(0, &project_bind_group, &[]);
+            pass.dispatch_workgroups(
+                ((num_gaussians as u32).next_power_of_two() + 255) / 256,
+                1,
+                1,
+            );
+        }
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("TileBinGpu Count Pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.tile_bin_count_pipeline);
+            pass.set_bind_group(0, &count_bind_group, &[]);
+            pass.dispatch_workgroups((num_gaussians as u32 + 255) / 256, 1, 1);
+        }
+        self.ctx.queue.submit(Some(encoder.finish()));
+
+        // ONLY readback in this function: per-gaussian touch counts (4·N bytes ≤ 1.6 MB at
+        // 400k gaussians), needed for the CPU exclusive prefix sum (a GPU scan is a later
+        // optimization per the plan).
+        let counts: Vec<u32> = buffers::read_buffer_blocking(
+            &self.ctx.device,
+            &self.ctx.queue,
+            &counts_buffer,
+            num_gaussians,
+        )
+        .map_err(|e| format!("Failed to read tile touch counts: {e}"))?;
+
+        let mut offsets = vec![0u32; num_gaussians];
+        let mut total_pairs: u32 = 0;
+        for (i, &c) in counts.iter().enumerate() {
+            offsets[i] = total_pairs;
+            total_pairs += c;
+        }
+
+        if total_pairs == 0 {
+            let dummy_pair = TileGaussianPair {
+                key_tile: u32::MAX,
+                key_depth: u32::MAX,
+                gaussian_idx: u32::MAX,
+                pad: 0,
+            };
+            let pairs_buffer = buffers::create_buffer_init(
+                &self.ctx.device,
+                "TileBinGpu Pairs (empty)",
+                &[dummy_pair],
+                BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
+            );
+            let ranges_buffer = buffers::create_buffer_zeroed::<[u32; 2]>(
+                &self.ctx.device,
+                "TileBinGpu Ranges (empty)",
+                num_tiles,
+                BufferUsages::STORAGE,
+            );
+            return Ok(TileBinningGpu {
+                projected_buffer,
+                pairs_buffer,
+                ranges_buffer,
+                total_pairs: 0,
+                tiles_x,
+                tiles_y,
+            });
+        }
+
+        let padded = total_pairs.next_power_of_two();
+        let offsets_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "TileBinGpu Offsets",
+            &offsets,
+            BufferUsages::STORAGE | BufferUsages::COPY_DST,
+        );
+        // Pad region pre-filled with key_tile = num_tiles sentinels (sort last) — an
+        // upload, not a readback, so it doesn't violate the "never read pairs back" rule.
+        let sentinel = TileGaussianPair {
+            key_tile: num_tiles as u32,
+            key_depth: u32::MAX,
+            gaussian_idx: u32::MAX,
+            pad: 0,
+        };
+        let pairs_init = vec![sentinel; padded as usize];
+        // COPY_SRC: debug/test callers (e.g. debug_render_tiled_pixel_state) read the
+        // sorted pairs back for validation; tile_binning_gpu itself never does.
+        let pairs_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "TileBinGpu Pairs",
+            &pairs_init,
+            BufferUsages::STORAGE | BufferUsages::COPY_DST | BufferUsages::COPY_SRC,
+        );
+        let ranges_buffer = buffers::create_buffer_zeroed::<[u32; 2]>(
+            &self.ctx.device,
+            "TileBinGpu Ranges",
+            num_tiles,
+            BufferUsages::STORAGE,
+        );
+
+        let emit_params_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "TileBinGpu Emit Params",
+            &[TileBinParams { tiles_x, tiles_y, num_gaussians: num_gaussians as u32, total_pairs }],
+            BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        );
+
+        let emit_bind_group = self.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("TileBinGpu Emit Bind Group"),
+            layout: &self.tile_bin_emit_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: emit_params_buffer.as_entire_binding() },
+                // REUSED from the count pass — no readback/reupload round-trip.
+                wgpu::BindGroupEntry { binding: 1, resource: projected_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: offsets_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: pairs_buffer.as_entire_binding() },
+            ],
+        });
+        let ranges_bind_group = self.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("TileBinGpu Ranges Bind Group"),
+            layout: &self.tile_bin_ranges_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: emit_params_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: pairs_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: ranges_buffer.as_entire_binding() },
+            ],
+        });
+
+        let mut encoder = self
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("TileBinGpu Emit Encoder"),
+            });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("TileBinGpu Emit Pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.tile_bin_emit_pipeline);
+            pass.set_bind_group(0, &emit_bind_group, &[]);
+            pass.dispatch_workgroups((num_gaussians as u32 + 255) / 256, 1, 1);
+        }
+        self.ctx.queue.submit(Some(encoder.finish()));
+
+        let mut encoder = self
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("TileBinGpu Sort Encoder"),
+            });
+        self.pair_sorter.sort(&self.ctx.device, &mut encoder, &pairs_buffer, total_pairs);
+        self.ctx.queue.submit(Some(encoder.finish()));
+
+        let mut encoder = self
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("TileBinGpu Ranges Encoder"),
+            });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("TileBinGpu Ranges Pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.tile_bin_ranges_pipeline);
+            pass.set_bind_group(0, &ranges_bind_group, &[]);
+            pass.dispatch_workgroups((total_pairs + 255) / 256, 1, 1);
+        }
+        self.ctx.queue.submit(Some(encoder.finish()));
+
+        Ok(TileBinningGpu { projected_buffer, pairs_buffer, ranges_buffer, total_pairs, tiles_x, tiles_y })
+    }
+
+    /// Render with the tile-binned rasterizer (docs/TILE_RASTER_PLAN.md Part B Stage 5a).
+    /// Uses the GPU-resident `tile_binning_gpu` (projected/pairs/ranges never leave the
+    /// GPU) and the cached `rasterize_tiled_pipeline`. The naive `render()` remains the
+    /// oracle; parity enforced by unit_gpu_tile_raster_parity.
     fn render_tiled(
         &self,
         gaussians: &[Gaussian],
@@ -782,10 +1131,7 @@ impl GpuRenderer {
         background: &Vector3<f32>,
         disable_sh: bool,
     ) -> Result<Vec<Vector3<f32>>, String> {
-        let (projected, _counts, pairs, ranges) =
-            self.tile_binning_impl(gaussians, camera, disable_sh)?;
-        let (tiles_x, tiles_y) =
-            crate::render::tile_math::tile_grid_dims(camera.width, camera.height);
+        let binning = self.tile_binning_gpu(gaussians, camera, disable_sh)?;
         let width = camera.width as usize;
         let height = camera.height as usize;
         let pixel_count = width * height;
@@ -797,6 +1143,10 @@ impl GpuRenderer {
             height: u32,
             tiles_x: u32,
             tiles_y: u32,
+            save_intermediates: u32,
+            pad0: u32,
+            pad1: u32,
+            pad2: u32,
             background: [f32; 4],
         }
         let params_buffer = buffers::create_buffer_init(
@@ -805,42 +1155,15 @@ impl GpuRenderer {
             &[TileRasterParams {
                 width: camera.width,
                 height: camera.height,
-                tiles_x,
-                tiles_y,
+                tiles_x: binning.tiles_x,
+                tiles_y: binning.tiles_y,
+                save_intermediates: 0,
+                pad0: 0,
+                pad1: 0,
+                pad2: 0,
                 background: [background.x, background.y, background.z, 0.0],
             }],
             BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-        );
-        let projected_buffer = buffers::create_buffer_init(
-            &self.ctx.device,
-            "TileRaster Projected",
-            &projected,
-            BufferUsages::STORAGE | BufferUsages::COPY_DST,
-        );
-        // Empty tiles read ranges (0,0) and blend nothing; an empty pairs buffer still
-        // needs one element to bind.
-        let pairs_upload: &[TileGaussianPair] = if pairs.is_empty() {
-            &[TileGaussianPair {
-                key_tile: u32::MAX,
-                key_depth: u32::MAX,
-                gaussian_idx: u32::MAX,
-                pad: 0,
-            }]
-        } else {
-            &pairs
-        };
-        let pairs_buffer = buffers::create_buffer_init(
-            &self.ctx.device,
-            "TileRaster Pairs",
-            pairs_upload,
-            BufferUsages::STORAGE | BufferUsages::COPY_DST,
-        );
-        let ranges_flat: Vec<u32> = ranges.iter().flat_map(|r| [r[0], r[1]]).collect();
-        let ranges_buffer = buffers::create_buffer_init(
-            &self.ctx.device,
-            "TileRaster Ranges",
-            &ranges_flat,
-            BufferUsages::STORAGE | BufferUsages::COPY_DST,
         );
         let output_buffer = buffers::create_buffer(
             &self.ctx.device,
@@ -848,30 +1171,25 @@ impl GpuRenderer {
             (pixel_count * std::mem::size_of::<[f32; 4]>()) as u64,
             BufferUsages::STORAGE | BufferUsages::COPY_SRC,
         );
+        // Dummy 1-element pixel-state buffer: not written when save_intermediates=0 (same
+        // pattern as render_with_sh_mode's "Pixel State Buffer (dummy)").
+        let pixel_state_buffer = buffers::create_buffer_zeroed::<[u32; 2]>(
+            &self.ctx.device,
+            "TileRaster Pixel State (dummy)",
+            1,
+            BufferUsages::STORAGE,
+        );
 
-        self.ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let shader = shaders::create_rasterize_tiled_shader(&self.ctx.device);
-        let pipeline = self
-            .ctx
-            .device
-            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some("Rasterize Tiled Pipeline"),
-                layout: None,
-                module: &shader,
-                entry_point: "rasterize_tiled",
-            });
-        if let Some(err) = pollster::block_on(self.ctx.device.pop_error_scope()) {
-            return Err(format!("Rasterize Tiled pipeline failed: {}", err));
-        }
         let bind_group = self.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Rasterize Tiled Bind Group"),
-            layout: &pipeline.get_bind_group_layout(0),
+            layout: &self.rasterize_tiled_pipeline.get_bind_group_layout(0),
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: params_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: projected_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: pairs_buffer.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: ranges_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: binning.projected_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: binning.pairs_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: binning.ranges_buffer.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 4, resource: output_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: pixel_state_buffer.as_entire_binding() },
             ],
         });
 
@@ -886,9 +1204,9 @@ impl GpuRenderer {
                 label: Some("Rasterize Tiled Pass"),
                 timestamp_writes: None,
             });
-            pass.set_pipeline(&pipeline);
+            pass.set_pipeline(&self.rasterize_tiled_pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(tiles_x, tiles_y, 1);
+            pass.dispatch_workgroups(binning.tiles_x, binning.tiles_y, 1);
         }
         self.ctx.queue.submit(Some(encoder.finish()));
 
@@ -903,6 +1221,128 @@ impl GpuRenderer {
             .into_iter()
             .map(|p| Vector3::new(p[0], p[1], p[2]))
             .collect())
+    }
+
+    /// Debug/test-only accessor (docs/TILE_RASTER_PLAN.md Part B Stage 5a gate): runs the
+    /// tile-binned forward pass with `save_intermediates=1` and returns
+    /// `(pixels, pixel_state, sorted_pairs)`. `pixel_state[i].1` (when not the
+    /// `0xFFFFFFFF` sentinel) indexes into the returned `sorted_pairs`, whose
+    /// `gaussian_idx` is the ORIGINAL Gaussian index (the tile path never reorders
+    /// `projected` — pairs carry original indices, unlike the naive path's globally
+    /// depth-sorted buffer).
+    pub fn debug_render_tiled_pixel_state(
+        &self,
+        gaussians: &[Gaussian],
+        camera: &Camera,
+        background: &Vector3<f32>,
+    ) -> Result<(Vec<Vector3<f32>>, Vec<[u32; 2]>, Vec<TileGaussianPair>), String> {
+        let binning = self.tile_binning_gpu(gaussians, camera, false)?;
+        let width = camera.width as usize;
+        let height = camera.height as usize;
+        let pixel_count = width * height;
+
+        #[repr(C)]
+        #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+        struct TileRasterParams {
+            width: u32,
+            height: u32,
+            tiles_x: u32,
+            tiles_y: u32,
+            save_intermediates: u32,
+            pad0: u32,
+            pad1: u32,
+            pad2: u32,
+            background: [f32; 4],
+        }
+        let params_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "Debug TiledPS Params",
+            &[TileRasterParams {
+                width: camera.width,
+                height: camera.height,
+                tiles_x: binning.tiles_x,
+                tiles_y: binning.tiles_y,
+                save_intermediates: 1,
+                pad0: 0,
+                pad1: 0,
+                pad2: 0,
+                background: [background.x, background.y, background.z, 0.0],
+            }],
+            BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        );
+        let output_buffer = buffers::create_buffer(
+            &self.ctx.device,
+            "Debug TiledPS Output",
+            (pixel_count * std::mem::size_of::<[f32; 4]>()) as u64,
+            BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+        );
+        let pixel_state_buffer = buffers::create_buffer_zeroed::<[u32; 2]>(
+            &self.ctx.device,
+            "Debug TiledPS Pixel State",
+            pixel_count,
+            BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+        );
+
+        let bind_group = self.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Debug TiledPS Bind Group"),
+            layout: &self.rasterize_tiled_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: params_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: binning.projected_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: binning.pairs_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: binning.ranges_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: output_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: pixel_state_buffer.as_entire_binding() },
+            ],
+        });
+
+        let mut encoder = self
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Debug TiledPS Encoder"),
+            });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Debug TiledPS Pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.rasterize_tiled_pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(binning.tiles_x, binning.tiles_y, 1);
+        }
+        self.ctx.queue.submit(Some(encoder.finish()));
+
+        let output: Vec<[f32; 4]> = buffers::read_buffer_blocking(
+            &self.ctx.device,
+            &self.ctx.queue,
+            &output_buffer,
+            pixel_count,
+        )
+        .map_err(|e| format!("Failed to read tiled output: {e}"))?;
+        let pixel_state: Vec<[u32; 2]> = buffers::read_buffer_blocking(
+            &self.ctx.device,
+            &self.ctx.queue,
+            &pixel_state_buffer,
+            pixel_count,
+        )
+        .map_err(|e| format!("Failed to read tiled pixel state: {e}"))?;
+        // The empty-scene sentinel path leaves a 1-element dummy pairs buffer; read only
+        // what's real (or the 1 dummy element so the read isn't zero-sized).
+        let pairs_len = binning.total_pairs.max(1) as usize;
+        let pairs: Vec<TileGaussianPair> = buffers::read_buffer_blocking(
+            &self.ctx.device,
+            &self.ctx.queue,
+            &binning.pairs_buffer,
+            pairs_len,
+        )
+        .map_err(|e| format!("Failed to read tiled sorted pairs: {e}"))?;
+
+        let pixels = output
+            .into_iter()
+            .map(|p| Vector3::new(p[0], p[1], p[2]))
+            .collect();
+        Ok((pixels, pixel_state, pairs))
     }
 
     /// Render Gaussians from a camera viewpoint.
@@ -1230,6 +1670,216 @@ impl GpuRenderer {
         }
 
         Ok(result)
+    }
+
+    /// Debug/test-only accessor (docs/TILE_RASTER_PLAN.md Part B Stage 5a gate): runs the
+    /// naive oracle's forward pass (full SH, `save_intermediates=1`) and returns
+    /// `(pixels, pixel_state, sorted_projected)` — the same forward computation
+    /// [`GpuRenderer::render_with_gradients`] runs internally, minus the backward pass,
+    /// with the sorted `Gaussian2DGPU` buffer exposed so a test can resolve
+    /// `pixel_state[i].1` (a SORTED-buffer index, sentinel `0xFFFFFFFF`) to an ORIGINAL
+    /// Gaussian index via `sorted_projected[y].gaussian_idx_pad[0]`.
+    pub fn debug_render_naive_pixel_state(
+        &self,
+        gaussians: &[Gaussian],
+        camera: &Camera,
+        background: &Vector3<f32>,
+    ) -> Result<(Vec<Vector3<f32>>, Vec<[u32; 2]>, Vec<Gaussian2DGPU>), String> {
+        let num_gaussians = gaussians.len();
+        let width = camera.width;
+        let height = camera.height;
+        let num_pixels = (width * height) as usize;
+        if num_gaussians == 0 {
+            // No contributors: transmittance stays 1.0 (fully transparent -> all
+            // background), sentinel index (matches what the shader would have written).
+            return Ok((
+                vec![*background; num_pixels],
+                vec![[1.0f32.to_bits(), 0xFFFFFFFFu32]; num_pixels],
+                Vec::new(),
+            ));
+        }
+
+        let gaussians_gpu: Vec<GaussianGPU> =
+            gaussians.iter().map(GaussianGPU::from_gaussian).collect();
+        let camera_gpu = CameraGPU::from_camera(camera);
+
+        let camera_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "Debug NaivePS Camera",
+            &[camera_gpu],
+            BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        );
+        let gaussians_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "Debug NaivePS Gaussians",
+            &gaussians_gpu,
+            BufferUsages::STORAGE | BufferUsages::COPY_DST,
+        );
+        let projected_bytes = ((num_gaussians as u32).next_power_of_two() as usize)
+            * std::mem::size_of::<Gaussian2DGPU>();
+        let projected_buffer = buffers::create_buffer(
+            &self.ctx.device,
+            "Debug NaivePS Projected",
+            projected_bytes as u64,
+            BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+        );
+        let settings_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "Debug NaivePS Settings",
+            &[SettingsGPU::full_sh()],
+            BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        );
+
+        let project_bind_group = self.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Debug NaivePS Project Bind Group"),
+            layout: &self.project_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: camera_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: gaussians_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: projected_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: settings_buffer.as_entire_binding() },
+            ],
+        });
+
+        let mut encoder = self
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Debug NaivePS Project Encoder"),
+            });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Debug NaivePS Project Pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.project_pipeline);
+            pass.set_bind_group(0, &project_bind_group, &[]);
+            pass.dispatch_workgroups(
+                ((num_gaussians as u32).next_power_of_two() + 255) / 256,
+                1,
+                1,
+            );
+        }
+        self.ctx.queue.submit(Some(encoder.finish()));
+
+        let mut encoder = self
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Debug NaivePS Sort Encoder"),
+            });
+        self.sorter.sort(&self.ctx.device, &mut encoder, &projected_buffer, num_gaussians as u32);
+        self.ctx.queue.submit(Some(encoder.finish()));
+
+        // Sorted buffer is the same as projected buffer (in-place sort).
+        let sorted_buffer = projected_buffer;
+
+        #[repr(C)]
+        #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+        struct RenderParams {
+            width: u32,
+            height: u32,
+            num_gaussians: u32,
+            save_intermediates: u32,
+            row_offset: u32,
+            pad: [u32; 3],
+            background: [f32; 4],
+        }
+        let params = RenderParams {
+            width,
+            height,
+            num_gaussians: num_gaussians as u32,
+            save_intermediates: 1,
+            row_offset: 0,
+            pad: [0; 3],
+            background: [background.x, background.y, background.z, 0.0],
+        };
+
+        let output_buffer = buffers::create_buffer_zeroed::<[f32; 4]>(
+            &self.ctx.device,
+            "Debug NaivePS Output",
+            num_pixels,
+            BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+        );
+        let pixel_state_buffer = buffers::create_buffer_zeroed::<[u32; 2]>(
+            &self.ctx.device,
+            "Debug NaivePS Pixel State",
+            num_pixels,
+            BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+        );
+
+        let rows_per_band = watchdog_rows_per_band(width, height, num_gaussians);
+        let mut row0 = 0u32;
+        while row0 < height {
+            let band_rows = rows_per_band.min(height - row0);
+            let band_params = RenderParams { row_offset: row0, ..params };
+            let params_buffer = buffers::create_buffer_init(
+                &self.ctx.device,
+                "Debug NaivePS Params (band)",
+                &[band_params],
+                BufferUsages::UNIFORM,
+            );
+            let rasterize_bind_group =
+                self.ctx
+                    .device
+                    .create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("Debug NaivePS Rasterize Bind Group"),
+                        layout: &self.rasterize_bind_group_layout,
+                        entries: &[
+                            wgpu::BindGroupEntry { binding: 0, resource: params_buffer.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 1, resource: sorted_buffer.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 2, resource: output_buffer.as_entire_binding() },
+                            wgpu::BindGroupEntry { binding: 3, resource: pixel_state_buffer.as_entire_binding() },
+                        ],
+                    });
+
+            let mut encoder = self
+                .ctx
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Debug NaivePS Rasterize Encoder"),
+                });
+            {
+                let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("Debug NaivePS Rasterize Pass"),
+                    timestamp_writes: None,
+                });
+                compute_pass.set_pipeline(&self.rasterize_pipeline);
+                compute_pass.set_bind_group(0, &rasterize_bind_group, &[]);
+                compute_pass.dispatch_workgroups((width + 15) / 16, (band_rows + 15) / 16, 1);
+            }
+            self.ctx.queue.submit(Some(encoder.finish()));
+            self.ctx.device.poll(wgpu::Maintain::Wait);
+            row0 += band_rows;
+        }
+
+        let output: Vec<[f32; 4]> = buffers::read_buffer_blocking(
+            &self.ctx.device,
+            &self.ctx.queue,
+            &output_buffer,
+            num_pixels,
+        )
+        .map_err(|e| format!("Failed to read output buffer: {e}"))?;
+        let pixel_state: Vec<[u32; 2]> = buffers::read_buffer_blocking(
+            &self.ctx.device,
+            &self.ctx.queue,
+            &pixel_state_buffer,
+            num_pixels,
+        )
+        .map_err(|e| format!("Failed to read pixel state buffer: {e}"))?;
+        let sorted: Vec<Gaussian2DGPU> = buffers::read_buffer_blocking(
+            &self.ctx.device,
+            &self.ctx.queue,
+            &sorted_buffer,
+            num_gaussians,
+        )
+        .map_err(|e| format!("Failed to read sorted projected buffer: {e}"))?;
+
+        let pixels = output
+            .into_iter()
+            .map(|p| Vector3::new(p[0], p[1], p[2]))
+            .collect();
+        Ok((pixels, pixel_state, sorted))
     }
 
     /// Render Gaussians with gradient computation.

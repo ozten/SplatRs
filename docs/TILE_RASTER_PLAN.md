@@ -134,7 +134,12 @@ raster with shared-memory batches.
    deferred — current numbers already clear the bar for Stage 5.
 5. **Full staged plan (2026-07-24, source-verified — see git history of this section for
    the long form; key decisions below are the contract):**
-   - **5a** Tiled forward-with-intermediates + lifecycle: pixel_state binding in
+   - **5a DONE (2026-07-24)**: all gates green — pixel-state parity EXACT (max T diff
+     0.0, zero resolved-identity mismatches on both fixtures), Stage 0-3 gates unchanged,
+     and the GPU-resident refactor improved the headline bench: 150k full-res tiled
+     61.1→45.7ms (42× over naive). Elevated parity in two bench rows was investigated =
+     concurrent-training GPU contention transient (deterministic re-runs match
+     pre-refactor baselines exactly). Original contract: pixel_state binding in
      rasterize_tiled.wgsl storing (bitcast(T_final), ABSOLUTE last pair index; sentinel
      0xFFFFFFFF), one whole-vec2 store per owning thread (race-safe). Cache all tile
      pipelines + PairSorter as GpuRenderer fields (built in new()); new GPU-resident

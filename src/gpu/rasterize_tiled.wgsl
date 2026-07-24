@@ -35,6 +35,10 @@ struct TileRasterParams {
     height: u32,
     tiles_x: u32,
     tiles_y: u32,
+    save_intermediates: u32,  // 1 = save per-pixel state for the backward pass (Stage 5b), 0 = don't
+    pad0: u32,
+    pad1: u32,
+    pad2: u32,
     background: vec4<f32>,
 }
 
@@ -44,6 +48,20 @@ struct TileRasterParams {
 // Flat [start0, end0, start1, end1, ...] per tile (see tile_bin.wgsl).
 @group(0) @binding(3) var<storage, read> tile_ranges: array<u32>;
 @group(0) @binding(4) var<storage, read_write> output: array<vec4<f32>>;
+// Per-pixel forward state for the backward pass (Stage 5b), same contract as
+// rasterize.wgsl's pixel_state:
+//   x = final transmittance after the last blended contributor (bitcast f32)
+//   y = ABSOLUTE index into the global `pairs` buffer of the last blended contributor
+//       (0xFFFFFFFF if none). Unlike the naive path (whose sorted index refers into the
+//       globally depth-sorted Gaussian2D array), the tiled path's "resolved identity" for
+//       a stored index is `pairs[y].gaussian_idx` — the pair buffer is the only
+//       sorted-order artifact this kernel walks.
+// Only written when save_intermediates != 0. This is a SAFE whole-vec2 store: every
+// pixel_idx is written by exactly one thread (the pixel it owns), unlike tile_ranges in
+// tile_bin.wgsl where two DIFFERENT threads write different components of one tile's
+// entry and a component store to a storage vector silently races (the Stage-2 bug) —
+// that constraint doesn't apply here because there's no cross-thread sharing of one vector.
+@group(0) @binding(5) var<storage, read_write> pixel_state: array<vec2<u32>>;
 
 const BATCH: u32 = 256u;
 // (mean.x, mean.y, cov_xx, cov_xy)
@@ -77,6 +95,7 @@ fn rasterize_tiled(@builtin(workgroup_id) wg_id: vec3<u32>,
     let py = wg_id.y * 16u + local_id.y;
     let local_idx = local_id.y * 16u + local_id.x;
     let in_image = px < params.width && py < params.height;
+    let pixel_idx = py * params.width + px;
 
     let range_start = tile_ranges[2u * tile_id];
     let range_end = tile_ranges[2u * tile_id + 1u];
@@ -86,6 +105,7 @@ fn rasterize_tiled(@builtin(workgroup_id) wg_id: vec3<u32>,
 
     var color = vec3<f32>(0.0, 0.0, 0.0);
     var transmittance = 1.0;
+    var last_pair_idx = 0xFFFFFFFFu;
     // done only suppresses further blending for THIS thread; every thread stays in the
     // batch loop so workgroupBarrier() control flow remains workgroup-uniform.
     var done = !in_image;
@@ -117,6 +137,9 @@ fn rasterize_tiled(@builtin(workgroup_id) wg_id: vec3<u32>,
                 if (alpha < 1e-4) {
                     continue;
                 }
+                // Track the last blended contributor as an ABSOLUTE pairs-buffer index
+                // (batch_start + local batch slot k) for the backward pass (Stage 5b).
+                last_pair_idx = batch_start + k;
                 color = color + transmittance * alpha * b.yzw;
                 transmittance = transmittance * (1.0 - alpha);
                 if (transmittance < 1e-4) {
@@ -130,7 +153,14 @@ fn rasterize_tiled(@builtin(workgroup_id) wg_id: vec3<u32>,
     }
 
     if (in_image) {
+        // Save per-pixel forward state for the backward pass BEFORE compositing the
+        // background (matches rasterize.wgsl's ordering; the background add doesn't
+        // change `transmittance` itself, so this is not order-sensitive for correctness,
+        // just for parity with the naive kernel's structure).
+        if (params.save_intermediates != 0u) {
+            pixel_state[pixel_idx] = vec2<u32>(bitcast<u32>(transmittance), last_pair_idx);
+        }
         color += transmittance * params.background.xyz;
-        output[py * params.width + px] = vec4<f32>(color, 1.0);
+        output[pixel_idx] = vec4<f32>(color, 1.0);
     }
 }
