@@ -139,3 +139,11 @@ applies; prefer the half-res showcase.
   (gap 6.45→5.49 dB), LPIPS 0.243, first coherent full-scene render. Push sent. Round-3
   stacking arm launched (needle-off + rg2500, ~4h). Remaining AFK time: Stage 5 (tile
   backward, P2(c)) design next, stacking verdict this afternoon.
+- 2026-07-24 morning: **Stage 5a+5b+5d ALL LANDED, EVERYTHING BIT-EXACT**: 5a forward
+  intermediates + GPU-resident lifecycle (bench improved to 45.7ms @150k full-res = 42×);
+  5b tiled backward kernel (gradient parity 0.0 on all fields/fixtures, zero starvation);
+  5d --tile-raster trainer integration with a real 300-iter training smoke (PSNR
+  11.90→13.54 at ~50-66ms/iter under GPU contention). Remaining: 5c backward bench + 5e
+  500-iter equivalence at the stacking-arm boundary (~13:45), then stacking verdict.
+  Two more WGSL gotchas logged: 'active' is reserved (validation failure silently eaten
+  by the GPU-skip helper); neither GPU path ever honored cfg.disable_sh.
