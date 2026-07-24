@@ -1288,6 +1288,21 @@ per-checkpoint PLY headers). Findings:
    no streaks — under DSSIM high aniso is signal, not pathology). Round 2 arm running:
    baseline + `--settle-needle-prune-log-aniso 0` (needle prune off in settle only,
    opacity/oversize prunes intact), `scripts/post_batch_20260723.sh`.
+
+   **ROUND 2 (2026-07-23 20:45): NEEDLE-OFF FIXES THE DSSIM SETTLE — new best on EVERY
+   metric.** `srt30k_dssim_noneedle` (baseline + `--settle-needle-prune-log-aniso 0`):
+   window peak 17.51/0.577 (= baseline, settle-only lever), settle mean **17.12/0.554**
+   (gap 0.39, vs baseline's ~0.9), final **17.35 / SSIM 0.561** — beats the L2 champion's
+   17.21 —, count stabilized at 46k (prunes ~230/pass once the treadmill stopped; the
+   anisotropy sits at the 3.0 clamp, i.e. it IS used), and best-ever LPIPS **0.4146 @23k,
+   scored IN settle** (settle now improves perceptual quality). The PSNR-vs-perception
+   split is resolved: one config wins both. **The DSSIM recipe:** `--loss l1-dssim
+   --settle-needle-prune-log-aniso 0` on top of the 0.05/0.025 opacity defaults and
+   standard resets. Render: background structures resolved for the first time.
+   Next: defaults decision deferred to the user (needle-2.8 remains correct for L2);
+   P3 showcase running overnight — all-views interval-8 + this recipe, cap 150k
+   (`scripts/p3_showcase.sh` → `runs/srt30k_p3_dssim_int8`), directly comparable to
+   splatfacto's 22.21.
 3. **Tile-binned GPU rasterization.** Still required for the capacity term (~2.5–3.5 dB) and the
    throughput ceiling (60k-cap training exists only because the current rasterizer is too slow at
    200k+), but it is no longer the sole road to quality — steps 1–2 are cheaper and come first.
