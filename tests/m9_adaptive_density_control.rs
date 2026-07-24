@@ -72,6 +72,7 @@ fn test_m9_densify_smoke_tandt() {
         out_dir: PathBuf::from("test_output"),
         save_interval: 0,
         disable_sh: false,
+        tile_rasterizer: false,
     };
 
     let result = train_multiview_color_only(&cfg).expect("Training failed");

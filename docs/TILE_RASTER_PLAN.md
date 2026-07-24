@@ -169,7 +169,12 @@ raster with shared-memory batches.
      unbanded dispatch > ~1s → band by TILE ROWS (tile_row_offset param), else ship
      unbanded. Top empirical risk: atomic contention on tile-spanning gaussians
      (unforecastable from forward's atomic-free numbers).
-   - **5d** MultiViewTrainConfig.tile_rasterizer + --tile-raster CLI +
+   - **5d DONE (2026-07-24)**: flag wired end-to-end, all gates green, and a REAL
+     300-iter tiled training smoke completed on tandt/train (--tile-raster): PSNR
+     11.90→13.54, ~50-66ms/iter WITH a concurrent naive training arm on the same GPU.
+     Note: neither GPU path honors cfg.disable_sh historically — RenderOptions passes
+     disable_sh:false to match, tile-flag-only change. Original contract:
+     MultiViewTrainConfig.tile_rasterizer + --tile-raster CLI +
      SUGAR_GPU_TILE_RASTER env default + startup log; only the two render call sites in
      the training loop change (render_with_options / new
      render_with_gradients_and_options; naive body renamed _naive). All config literals

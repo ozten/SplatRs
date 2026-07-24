@@ -17,7 +17,7 @@ use crate::core::{init_from_colmap_points_visible_stratified, Camera, Gaussian};
 use crate::io::load_colmap_scene;
 
 #[cfg(feature = "gpu")]
-use crate::gpu::GpuRenderer;
+use crate::gpu::{GpuRenderer, RenderOptions};
 use crate::optim::adam::{AdamF32, AdamSh16, AdamSo3, AdamVec3};
 use crate::optim::loss::{
     l1_dssim_image_loss_and_grad_weighted, l2_image_loss_and_grad_weighted, LossKind,
@@ -1087,6 +1087,10 @@ pub struct MultiViewTrainConfig {
     /// 2026-07-10 full-res run lost the GPU rasterizer mid-training with no surfaced
     /// error and spent 3.5k iterations training against background-only frames.
     pub render_watchdog: bool,
+    /// Use the tile-binned rasterizer (docs/TILE_RASTER_PLAN.md Stage 5) instead of the
+    /// naive per-pixel-loop oracle for GPU forward/backward renders in the training loop.
+    /// `false` (default) keeps the naive oracle — bit-exact-verified, unchanged behavior.
+    pub tile_rasterizer: bool,
 }
 
 pub struct MultiViewTrainOutputs {
@@ -1754,6 +1758,10 @@ pub fn train_multiview_color_only(
     #[cfg(feature = "gpu")]
     let gpu_renderer = if cfg.use_gpu {
         eprintln!("Initializing GPU renderer...");
+        eprintln!(
+            "tile-raster: {}",
+            if cfg.tile_rasterizer { "on" } else { "off (naive oracle)" }
+        );
         match GpuRenderer::new() {
             Ok(r) => Some(r),
             Err(e) => {
@@ -1829,7 +1837,15 @@ pub fn train_multiview_color_only(
     #[cfg(feature = "gpu")]
     let render = |gaussians: &[Gaussian], camera: &Camera, bg: &Vector3<f32>| {
         if let Some(ref renderer) = gpu_renderer {
-            match renderer.render(gaussians, camera, bg) {
+            // disable_sh: false matches the pre-existing `renderer.render()` behavior
+            // (render_with_sh_mode(..., false)) — unchanged here, only tile_rasterizer
+            // is newly threaded through (docs/TILE_RASTER_PLAN.md Stage 5d).
+            let opts = RenderOptions {
+                tile_rasterizer: cfg.tile_rasterizer,
+                disable_sh: false,
+                ..Default::default()
+            };
+            match renderer.render_with_options(gaussians, camera, bg, opts) {
                 Ok(img) => img,
                 Err(e) => {
                     eprintln!("GPU render failed, falling back to CPU: {e}");
@@ -2167,7 +2183,15 @@ pub fn train_multiview_color_only(
                     }
                     render_full_color_grads_ext(&gaussians, &train_camera, &d_image, &bg, disable_sh)
                 } else {
-                    match renderer.render_with_gradients(&gaussians, &train_camera, &bg, &d_image) {
+                    // disable_sh: false matches the pre-existing `renderer.render_with_gradients()`
+                    // behavior (the naive backward has never plumbed disable_sh) — unchanged here,
+                    // only tile_rasterizer is newly threaded through (Stage 5d).
+                    let opts = RenderOptions {
+                        tile_rasterizer: cfg.tile_rasterizer,
+                        disable_sh: false,
+                        ..Default::default()
+                    };
+                    match renderer.render_with_gradients_and_options(&gaussians, &train_camera, &bg, &d_image, opts) {
                     Ok((_pixels, grads_2d)) => {
                     // TEMPORARY: CPU projection backward is default due to GPU shader bug
                     // Use SUGAR_GPU_GRADIENTS=1 to enable GPU projection backward (experimental)

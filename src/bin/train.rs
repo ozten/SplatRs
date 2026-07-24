@@ -190,6 +190,10 @@ fn main() {
     // Render watchdog (2026-07-10): abort + save model when the GPU pipeline dies silently
     // (wgpu fault, or consecutive background-only frames). ON by default.
     let mut render_watchdog: bool = true;
+    // Tile-binned rasterizer (docs/TILE_RASTER_PLAN.md Stage 5): flag-gated GPU forward/
+    // backward path, naive per-pixel-loop oracle stays the default. Ad hoc env override
+    // matches the plan's `SUGAR_GPU_TILE_RASTER=1` convention.
+    let mut tile_rasterizer: bool = std::env::var("SUGAR_GPU_TILE_RASTER").is_ok();
 
     fn apply_preset(
         name: &str,
@@ -619,6 +623,7 @@ fn main() {
             "--settle-needle-prune-log-aniso" => settle_needle_prune_log_aniso = args.next().unwrap().parse().unwrap(),
             "--sh-warmup-interval" => sh_warmup_interval = args.next().unwrap().parse().unwrap(),
             "--no-render-watchdog" => render_watchdog = false,
+            "--tile-raster" => tile_rasterizer = true,
             "--gpu" => use_gpu = true,
             "--cpu" | "--no-gpu" => use_gpu = false,
             "--disable-sh" => disable_sh = true,
@@ -632,7 +637,7 @@ fn main() {
                 eprintln!("  sugar-train --scene <sparse/0> [--images <dir>] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--image-index I] [--log-interval N] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--learn-position] [--learn-scale] [--learn-rotation] [--learn-sh] [--seed U64] [--out-dir DIR]");
                 eprintln!();
                 eprintln!("  # M8 (multi-view)");
-                eprintln!("  sugar-train --multiview --scene <sparse/0> [--images <dir>] [--max-images N] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--train-fraction F] [--eval-interval N (0=seeded shuffle; N=every-Nth-by-filename test split, nerfstudio convention)] [--save-interval N (0=off; save model_<step>.gs every N iters for the iteration grid)] [--val-interval N] [--max-test-views N] [--log-interval N] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--learn-position] [--learn-scale] [--learn-rotation] [--learn-sh] [--densify-interval N] [--densify-max-gaussians N] [--densify-grad-threshold F] [--prune-opacity-threshold F (default 0.025)] [--split-sigma-threshold F] [--max-log-aniso F (default 3.0, 0=off)] [--settle-prune-interval N (default 500, 0=off)] [--opacity-reset-floor F (default 0.05)] [--opacity-reset-window-margin N] [--sh-rest-lr-div N] [--freeze-sh-after-window] [--freeze-bg-in-settle] [--settle-needle-prune-log-aniso F] [--seed U64] [--out-dir DIR]");
+                eprintln!("  sugar-train --multiview --scene <sparse/0> [--images <dir>] [--max-images N] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--train-fraction F] [--eval-interval N (0=seeded shuffle; N=every-Nth-by-filename test split, nerfstudio convention)] [--save-interval N (0=off; save model_<step>.gs every N iters for the iteration grid)] [--val-interval N] [--max-test-views N] [--log-interval N] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--learn-position] [--learn-scale] [--learn-rotation] [--learn-sh] [--densify-interval N] [--densify-max-gaussians N] [--densify-grad-threshold F] [--prune-opacity-threshold F (default 0.025)] [--split-sigma-threshold F] [--max-log-aniso F (default 3.0, 0=off)] [--settle-prune-interval N (default 500, 0=off)] [--opacity-reset-floor F (default 0.05)] [--opacity-reset-window-margin N] [--sh-rest-lr-div N] [--freeze-sh-after-window] [--freeze-bg-in-settle] [--settle-needle-prune-log-aniso F] [--tile-raster (GPU tile-binned rasterizer, docs/TILE_RASTER_PLAN.md; default off, env SUGAR_GPU_TILE_RASTER=1)] [--seed U64] [--out-dir DIR]");
                 eprintln!();
                 eprintln!("  # Auto-detect paths");
                 eprintln!("  sugar-train [--multiview] --dataset-root <root> [--iters N] ...   (auto-detects sparse/0 + images/)");
@@ -806,6 +811,7 @@ fn main() {
             save_interval,
             disable_sh,
             render_watchdog,
+            tile_rasterizer,
         };
 
         let out = sugar_rs::optim::trainer::train_multiview_color_only(&cfg)

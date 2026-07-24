@@ -69,6 +69,7 @@ fn test_m8_multiview_train_smoke_tandt() {
         out_dir: PathBuf::from("test_output"),
         save_interval: 0,
         disable_sh: false,
+        tile_rasterizer: false,
     };
 
     let result = train_multiview_color_only(&cfg).expect("Training failed");
@@ -168,6 +169,7 @@ fn test_m8_multiview_train_quality_tandt() {
         out_dir: PathBuf::from("test_output"),
         save_interval: 0,
         disable_sh: false,
+        tile_rasterizer: false,
     };
 
     let result = train_multiview_color_only(&cfg).expect("Training failed");
