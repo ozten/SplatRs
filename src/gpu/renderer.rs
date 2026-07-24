@@ -36,7 +36,16 @@ pub struct GpuRenderer {
     tile_bin_emit_pipeline: ComputePipeline,
     tile_bin_ranges_pipeline: ComputePipeline,
     rasterize_tiled_pipeline: ComputePipeline,
+    // Tiled backward pass (docs/TILE_RASTER_PLAN.md Part B Stage 5b): cached like the
+    // Stage 5a forward pipelines above (built once in `new()`); bind group layout fetched
+    // per-call via `backward_tiled_pipeline.get_bind_group_layout(0)`.
+    backward_tiled_pipeline: ComputePipeline,
 }
+
+/// Fixed-point gradient buffer layout: 16 i32s (64 bytes) per Gaussian. Shared by the
+/// naive (backward.wgsl) and tile-binned (backward_tiled.wgsl) backward passes — both
+/// atomicAdd into the SAME layout, so both Rust-side readback paths use this constant.
+const GRADIENT_I32_PER_GAUSSIAN: usize = 16;
 
 /// Rows per banded rasterize/backward submission. The naive per-pixel kernels do
 /// O(pixels × gaussians) work; issued as ONE command buffer, that crosses the macOS/Metal
@@ -51,6 +60,55 @@ fn watchdog_rows_per_band(width: u32, height: u32, num_gaussians: usize) -> u32 
     let per_row = (width as u64).max(1) * (num_gaussians as u64).max(1);
     let rows = (PIXEL_GAUSSIAN_BUDGET / per_row).max(16) as u32;
     (rows / 16 * 16).min(height.max(1))
+}
+
+/// Convert the fixed-point i32 `gradient_atomic` buffer into f32 [`GaussianGradients2D`].
+/// Shared by the naive (`render_with_gradients_naive`, backward.wgsl) and tiled
+/// (`render_tiled_with_gradients`, backward_tiled.wgsl) backward passes — both accumulate
+/// into the SAME fixed-point layout (`GRADIENT_I32_PER_GAUSSIAN` i32s per Gaussian; see
+/// backward.wgsl's `GRADIENT_STRIDE` comment for the exact offsets).
+fn convert_fixed_point_gradients(
+    pixel_grads_i32: &[i32],
+    num_gaussians: usize,
+) -> crate::gpu::gradients::GaussianGradients2D {
+    // Color/opacity use scale 10^7, position/covariance use scale 10^9 (see backward.wgsl).
+    const FIXED_POINT_SCALE_INV: f32 = 1e-7;
+    const FIXED_POINT_SCALE_POSITION_INV: f32 = 1e-9;
+
+    let mut final_grads = crate::gpu::gradients::GaussianGradients2D::zeros(num_gaussians);
+    for i in 0..num_gaussians {
+        let base = i * GRADIENT_I32_PER_GAUSSIAN;
+        // d_color: offsets 0-2 (3 is padding)
+        final_grads.d_colors[i] = Vector3::new(
+            pixel_grads_i32[base] as f32 * FIXED_POINT_SCALE_INV,
+            pixel_grads_i32[base + 1] as f32 * FIXED_POINT_SCALE_INV,
+            pixel_grads_i32[base + 2] as f32 * FIXED_POINT_SCALE_INV,
+        );
+        // d_opacity_logit_pad: offset 4 (5-7 are padding)
+        final_grads.d_opacity_logits[i] = pixel_grads_i32[base + 4] as f32 * FIXED_POINT_SCALE_INV;
+        // d_mean_px: offsets 8-9 (10-11 are padding) — higher precision scale (10^9)
+        final_grads.d_mean_px[i] = Vector2::new(
+            pixel_grads_i32[base + 8] as f32 * FIXED_POINT_SCALE_POSITION_INV,
+            pixel_grads_i32[base + 9] as f32 * FIXED_POINT_SCALE_POSITION_INV,
+        );
+        // d_cov_2d: offsets 12-14 (15 is padding) — higher precision scale (10^9)
+        final_grads.d_cov_2d[i] = Vector3::new(
+            pixel_grads_i32[base + 12] as f32 * FIXED_POINT_SCALE_POSITION_INV,
+            pixel_grads_i32[base + 13] as f32 * FIXED_POINT_SCALE_POSITION_INV,
+            pixel_grads_i32[base + 14] as f32 * FIXED_POINT_SCALE_POSITION_INV,
+        );
+    }
+    final_grads
+}
+
+/// Sum per-pixel background gradient contributions on the CPU. Shared by the naive and
+/// tiled backward paths.
+fn sum_d_background(d_background_pixels: &[[f32; 4]]) -> Vector3<f32> {
+    let mut sum = Vector3::zeros();
+    for px in d_background_pixels {
+        sum += Vector3::new(px[0], px[1], px[2]);
+    }
+    sum
 }
 
 /// GPU-resident tile-binning result (docs/TILE_RASTER_PLAN.md Part B Stage 5a):
@@ -433,6 +491,18 @@ impl GpuRenderer {
         )?;
         let pair_sorter = crate::gpu::sort::PairSorter::new(&ctx.device);
 
+        // Tiled backward pass (docs/TILE_RASTER_PLAN.md Part B Stage 5b): 1 uniform + 7
+        // storage buffers, one bind group — verified against this device's
+        // max_storage_buffers_per_shader_stage (8) with a standalone smoke before this
+        // kernel was written; passed on Apple M2 Max (Metal), no fallback needed.
+        let backward_tiled_shader = shaders::create_backward_tiled_shader(&ctx.device);
+        let backward_tiled_pipeline = create_pipeline(
+            "Backward Tiled Pipeline",
+            None,
+            &backward_tiled_shader,
+            "backward_pass_tiled",
+        )?;
+
         Ok(Self {
             ctx,
             project_pipeline,
@@ -449,6 +519,7 @@ impl GpuRenderer {
             tile_bin_emit_pipeline,
             tile_bin_ranges_pipeline,
             rasterize_tiled_pipeline,
+            backward_tiled_pipeline,
         })
     }
 
@@ -1896,6 +1967,10 @@ impl GpuRenderer {
     /// # Returns
     /// * Rendered pixels (linear RGB)
     /// * Gradients w.r.t. Gaussian parameters
+    ///
+    /// Always uses the naive per-pixel-loop oracle backward (full SH — this path has never
+    /// plumbed `disable_sh`). See [`GpuRenderer::render_with_gradients_and_options`] to
+    /// select the tile-binned backward (docs/TILE_RASTER_PLAN.md Part B Stage 5b).
     pub fn render_with_gradients(
         &self,
         gaussians: &[Gaussian],
@@ -1903,10 +1978,50 @@ impl GpuRenderer {
         background: &Vector3<f32>,
         d_pixels: &[Vector3<f32>],
     ) -> Result<(Vec<Vector3<f32>>, crate::gpu::gradients::GaussianGradients2D), String> {
+        self.render_with_gradients_and_options(
+            gaussians,
+            camera,
+            background,
+            d_pixels,
+            RenderOptions::default(),
+        )
+    }
 
-        // Constants for gradient buffer sizing
-        const GRADIENT_I32_PER_GAUSSIAN: usize = 16; // 16 i32s = 64 bytes per Gaussian
+    /// Render with gradients using explicit options (docs/TILE_RASTER_PLAN.md Part B Stage
+    /// 5b): selects between the naive oracle backward (default) and the flag-gated
+    /// tile-binned backward. `opts.disable_sh` is honored only by the tiled path — the
+    /// naive backward has never plumbed it (pre-existing behavior, unchanged here).
+    pub fn render_with_gradients_and_options(
+        &self,
+        gaussians: &[Gaussian],
+        camera: &Camera,
+        background: &Vector3<f32>,
+        d_pixels: &[Vector3<f32>],
+        opts: RenderOptions,
+    ) -> Result<(Vec<Vector3<f32>>, crate::gpu::gradients::GaussianGradients2D), String> {
+        if opts.tile_rasterizer {
+            self.render_tiled_with_gradients(
+                gaussians,
+                camera,
+                background,
+                d_pixels,
+                opts.disable_sh,
+            )
+        } else {
+            self.render_with_gradients_naive(gaussians, camera, background, d_pixels)
+        }
+    }
 
+    /// Naive oracle backward (the original `render_with_gradients` body, renamed per
+    /// docs/TILE_RASTER_PLAN.md Part B Stage 5b so `render_with_gradients_and_options` can
+    /// dispatch to it). Unchanged behavior.
+    fn render_with_gradients_naive(
+        &self,
+        gaussians: &[Gaussian],
+        camera: &Camera,
+        background: &Vector3<f32>,
+        d_pixels: &[Vector3<f32>],
+    ) -> Result<(Vec<Vector3<f32>>, crate::gpu::gradients::GaussianGradients2D), String> {
         let width = camera.width;
         let height = camera.height;
         let num_pixels = (width * height) as usize;
@@ -2393,11 +2508,8 @@ impl GpuRenderer {
             None
         };
 
-        // Read gradient buffer as i32 (fixed-point)
-        // Color/opacity use scale 10^7, position/covariance use scale 10^9
-        const FIXED_POINT_SCALE_INV: f32 = 1e-7;
-        const FIXED_POINT_SCALE_POSITION_INV: f32 = 1e-9;
-
+        // Read gradient buffer as i32 (fixed-point) and convert to f32 (shared with the
+        // tiled backward path — both accumulate into the same layout).
         let pixel_grads_i32: Vec<i32> = buffers::read_buffer_blocking(
             &self.ctx.device,
             &self.ctx.queue,
@@ -2405,35 +2517,9 @@ impl GpuRenderer {
             total_i32s,
         )
         .map_err(|e| format!("Failed to read per-Gaussian gradients: {e}"))?;
+        let mut final_grads = convert_fixed_point_gradients(&pixel_grads_i32, num_gaussians);
 
-        // Convert from fixed-point i32 back to f32 by dividing by scale
-        let mut final_grads = crate::gpu::gradients::GaussianGradients2D::zeros(num_gaussians);
-        for i in 0..num_gaussians {
-            let base = i * GRADIENT_I32_PER_GAUSSIAN;
-            // d_color: offsets 0-2 (3 is padding)
-            final_grads.d_colors[i] = Vector3::new(
-                pixel_grads_i32[base + 0] as f32 * FIXED_POINT_SCALE_INV,
-                pixel_grads_i32[base + 1] as f32 * FIXED_POINT_SCALE_INV,
-                pixel_grads_i32[base + 2] as f32 * FIXED_POINT_SCALE_INV,
-            );
-            // d_opacity_logit_pad: offset 4 (5-7 are padding)
-            final_grads.d_opacity_logits[i] = pixel_grads_i32[base + 4] as f32 * FIXED_POINT_SCALE_INV;
-            // d_mean_px: offsets 8-9 (10-11 are padding)
-            // Uses higher precision scale (10^9)
-            final_grads.d_mean_px[i] = Vector2::new(
-                pixel_grads_i32[base + 8] as f32 * FIXED_POINT_SCALE_POSITION_INV,
-                pixel_grads_i32[base + 9] as f32 * FIXED_POINT_SCALE_POSITION_INV,
-            );
-            // d_cov_2d: offsets 12-14 (15 is padding)
-            // Uses higher precision scale (10^9)
-            final_grads.d_cov_2d[i] = Vector3::new(
-                pixel_grads_i32[base + 12] as f32 * FIXED_POINT_SCALE_POSITION_INV,
-                pixel_grads_i32[base + 13] as f32 * FIXED_POINT_SCALE_POSITION_INV,
-                pixel_grads_i32[base + 14] as f32 * FIXED_POINT_SCALE_POSITION_INV,
-            );
-        }
-
-        // Download per-pixel background gradients and sum on CPU
+        // Download per-pixel background gradients and sum on CPU (shared helper).
         let d_background_pixels: Vec<[f32; 4]> = buffers::read_buffer_blocking(
             &self.ctx.device,
             &self.ctx.queue,
@@ -2441,13 +2527,7 @@ impl GpuRenderer {
             num_pixels,
         )
         .map_err(|e| format!("Failed to read per-pixel background gradients: {e}"))?;
-
-        // Sum all per-pixel contributions to get total background gradient
-        let mut d_background_sum = Vector3::zeros();
-        for px in &d_background_pixels {
-            d_background_sum += Vector3::new(px[0], px[1], px[2]);
-        }
-        final_grads.d_background = d_background_sum;
+        final_grads.d_background = sum_d_background(&d_background_pixels);
 
         // Read output pixels
         let output: Vec<[f32; 4]> = buffers::read_buffer_blocking(
@@ -2461,6 +2541,269 @@ impl GpuRenderer {
         let pixels = output
             .iter()
             .map(|rgba| Vector3::new(rgba[0], rgba[1], rgba[2]))
+            .collect();
+
+        Ok((pixels, final_grads))
+    }
+
+    /// Render with gradients using the tile-binned rasterizer/backward pass
+    /// (docs/TILE_RASTER_PLAN.md Part B Stage 5b). Calls `tile_binning_gpu` ONCE, runs the
+    /// tiled forward with `save_intermediates=1` (same cached `rasterize_tiled_pipeline`
+    /// as `render_tiled`), then the tiled backward (`backward_tiled_pipeline`) as its own
+    /// queue submission (phase-per-submission convention used throughout this file), then
+    /// reads back `gradient_atomic` + `d_background_pixels` and converts fixed-point→f32
+    /// with the SAME helpers the naive path uses. `disable_sh` is forwarded to
+    /// `tile_binning_gpu`'s projection (the tiled path, unlike the naive backward, does
+    /// support it).
+    fn render_tiled_with_gradients(
+        &self,
+        gaussians: &[Gaussian],
+        camera: &Camera,
+        background: &Vector3<f32>,
+        d_pixels: &[Vector3<f32>],
+        disable_sh: bool,
+    ) -> Result<(Vec<Vector3<f32>>, crate::gpu::gradients::GaussianGradients2D), String> {
+        let width = camera.width;
+        let height = camera.height;
+        let num_pixels = (width * height) as usize;
+        let num_gaussians = gaussians.len();
+        if num_gaussians == 0 {
+            return Ok((
+                vec![*background; num_pixels],
+                crate::gpu::gradients::GaussianGradients2D::zeros(0),
+            ));
+        }
+        if d_pixels.len() != num_pixels {
+            return Err(format!(
+                "d_pixels length must match number of pixels: got {}, expected {} ({}x{})",
+                d_pixels.len(),
+                num_pixels,
+                width,
+                height
+            ));
+        }
+
+        let max_storage_binding = self.ctx.device.limits().max_storage_buffer_binding_size as u64;
+        let output_bytes = (num_pixels * std::mem::size_of::<[f32; 4]>()) as u64;
+        let pixel_state_bytes = (num_pixels * std::mem::size_of::<[u32; 2]>()) as u64;
+        let d_pixels_bytes = (num_pixels * std::mem::size_of::<[f32; 4]>()) as u64;
+        let gradient_atomic_bytes =
+            (num_gaussians * GRADIENT_I32_PER_GAUSSIAN * std::mem::size_of::<i32>()) as u64;
+        let d_background_pixels_bytes = (num_pixels * std::mem::size_of::<[f32; 4]>()) as u64;
+        for (label, bytes) in [
+            ("Output Buffer", output_bytes),
+            ("Pixel State Buffer", pixel_state_bytes),
+            ("d_pixels Buffer", d_pixels_bytes),
+            ("Per-Gaussian Gradients Buffer", gradient_atomic_bytes),
+            ("Per-Pixel Background Gradients Buffer", d_background_pixels_bytes),
+        ] {
+            if bytes > max_storage_binding {
+                return Err(format!(
+                    "{label} size {} MB exceeds max_storage_buffer_binding_size {} MB (gaussians={}, pixels={} @ {}x{})",
+                    bytes / (1024 * 1024),
+                    max_storage_binding / (1024 * 1024),
+                    num_gaussians,
+                    num_pixels,
+                    width,
+                    height
+                ));
+            }
+        }
+
+        // ONE tile_binning_gpu call feeds both the forward and backward dispatches below —
+        // projected/pairs/tile_ranges stay GPU-resident throughout.
+        let binning = self.tile_binning_gpu(gaussians, camera, disable_sh)?;
+
+        #[repr(C)]
+        #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+        struct TileRasterParams {
+            width: u32,
+            height: u32,
+            tiles_x: u32,
+            tiles_y: u32,
+            save_intermediates: u32,
+            pad0: u32,
+            pad1: u32,
+            pad2: u32,
+            background: [f32; 4],
+        }
+        let raster_params_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "TiledGrad Raster Params",
+            &[TileRasterParams {
+                width,
+                height,
+                tiles_x: binning.tiles_x,
+                tiles_y: binning.tiles_y,
+                save_intermediates: 1,
+                pad0: 0,
+                pad1: 0,
+                pad2: 0,
+                background: [background.x, background.y, background.z, 0.0],
+            }],
+            BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        );
+        let output_buffer = buffers::create_buffer(
+            &self.ctx.device,
+            "TiledGrad Output",
+            output_bytes,
+            BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+        );
+        // Consumed only by the backward dispatch below (same submission chain) — no
+        // COPY_SRC needed (debug/test inspection of tiled pixel_state goes through
+        // debug_render_tiled_pixel_state instead).
+        let pixel_state_buffer = buffers::create_buffer_zeroed::<[u32; 2]>(
+            &self.ctx.device,
+            "TiledGrad Pixel State",
+            num_pixels,
+            BufferUsages::STORAGE,
+        );
+
+        let raster_bind_group = self.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("TiledGrad Raster Bind Group"),
+            layout: &self.rasterize_tiled_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: raster_params_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: binning.projected_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: binning.pairs_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: binning.ranges_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: output_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: pixel_state_buffer.as_entire_binding() },
+            ],
+        });
+
+        // Forward pass: its own submission (phase-per-submission convention — see
+        // tile_binning_gpu's Project+Count / Emit / Sort / Ranges phases above).
+        let mut encoder = self
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("TiledGrad Forward Encoder"),
+            });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("TiledGrad Forward Pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.rasterize_tiled_pipeline);
+            pass.set_bind_group(0, &raster_bind_group, &[]);
+            pass.dispatch_workgroups(binning.tiles_x, binning.tiles_y, 1);
+        }
+        self.ctx.queue.submit(Some(encoder.finish()));
+
+        // Upload upstream gradients.
+        let d_pixels_gpu: Vec<[f32; 4]> = d_pixels.iter().map(|v| [v.x, v.y, v.z, 0.0]).collect();
+        let d_pixels_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "TiledGrad d_pixels",
+            &d_pixels_gpu,
+            BufferUsages::STORAGE,
+        );
+
+        let total_i32s = num_gaussians * GRADIENT_I32_PER_GAUSSIAN;
+        let zero_grads: Vec<i32> = vec![0i32; total_i32s];
+        let gradient_atomic_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "TiledGrad Gradient Atomic (i32)",
+            &zero_grads,
+            BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+        );
+        let d_background_pixels_buffer = buffers::create_buffer_zeroed::<[f32; 4]>(
+            &self.ctx.device,
+            "TiledGrad d_background_pixels",
+            num_pixels,
+            BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+        );
+
+        #[repr(C)]
+        #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+        struct TileBackwardParams {
+            width: u32,
+            height: u32,
+            tiles_x: u32,
+            tiles_y: u32,
+            background: [f32; 4],
+        }
+        let backward_params_buffer = buffers::create_buffer_init(
+            &self.ctx.device,
+            "TiledGrad Backward Params",
+            &[TileBackwardParams {
+                width,
+                height,
+                tiles_x: binning.tiles_x,
+                tiles_y: binning.tiles_y,
+                background: [background.x, background.y, background.z, 0.0],
+            }],
+            BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+        );
+
+        // Bindings match backward_tiled.wgsl exactly: 0 uniform + 1 projected (read) +
+        // 2 pairs (read) + 3 tile_ranges (read) + 4 pixel_state (read) + 5 d_pixels (read)
+        // + 6 gradient_atomic (read_write) + 7 d_background_pixels (read_write) — 1
+        // uniform + 7 storage buffers in one bind group (verified against this device's
+        // max_storage_buffers_per_shader_stage=8 by the Stage 5b pipeline-creation smoke).
+        let backward_bind_group = self.ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("TiledGrad Backward Bind Group"),
+            layout: &self.backward_tiled_pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: backward_params_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: binning.projected_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: binning.pairs_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: binning.ranges_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: pixel_state_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: d_pixels_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 6, resource: gradient_atomic_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 7, resource: d_background_pixels_buffer.as_entire_binding() },
+            ],
+        });
+
+        // Backward pass: its own submission.
+        let mut encoder = self
+            .ctx
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("TiledGrad Backward Encoder"),
+            });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("TiledGrad Backward Pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.backward_tiled_pipeline);
+            pass.set_bind_group(0, &backward_bind_group, &[]);
+            pass.dispatch_workgroups(binning.tiles_x, binning.tiles_y, 1);
+        }
+        self.ctx.queue.submit(Some(encoder.finish()));
+
+        // Readback + fixed-point -> f32 conversion, shared with the naive path.
+        let pixel_grads_i32: Vec<i32> = buffers::read_buffer_blocking(
+            &self.ctx.device,
+            &self.ctx.queue,
+            &gradient_atomic_buffer,
+            total_i32s,
+        )
+        .map_err(|e| format!("Failed to read per-Gaussian gradients: {e}"))?;
+        let mut final_grads = convert_fixed_point_gradients(&pixel_grads_i32, num_gaussians);
+
+        let d_background_pixels: Vec<[f32; 4]> = buffers::read_buffer_blocking(
+            &self.ctx.device,
+            &self.ctx.queue,
+            &d_background_pixels_buffer,
+            num_pixels,
+        )
+        .map_err(|e| format!("Failed to read per-pixel background gradients: {e}"))?;
+        final_grads.d_background = sum_d_background(&d_background_pixels);
+
+        let output: Vec<[f32; 4]> = buffers::read_buffer_blocking(
+            &self.ctx.device,
+            &self.ctx.queue,
+            &output_buffer,
+            num_pixels,
+        )
+        .map_err(|e| format!("Failed to read tiled output buffer: {e}"))?;
+        let pixels = output
+            .into_iter()
+            .map(|p| Vector3::new(p[0], p[1], p[2]))
             .collect();
 
         Ok((pixels, final_grads))

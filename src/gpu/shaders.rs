@@ -394,3 +394,13 @@ pub fn create_project_backward_shader(device: &Device) -> ShaderModule {
     })
 }
 
+/// WGSL shader for the tile-binned backward pass (docs/TILE_RASTER_PLAN.md Part B Stage 5b).
+pub const BACKWARD_TILED_SHADER: &str = include_str!("backward_tiled.wgsl");
+
+pub fn create_backward_tiled_shader(device: &Device) -> ShaderModule {
+    device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("Backward Tiled Shader"),
+        source: wgpu::ShaderSource::Wgsl(BACKWARD_TILED_SHADER.into()),
+    })
+}
+

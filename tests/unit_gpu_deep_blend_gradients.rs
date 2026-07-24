@@ -7,57 +7,26 @@
 //! sorted list per pixel, so ALL contributors must receive gradients matching the
 //! (uncapped) CPU backward.
 
-use nalgebra::{Matrix3, UnitQuaternion, Vector3};
-use sugar_rs::core::{Camera, Gaussian};
 use sugar_rs::render::render_full_color_grads;
 
 #[cfg(feature = "gpu")]
 use sugar_rs::gpu::GpuRenderer;
 
-const SH_C0: f32 = 0.282_094_791_773_878_14;
-
-fn sh_constant_color(rgb: Vector3<f32>) -> [[f32; 3]; 16] {
-    let mut sh = [[0.0f32; 3]; 16];
-    sh[0] = [rgb.x / SH_C0, rgb.y / SH_C0, rgb.z / SH_C0];
-    sh
-}
+#[path = "golden/fixtures.rs"]
+mod fixtures;
 
 #[test]
 #[cfg(feature = "gpu")]
 fn test_gpu_gradients_reach_beyond_16_contributors() {
-    const N: usize = 40; // 2.5x the old 16-slot cap
+    use nalgebra::Vector3;
 
-    let camera = Camera::new(
-        4.0,
-        4.0,
-        3.5,
-        3.5,
-        8,
-        8,
-        Matrix3::identity(),
-        Vector3::zeros(),
-    );
+    // Scene factored into tests/golden/fixtures.rs::deep_stack_scene() so
+    // tests/unit_gpu_tile_backward_gradients.rs's Stage 5b naive-vs-tiled parity gate can
+    // reuse the exact same 40-gaussian deep stack (see that function's doc comment for the
+    // construction rationale).
+    let (gaussians, camera, bg) = fixtures::deep_stack_scene();
+    let n = gaussians.len();
 
-    // N Gaussians stacked along +z on the optical axis, sigma_px 1..2 (3-sigma radius
-    // stays under the projection screen-size cull on both CPU and GPU). Opacity 0.008
-    // keeps the alpha >= 1e-4 footprint (2.96 sigma) INSIDE the CPU's 3-sigma bbox, so
-    // the CPU and GPU contributor sets coincide exactly and gradients are directly
-    // comparable. No early termination: T_final ~ 0.75 after all 40 layers, so every
-    // layer keeps contributing at the central pixels.
-    let gaussians: Vec<Gaussian> = (0..N)
-        .map(|i| {
-            let t = i as f32 / N as f32;
-            Gaussian::new(
-                Vector3::new(0.0, 0.0, 2.0 + 0.05 * i as f32),
-                Vector3::new(0.0, 0.0, 0.0), // sigma_world = 1.0
-                UnitQuaternion::identity(),
-                -4.82, // sigmoid ~= 0.008
-                sh_constant_color(Vector3::new(0.2 + 0.6 * t, 0.8 - 0.6 * t, 0.3)),
-            )
-        })
-        .collect();
-
-    let bg = Vector3::new(0.02, 0.03, 0.04);
     let num_pixels = (camera.width * camera.height) as usize;
     let d_pixels = vec![Vector3::new(1.0, -0.5, 0.25); num_pixels];
 
@@ -87,7 +56,7 @@ fn test_gpu_gradients_reach_beyond_16_contributors() {
     // (1) EVERY Gaussian must receive a nonzero opacity gradient -- under the old
     // 16-slot cap, indices 16..40 got exactly zero.
     let mut starved = Vec::new();
-    for i in 0..N {
+    for i in 0..n {
         if gpu_grads.d_opacity_logits[i].abs() < 1e-7 {
             starved.push(i);
         }
@@ -108,7 +77,7 @@ fn test_gpu_gradients_reach_beyond_16_contributors() {
         let diff = (cpu - gpu).abs();
         diff <= 0.05 * cpu.abs().max(gpu.abs()) + 2e-3
     };
-    for i in 0..N {
+    for i in 0..n {
         for c in 0..3 {
             assert!(
                 rel_ok(cpu_d_colors[i][c], gpu_grads.d_colors[i][c]),

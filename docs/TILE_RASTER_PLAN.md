@@ -148,7 +148,11 @@ raster with shared-memory batches.
      unit_gpu_tile_pixel_state_parity (T within 1e-5; resolved-identity match:
      sorted_buffer[naive.y].gaussian_idx_pad.x == pairs[tiled.y].gaussian_idx) + bench
      non-regression.
-   - **5b** backward_tiled.wgsl: one workgroup/tile, batched BACK-TO-FRONT walk of the
+   - **5b DONE (2026-07-24)**: gradient parity BIT-EXACT (0.0 on all fields, all
+     fixtures incl. deep_stack rank>16); tripwire within 1e-4; zero starvation; 8-buffer
+     exact fit verified on-device (one bind group). Gotcha logged: `active` is a WGSL
+     reserved word — shader validation failure was swallowed by try_gpu_renderer as a
+     "no GPU" skip; caught via --nocapture uncaptured-error output. Original contract: one workgroup/tile, batched BACK-TO-FRONT walk of the
      full tile range (batch_end→range_start), per-pixel gate `pair_idx > last_pair_idx →
      continue` (valid because pairs are depth-ascending in-tile), helpers/constants copied
      VERBATIM from backward.wgsl, shared memory = read-only cache (batch_a/b/c + NEW

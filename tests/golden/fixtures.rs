@@ -158,3 +158,48 @@ pub fn regression_scene() -> (Vec<Gaussian>, Camera, Vector3<f32>) {
     let bg = Vector3::new(0.12, 0.14, 0.18);
     (gaussians, camera, bg)
 }
+
+/// Deep stack of N=40 overlapping Gaussians on the optical axis (factored out of
+/// tests/unit_gpu_deep_blend_gradients.rs so tests/unit_gpu_tile_backward_gradients.rs's
+/// Stage 5b naive-vs-tiled backward parity gate can reuse it — this is the regression
+/// fixture for the per-pixel contribution cap removed 2026-07-08: 2.5x the old 16-slot
+/// cap, so it stresses multi-batch back-to-front walks and rank > 16 contributors.
+///
+/// N Gaussians stacked along +z on the optical axis, sigma_px 1..2 (3-sigma radius stays
+/// under the projection screen-size cull on both CPU and GPU). Opacity 0.008 keeps the
+/// alpha >= 1e-4 footprint (2.96 sigma) INSIDE the CPU's 3-sigma bbox, so the CPU and GPU
+/// contributor sets coincide exactly and gradients are directly comparable. No early
+/// termination: T_final ~ 0.75 after all 40 layers, so every layer keeps contributing at
+/// the central pixels.
+///
+/// Returns (gaussians, camera, background).
+pub fn deep_stack_scene() -> (Vec<Gaussian>, Camera, Vector3<f32>) {
+    const N: usize = 40; // 2.5x the old 16-slot cap
+
+    let camera = Camera::new(
+        4.0,
+        4.0,
+        3.5,
+        3.5,
+        8,
+        8,
+        Matrix3::identity(),
+        Vector3::zeros(),
+    );
+
+    let gaussians: Vec<Gaussian> = (0..N)
+        .map(|i| {
+            let t = i as f32 / N as f32;
+            Gaussian::new(
+                Vector3::new(0.0, 0.0, 2.0 + 0.05 * i as f32),
+                Vector3::new(0.0, 0.0, 0.0), // sigma_world = 1.0
+                UnitQuaternion::identity(),
+                -4.82, // sigmoid ~= 0.008
+                sh_constant_color(Vector3::new(0.2 + 0.6 * t, 0.8 - 0.6 * t, 0.3)),
+            )
+        })
+        .collect();
+
+    let bg = Vector3::new(0.02, 0.03, 0.04);
+    (gaussians, camera, bg)
+}
