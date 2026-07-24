@@ -134,3 +134,8 @@ applies; prefer the half-res showcase.
   views), pace ~1.9s/iter (naive rasterizer at 150k — exactly the wall the tile path
   removes; backward integration is the future fix). Revised ETA: tomorrow ~13:00-16:00.
   Overnight mode: monitors primary, hourly heartbeats.
+- 2026-07-24 09:15 **P3 SHOWCASE DONE — ALL FOUR PRIORITIES COMPLETE**: settle perfectly
+  flat at full scale (16.81 mean vs 16.83 peak), final 16.72 on the splatfacto split
+  (gap 6.45→5.49 dB), LPIPS 0.243, first coherent full-scene render. Push sent. Round-3
+  stacking arm launched (needle-off + rg2500, ~4h). Remaining AFK time: Stage 5 (tile
+  backward, P2(c)) design next, stacking verdict this afternoon.
