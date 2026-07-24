@@ -127,3 +127,10 @@ applies; prefer the half-res showcase.
   one un-banded 238ms dispatch — table + tie-artifact/sublinearity notes in
   TILE_RASTER_PLAN Stage 4). Day-1 push notification sent. Arm 4 (needle-off) training
   since 16:58, done ~21:15; its settle verdict decides the DSSIM recipe, then P3.
+- 2026-07-23 20:45 **P1 ROUND 2: NEEDLE-OFF WINS — DSSIM recipe complete** (17.35 final,
+  settle mean 17.12/0.554, best-ever LPIPS 0.415 IN settle, count stable 46k; full verdict
+  in RECOVERY_PLAN §6.1). P3 showcase launched 20:47.
+- 2026-07-23 21:50: P3 at 3.5k iters, count already ~147k (cap hit fast at 263 train
+  views), pace ~1.9s/iter (naive rasterizer at 150k — exactly the wall the tile path
+  removes; backward integration is the future fix). Revised ETA: tomorrow ~13:00-16:00.
+  Overnight mode: monitors primary, hourly heartbeats.
