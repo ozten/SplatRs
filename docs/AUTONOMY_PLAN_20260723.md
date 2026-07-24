@@ -121,3 +121,9 @@ applies; prefer the half-res showcase.
   final opacity median 0.81 (over-opaque; soft detail loss suspected in LPIPS). Confirms
   the decay driver is not resets → needle-treadmill hypothesis (arm 4) is live. Arm 3
   (floor25) training until ~17:00, then bench + arm 4 fire automatically.
+- 2026-07-23 16:58 **P1 batch complete + Stage-4 bench DONE**: floor25 worst (15.40 —
+  full table in RECOVERY_PLAN §6.1 addendum; reset levers refuted, needle treadmill
+  confirmed). **Bench: tiled 3.8–25.7× faster** (150k full-res 1568→61ms; 400k full-res
+  one un-banded 238ms dispatch — table + tie-artifact/sublinearity notes in
+  TILE_RASTER_PLAN Stage 4). Day-1 push notification sent. Arm 4 (needle-off) training
+  since 16:58, done ~21:15; its settle verdict decides the DSSIM recipe, then P3.
