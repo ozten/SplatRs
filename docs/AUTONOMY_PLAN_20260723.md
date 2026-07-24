@@ -150,3 +150,9 @@ applies; prefer the half-res showcase.
 - 2026-07-24 13:18 stacking arm DONE: needle-off + rg2500 = 17.19 final — does NOT stack
   (needle-off alone 17.35), consistent with the L2-era reset-gate finding. DSSIM recipe
   unchanged. GPU idle → 5c backward bench + 5e training equivalence delegated.
+- 2026-07-24 13:37 **STAGE 5 COMPLETE** (5c: backward 8-36.5×, unbanded to 400k full-res;
+  5e: training equivalence 0.0000 dB delta at every checkpoint — naive-vs-naive even
+  bit-exact). rtk gotcha logged (fake instant pass on `cargo test -- --ignored`; use rtk
+  proxy). **P3-v2 launched with --tile-raster**: same showcase config, iter 1 at 115ms
+  total vs ~1.9s naive — projected ~2-3h vs 12.5h. If it reproduces ~16.7, the tiled
+  trainer becomes the standard pipeline.
