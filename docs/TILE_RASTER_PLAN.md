@@ -165,7 +165,15 @@ raster with shared-memory batches.
      deep_stack_scene (factored from unit_gpu_deep_blend_gradients), tolerance start
      0.02·max+1e-3 (half the naive-vs-CPU precedent; measure, log, loosen only with
      numbers); plus a hand-computed 2-3-gaussian single-tile tripwire.
-   - **5c** bench_tile_raster_backward.rs (same matrix as Stage 4). Banding trigger: any
+   - **5c DONE (2026-07-24)**: backward bench (runs/bench_tile_backward_20260724.txt):
+     naive→tiled 336.8→28.5ms @60k half up to 2548.4→69.8ms @150k full (36.5×); 400k
+     full-res 230.7ms unbanded — banding NOT triggered, shipped unbanded. Bench
+     grad-parity column noise = the documented depth-tie artifact (gates on structured
+     fixtures remain bit-exact). **5e DONE**: 500-iter training equivalence PASS —
+     naive-vs-naive calibration bit-exact (0.0000 dB drift), tiled-vs-naive delta 0.0000
+     dB at EVERY checkpoint (final 20.5957 both). ENV GOTCHA: the rtk hook mangles
+     `cargo test -- --ignored --nocapture` into a fake instant pass — use `rtk proxy
+     cargo test ...` for ignored/nocapture runs. Original 5c contract: bench_tile_raster_backward.rs (same matrix as Stage 4). Banding trigger: any
      unbanded dispatch > ~1s → band by TILE ROWS (tile_row_offset param), else ship
      unbanded. Top empirical risk: atomic contention on tile-spanning gaussians
      (unforecastable from forward's atomic-free numbers).
