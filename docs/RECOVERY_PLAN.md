@@ -1303,6 +1303,19 @@ per-checkpoint PLY headers). Findings:
    P3 showcase running overnight — all-views interval-8 + this recipe, cap 150k
    (`scripts/p3_showcase.sh` → `runs/srt30k_p3_dssim_int8`), directly comparable to
    splatfacto's 22.21.
+
+   **P3 SHOWCASE RESULT (2026-07-24): the recipe transfers to full scale — settle
+   PERFECTLY FLAT and the honest gap narrows 6.45 → 5.49 dB.** `srt30k_p3_dssim_int8`
+   (all 301 images, interval-8 split, cap 150k, DSSIM recipe): window peak 16.83/0.556,
+   settle mean **16.81/0.556** (gap 0.02 — flat), final **16.72 / SSIM 0.556** vs the L2
+   step-2 run's 15.76 on the identical protocol (+0.96) and splatfacto's 22.21. Count
+   stable ~112k (no melt at scale). **LPIPS 0.243 @25.5k** — a different league (best
+   100-img number was 0.415; view differs but the leap is unmistakable). Render: first
+   fully coherent scene reconstruction of the project (whole locomotive, ground texture,
+   background stock, sky). Checkpoint grid saved every 1500 for the count-vs-quality
+   overlay. Remaining gap decomposition unchanged in kind (capacity ≲2 dB, recipe the
+   rest) — next levers: tile-rasterizer backward (throughput → bigger caps/full-res
+   feasible), densification quality (absgrad-style), further DSSIM recipe stacking.
 3. **Tile-binned GPU rasterization.** Still required for the capacity term (~2.5–3.5 dB) and the
    throughput ceiling (60k-cap training exists only because the current rasterizer is too slow at
    200k+), but it is no longer the sole road to quality — steps 1–2 are cheaper and come first.
