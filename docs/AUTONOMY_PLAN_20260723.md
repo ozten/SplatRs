@@ -147,3 +147,6 @@ applies; prefer the half-res showcase.
   500-iter equivalence at the stacking-arm boundary (~13:45), then stacking verdict.
   Two more WGSL gotchas logged: 'active' is reserved (validation failure silently eaten
   by the GPU-skip helper); neither GPU path ever honored cfg.disable_sh.
+- 2026-07-24 13:18 stacking arm DONE: needle-off + rg2500 = 17.19 final — does NOT stack
+  (needle-off alone 17.35), consistent with the L2-era reset-gate finding. DSSIM recipe
+  unchanged. GPU idle → 5c backward bench + 5e training equivalence delegated.
