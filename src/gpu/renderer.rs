@@ -42,10 +42,11 @@ pub struct GpuRenderer {
     backward_tiled_pipeline: ComputePipeline,
 }
 
-/// Fixed-point gradient buffer layout: 16 i32s (64 bytes) per Gaussian. Shared by the
+/// Fixed-point gradient buffer layout: 18 i32s (72 bytes) per Gaussian. Shared by the
 /// naive (backward.wgsl) and tile-binned (backward_tiled.wgsl) backward passes — both
 /// atomicAdd into the SAME layout, so both Rust-side readback paths use this constant.
-const GRADIENT_I32_PER_GAUSSIAN: usize = 16;
+/// (Grew from 16 to 18 for the absgrad-style `abs_d_mean_px` accumulator, offsets 16-17.)
+const GRADIENT_I32_PER_GAUSSIAN: usize = 18;
 
 /// Rows per banded rasterize/backward submission. The naive per-pixel kernels do
 /// O(pixels × gaussians) work; issued as ONE command buffer, that crosses the macOS/Metal
@@ -72,6 +73,9 @@ fn convert_fixed_point_gradients(
     num_gaussians: usize,
 ) -> crate::gpu::gradients::GaussianGradients2D {
     // Color/opacity use scale 10^7, position/covariance use scale 10^9 (see backward.wgsl).
+    // absgrad's abs_d_mean_px slots (offsets 16-17) REUSE the position scale (10^9) — see
+    // backward.wgsl's comment above `atomic_add_f32_position` for why a dedicated lower
+    // scale was tried and reverted (it silently zeroed real training-scale gradients).
     const FIXED_POINT_SCALE_INV: f32 = 1e-7;
     const FIXED_POINT_SCALE_POSITION_INV: f32 = 1e-9;
 
@@ -96,6 +100,12 @@ fn convert_fixed_point_gradients(
             pixel_grads_i32[base + 12] as f32 * FIXED_POINT_SCALE_POSITION_INV,
             pixel_grads_i32[base + 13] as f32 * FIXED_POINT_SCALE_POSITION_INV,
             pixel_grads_i32[base + 14] as f32 * FIXED_POINT_SCALE_POSITION_INV,
+        );
+        // abs_d_mean_px: offsets 16-17 — absgrad-style accumulator (see backward.wgsl's
+        // GRADIENT_STRIDE comment). Same fixed-point position scale as d_mean_px.
+        final_grads.abs_d_mean_px[i] = Vector2::new(
+            pixel_grads_i32[base + 16] as f32 * FIXED_POINT_SCALE_POSITION_INV,
+            pixel_grads_i32[base + 17] as f32 * FIXED_POINT_SCALE_POSITION_INV,
         );
     }
     final_grads
@@ -2368,7 +2378,8 @@ impl GpuRenderer {
 
         // Create per-Gaussian gradient buffer as i32 (initialized to zero)
         // Shader uses fixed-point i32 atomics (Metal-compatible)
-        // Each Gaussian has 16 i32s (64 bytes): 4 vec4 fields × 4 components = 16 i32s
+        // Each Gaussian has 18 i32s (72 bytes): 4 vec4 fields × 4 components + abs_d_mean_px
+        // (x,y) = 18 i32s (see GRADIENT_I32_PER_GAUSSIAN / backward.wgsl's GRADIENT_STRIDE)
         let total_i32s = num_gaussians * GRADIENT_I32_PER_GAUSSIAN;
         let zero_grads: Vec<i32> = vec![0i32; total_i32s];
         let pixel_grads_buffer = buffers::create_buffer_init(

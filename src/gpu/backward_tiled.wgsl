@@ -105,6 +105,10 @@ fn eval_gaussian_2d(mean_x: f32, mean_y: f32, cov_xx: f32, cov_xy: f32, cov_yy: 
 // buffer contract read back by GpuRenderer).
 const FIXED_POINT_SCALE: f32 = 1e7;
 const FIXED_POINT_SCALE_POSITION: f32 = 1e9;
+// The abs_d_mean_px slots (offsets 16-17) REUSE FIXED_POINT_SCALE_POSITION via
+// atomic_add_f32_position below — see backward.wgsl's comment above its
+// atomic_add_f32_position for the full derivation (a dedicated lower scale was tried and
+// reverted: it silently zeroed real training-scale gradients via fixed-point underflow).
 
 // Atomic add for color/opacity gradients (scale 10^7)
 fn atomic_add_f32(index: u32, value: f32) {
@@ -119,7 +123,8 @@ fn atomic_add_f32(index: u32, value: f32) {
     }
 }
 
-// Atomic add for position/covariance gradients (scale 10^9)
+// Atomic add for position/covariance gradients (scale 10^9). Also used for the absgrad
+// abs_d_mean_px slots (offsets 16-17) — see the comment above.
 fn atomic_add_f32_position(index: u32, value: f32) {
     if (abs(value) < 1e-14) {
         return;
@@ -132,12 +137,15 @@ fn atomic_add_f32_position(index: u32, value: f32) {
     }
 }
 
-// Gradient buffer layout (16 u32s per Gaussian, each u32 is bitcast f32):
+// Gradient buffer layout (18 u32s per Gaussian, each u32 is bitcast f32):
 // [0-3]: d_color (vec4<f32> as bitcast u32)
 // [4-7]: d_opacity_logit_pad (vec4<f32> as bitcast u32)
 // [8-11]: d_mean_px (vec4<f32> as bitcast u32)
 // [12-15]: d_cov_2d (vec4<f32> as bitcast u32)
-const GRADIENT_STRIDE: u32 = 16u;  // 16 u32s = 64 bytes per Gaussian
+// [16-17]: abs_d_mean_px (x, y) — absgrad-style accumulator, copied VERBATIM from
+//          backward.wgsl (see its GRADIENT_STRIDE comment for the full rationale). Purely
+//          additive — offsets 8-9 are unchanged by this addition.
+const GRADIENT_STRIDE: u32 = 18u;  // 18 u32s = 72 bytes per Gaussian
 
 // Compute gradient of Gaussian 2D evaluation w.r.t. mean
 fn gaussian2d_grad_mean(
@@ -367,6 +375,11 @@ fn backward_pass_tiled(@builtin(workgroup_id) wg_id: vec3<u32>,
 
                 atomic_add_f32_position(base_idx + 8u, d_mean.x * d_weight);
                 atomic_add_f32_position(base_idx + 9u, d_mean.y * d_weight);
+
+                // abs_d_mean_px (offsets 16-17) — absgrad, copied VERBATIM from backward.wgsl.
+                // Reuses FIXED_POINT_SCALE_POSITION (see the scale comment above).
+                atomic_add_f32_position(base_idx + 16u, abs(d_mean.x * d_weight));
+                atomic_add_f32_position(base_idx + 17u, abs(d_mean.y * d_weight));
 
                 atomic_add_f32_position(base_idx + 12u, d_cov.x * d_weight);
                 atomic_add_f32_position(base_idx + 13u, d_cov.y * d_weight);

@@ -25,6 +25,18 @@ pub struct GaussianGradients2D {
     /// Gradients w.r.t. 2D mean in pixel space
     pub d_mean_px: Vec<Vector2<f32>>,
 
+    /// Absgrad-style gradient w.r.t. 2D mean in pixel space (gsplat/splatfacto `absgrad`):
+    /// the ABSOLUTE per-pixel-per-contributor position gradient summed over pixels, instead
+    /// of the signed sum in `d_mean_px`. Densification's B1 accumulator uses this instead of
+    /// `d_mean_px` when `MultiViewTrainConfig::densify_use_absgrad` is set — signed
+    /// contributions from opposite sides of a Gaussian's footprint can cancel for
+    /// symmetric/textured-but-balanced error patterns, starving densification there.
+    /// Populated by the GPU backward kernels (backward.wgsl / backward_tiled.wgsl, offsets
+    /// 16-17); the CPU backward fallback (`render_full_color_grads_ext`) has no true
+    /// per-pixel abs available (see its call sites in trainer.rs), so it degrades to
+    /// component-wise `d_mean_px.abs()` there.
+    pub abs_d_mean_px: Vec<Vector2<f32>>,
+
     /// Gradients w.r.t. 2D covariance (xx, xy, yy)
     pub d_cov_2d: Vec<Vector3<f32>>,
 
@@ -39,6 +51,7 @@ impl GaussianGradients2D {
             d_colors: vec![Vector3::zeros(); num_gaussians],
             d_opacity_logits: vec![0.0; num_gaussians],
             d_mean_px: vec![Vector2::zeros(); num_gaussians],
+            abs_d_mean_px: vec![Vector2::zeros(); num_gaussians],
             d_cov_2d: vec![Vector3::zeros(); num_gaussians],
             d_background: Vector3::zeros(),
         }
@@ -50,6 +63,7 @@ impl GaussianGradients2D {
             d_colors: vec![],
             d_opacity_logits: vec![],
             d_mean_px: vec![],
+            abs_d_mean_px: vec![],
             d_cov_2d: vec![],
             d_background: Vector3::zeros(),
         }

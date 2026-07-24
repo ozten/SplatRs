@@ -97,6 +97,26 @@ fn zero_gradient() -> Gradient {
 // - Higher scale needed because position grads are ~100× smaller than color
 const FIXED_POINT_SCALE: f32 = 1e7;
 const FIXED_POINT_SCALE_POSITION: f32 = 1e9;
+// The abs_d_mean_px slots (offsets 16-17) REUSE FIXED_POINT_SCALE_POSITION (not a lower
+// scale) via atomic_add_f32_position below. An earlier version of this code used a
+// dedicated lower scale (1e6) to avoid i32-atomic overflow — the abs accumulator sums
+// |per-pixel-contribution| with NO sign cancellation, so its magnitude CAN exceed the
+// signed sum's — but that was measured wrong: 1e6 quantizes any per-contributor value
+// below 1e-6 straight to a fixed-point zero (`i32(value * 1e6)` truncates to 0), and real
+// per-pixel loss gradients are normalized by pixel count (e.g. ~2·residual/(width·height)),
+// commonly landing well under 1e-6 for full-resolution images — so at 1e6 the abs
+// accumulator was SILENTLY ZERO for every Gaussian in real training (confirmed empirically:
+// a 300-iter tandt/train smoke produced grad_p50=grad_p90=max=0.0 and zero split/clone
+// events under --densify-absgrad, while the identical run without it split/cloned
+// normally). 1e9 avoids that underflow for realistic gradients (same precision floor the
+// signed slots already rely on) at the cost of reintroducing an overflow ceiling for
+// UNREALISTICALLY large per-pixel upstream gradients — e.g. the parity-test fixtures in
+// tests/unit_gpu_tile_backward_gradients.rs use a synthetic constant d_pixels ≈ 1.0, ~1e7x
+// larger than typical real per-pixel loss gradients, and DO overflow the abs slots at 1e9
+// for a Gaussian touching more than a few hundred pixels; the absgrad-specific test there
+// scales d_pixels down to a training-realistic magnitude to avoid tripping this. If
+// training-scale overflow is ever observed in practice, the fix is a proper 64-bit or
+// saturating (compare-and-swap loop) accumulator, not a smaller fixed-point scale.
 
 // Atomic add for color/opacity gradients (scale 10^7)
 fn atomic_add_f32(index: u32, value: f32) {
@@ -111,7 +131,8 @@ fn atomic_add_f32(index: u32, value: f32) {
     }
 }
 
-// Atomic add for position/covariance gradients (scale 10^9)
+// Atomic add for position/covariance gradients (scale 10^9). Also used for the absgrad
+// abs_d_mean_px slots (offsets 16-17) — see the comment above.
 // Higher precision needed because these gradients are ~100× smaller
 fn atomic_add_f32_position(index: u32, value: f32) {
     if (abs(value) < 1e-14) {
@@ -128,12 +149,18 @@ fn atomic_add_f32_position(index: u32, value: f32) {
 // Note: Background gradient is now stored per-pixel (not atomic) to avoid i32 overflow
 // when summing across thousands of pixels. The CPU will sum the per-pixel contributions.
 
-// Gradient buffer layout (16 u32s per Gaussian, each u32 is bitcast f32):
+// Gradient buffer layout (18 u32s per Gaussian, each u32 is bitcast f32):
 // [0-3]: d_color (vec4<f32> as bitcast u32)
 // [4-7]: d_opacity_logit_pad (vec4<f32> as bitcast u32)
 // [8-11]: d_mean_px (vec4<f32> as bitcast u32)
 // [12-15]: d_cov_2d (vec4<f32> as bitcast u32)
-const GRADIENT_STRIDE: u32 = 16u;  // 16 u32s = 64 bytes per Gaussian
+// [16-17]: abs_d_mean_px (x, y) — absgrad-style accumulator (gsplat/splatfacto
+//          `absgrad`): the ABSOLUTE per-pixel-per-contributor position gradient summed
+//          across pixels, instead of the signed sum in [8-9]. Signed contributions from
+//          opposite sides of a Gaussian's footprint can cancel for symmetric/textured-but-
+//          balanced error patterns, starving densification there; the abs accumulator
+//          can't cancel. Purely additive — offsets 8-9 are unchanged by this addition.
+const GRADIENT_STRIDE: u32 = 18u;  // 18 u32s = 72 bytes per Gaussian
 
 
 // Compute gradient of Gaussian 2D evaluation w.r.t. mean
@@ -378,6 +405,12 @@ fn backward_pass(
         // Use higher precision (10^9) for position gradients
         atomic_add_f32_position(base_idx + 8u, d_mean.x * d_weight);
         atomic_add_f32_position(base_idx + 9u, d_mean.y * d_weight);
+
+        // abs_d_mean_px (offsets 16-17 for x,y) — absgrad: same quantity, absolute value,
+        // accumulated BEFORE the signed sum can cancel across contributors/pixels. Reuses
+        // FIXED_POINT_SCALE_POSITION (see the scale comment above for why).
+        atomic_add_f32_position(base_idx + 16u, abs(d_mean.x * d_weight));
+        atomic_add_f32_position(base_idx + 17u, abs(d_mean.y * d_weight));
 
         // d_cov_2d (offsets 12-14 for xx,xy,yy; 15 is padding)
         // Use higher precision (10^9) for covariance gradients

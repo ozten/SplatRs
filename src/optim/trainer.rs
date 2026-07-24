@@ -40,6 +40,44 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 use std::io::Write;
 
+/// Wraps [`render_full_color_grads_ext`] (CPU backward) with a degenerate `abs_d_mean_px`
+/// companion so the trainer's B1 densification accumulator can treat the GPU and CPU
+/// backward paths uniformly (see the 9-tuple destructure in `train_multiview_color_only`).
+/// The CPU path accumulates `d_mean_px` signed and already-summed over pixels (full_diff.rs)
+/// — there is no true per-pixel abs available here, unlike the GPU backward kernels' atomic
+/// accumulation (backward.wgsl / backward_tiled.wgsl, offsets 16-17: `abs(d_mean * d_weight)`
+/// per contributor, accumulated BEFORE the signed sum can cancel). Component-wise abs of the
+/// already-summed CPU vector is mathematically identical to using the signed vector once B1
+/// takes `norm(gx, gy)` (squaring erases sign either way), so `--densify-absgrad` has no
+/// effect when training falls back to the CPU backward — it only changes behavior on the GPU
+/// path, where the true per-contributor abs is available.
+#[allow(clippy::type_complexity)]
+fn cpu_backward_with_abs(
+    gaussians: &[Gaussian],
+    camera: &Camera,
+    d_image: &[Vector3<f32>],
+    bg: &Vector3<f32>,
+    disable_sh: bool,
+) -> (
+    RgbImage,
+    Vec<Vector3<f32>>,
+    Vec<f32>,
+    Vec<Vector3<f32>>,
+    Vec<Vector3<f32>>,
+    Vec<Vector3<f32>>,
+    Vector3<f32>,
+    Vec<Vector2<f32>>,
+    Vec<Vector2<f32>>,
+) {
+    let (img, dc, dop, dpos, dls, drv, dbg, d_mean_px) =
+        render_full_color_grads_ext(gaussians, camera, d_image, bg, disable_sh);
+    let abs_d_mean_px = d_mean_px
+        .iter()
+        .map(|v| Vector2::new(v.x.abs(), v.y.abs()))
+        .collect();
+    (img, dc, dop, dpos, dls, drv, dbg, d_mean_px, abs_d_mean_px)
+}
+
 /// CSV logger for training metrics
 struct CsvLogger {
     file: std::fs::File,
@@ -1011,6 +1049,21 @@ pub struct MultiViewTrainConfig {
     pub densify_max_gaussians: usize,
     /// Split/clone if average position-grad norm exceeds this threshold.
     pub densify_grad_threshold: f32,
+    /// Absgrad-style densification (gsplat/splatfacto `absgrad`): when true, the B1
+    /// accumulator's MAGNITUDE consumes the ABSOLUTE per-pixel screen-space position
+    /// gradient (`GaussianGradients2D::abs_d_mean_px`) instead of the signed sum
+    /// (`d_mean_px`) — NDC normalization, threshold comparison, etc. are identical. The
+    /// per-visible-view DENOMINATOR/visibility gate stays keyed on the signed vector
+    /// (switching it too would inflate the visible-iteration count — abs sums are almost
+    /// never exactly zero, unlike signed sums — diluting the average and making absgrad
+    /// fire LESS than signed, the opposite of the intended effect). The signed sum can
+    /// cancel for symmetric/textured-but-balanced error patterns (opposite-sign
+    /// contributions from either side of a Gaussian's footprint), starving densification
+    /// there; the abs accumulator can't cancel, so it tends to fire more readily.
+    /// Convention (gsplat default): pair this with roughly 2x `densify_grad_threshold`
+    /// (0.0002 signed vs 0.0004 absgrad). `false` (default) keeps the pre-existing signed
+    /// B1 accumulator, bit-identical behavior.
+    pub densify_use_absgrad: bool,
     /// If opacity (sigmoid) is below this, prune the gaussian.
     pub prune_opacity_threshold: f32,
     /// If average world sigma (exp(log_scale)) is above this, SPLIT; otherwise CLONE.
@@ -1975,6 +2028,15 @@ pub fn train_multiview_color_only(
             cfg.opacity_reset_window_margin
         );
     }
+    if cfg.densify_use_absgrad {
+        eprintln!(
+            "densification: absgrad-style B1 accumulator ON (accumulates |d_mean_px| per \
+             contributor instead of the signed sum; densify_grad_threshold = {:.6} — gsplat \
+             convention pairs absgrad with ~2x the signed default, e.g. 0.0004 vs 0.0002). \
+             GPU backward only: CPU fallback degrades to the signed criterion.",
+            cfg.densify_grad_threshold
+        );
+    }
 
     // Training loop: sample random views
     let mut train_loss = 0.0f32;
@@ -2173,7 +2235,7 @@ pub fn train_multiview_color_only(
 
         // Backward
         let t1 = Instant::now();
-        let (_img_u8, d_color, d_opacity_logits, d_positions, d_log_scales, d_rot_vecs, d_bg, d_mean_px) = {
+        let (_img_u8, d_color, d_opacity_logits, d_positions, d_log_scales, d_rot_vecs, d_bg, d_mean_px, abs_d_mean_px) = {
             #[cfg(feature = "gpu")]
             if let Some(ref renderer) = gpu_renderer {
                 // Use GPU backward pass with sparse atomic gradients (efficient for <10k Gaussians)
@@ -2181,7 +2243,7 @@ pub fn train_multiview_color_only(
                     if iter == 0 {
                         eprintln!("GPU backward disabled, using CPU backward: {reason}");
                     }
-                    render_full_color_grads_ext(&gaussians, &train_camera, &d_image, &bg, disable_sh)
+                    cpu_backward_with_abs(&gaussians, &train_camera, &d_image, &bg, disable_sh)
                 } else {
                     // disable_sh: false matches the pre-existing `renderer.render_with_gradients()`
                     // behavior (the naive backward has never plumbed disable_sh) — unchanged here,
@@ -2210,23 +2272,24 @@ pub fn train_multiview_color_only(
                     let dummy_img = image::RgbImage::new(train_camera.width, train_camera.height);
                     // The GPU rasterization backward accumulates the same pixel-space
                     // dL/d(mean_px) as the CPU path (backward.wgsl, offsets 8-9), so hand it
-                    // straight to the B1 densification accumulator.
-                    (dummy_img, grads_2d.d_colors, grads_2d.d_opacity_logits, d_pos, d_scales, d_rots, d_background, grads_2d.d_mean_px)
+                    // straight to the B1 densification accumulator. abs_d_mean_px (offsets
+                    // 16-17) is the absgrad-style companion — see GaussianGradients2D's doc.
+                    (dummy_img, grads_2d.d_colors, grads_2d.d_opacity_logits, d_pos, d_scales, d_rots, d_background, grads_2d.d_mean_px, grads_2d.abs_d_mean_px)
                     }
                     Err(e) => {
                         eprintln!("GPU backward failed, falling back to CPU: {e}");
                         gpu_backward_disabled_reason = Some(e);
-                        render_full_color_grads_ext(&gaussians, &train_camera, &d_image, &bg, disable_sh)
+                        cpu_backward_with_abs(&gaussians, &train_camera, &d_image, &bg, disable_sh)
                     }
                 }
                 }
             } else {
                 // CPU backward pass
-                render_full_color_grads_ext(&gaussians, &train_camera, &d_image, &bg, disable_sh)
+                cpu_backward_with_abs(&gaussians, &train_camera, &d_image, &bg, disable_sh)
             }
 
             #[cfg(not(feature = "gpu"))]
-            render_full_color_grads_ext(&gaussians, &train_camera, &d_image, &bg, disable_sh)
+            cpu_backward_with_abs(&gaussians, &train_camera, &d_image, &bg, disable_sh)
         };
         let t_backward = t1.elapsed();
 
@@ -2373,12 +2436,33 @@ pub fn train_multiview_color_only(
             //     NDC ([-1,1]) so the threshold is resolution-independent: dL/d(ndc) = dL/d(px)·(dim/2).
             // B2: a Gaussian is "visible" this iteration iff it received a non-zero view-space
             //     gradient; count those so the per-Gaussian average is over views it appeared in.
+            // Absgrad (gsplat/splatfacto, `densify_use_absgrad`): swap the MAGNITUDE source to
+            //     `abs_d_mean_px` (the absolute per-pixel-per-contributor gradient, GPU
+            //     backward only — see GaussianGradients2D's doc) instead of the signed
+            //     `d_mean_px`. Everything else — NDC scaling, the per-visible-view norm, and
+            //     critically the DENOMINATOR/visibility gate — stays keyed on the SIGNED vector.
+            //     Using the abs vector for visibility too would inflate grad_denom (abs sums are
+            //     virtually never exactly zero, unlike signed sums, so far more iterations would
+            //     count as "visible"), diluting the average and making absgrad fire LESS than
+            //     signed at the same threshold — the opposite of the intended effect (confirmed
+            //     empirically: a first cut that also switched the visibility gate produced zero
+            //     splits/clones in the 300-iter smoke where the signed criterion split=cloned>0
+            //     at the identical threshold). Signed contributions from opposite sides of a
+            //     Gaussian's footprint can cancel for symmetric/textured-but-balanced error
+            //     patterns, starving densification there; abs can't cancel. gsplat convention
+            //     pairs this with ~2x `densify_grad_threshold` (0.0002 signed vs 0.0004 absgrad).
+            let grad_magnitude_source: &[Vector2<f32>] = if cfg.densify_use_absgrad {
+                &abs_d_mean_px
+            } else {
+                &d_mean_px
+            };
             let ndc_sx = train_camera.width as f32 * 0.5;
             let ndc_sy = train_camera.height as f32 * 0.5;
             for (i, d_uv) in d_mean_px.iter().enumerate() {
                 if *d_uv != Vector2::zeros() {
-                    let gx = d_uv.x * ndc_sx;
-                    let gy = d_uv.y * ndc_sy;
+                    let m = grad_magnitude_source[i];
+                    let gx = m.x * ndc_sx;
+                    let gy = m.y * ndc_sy;
                     grad_accum_pos_norm[i] += (gx * gx + gy * gy).sqrt();
                     grad_denom[i] += 1.0;
                 }

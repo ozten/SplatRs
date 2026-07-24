@@ -63,6 +63,7 @@ fn test_m9_densify_smoke_tandt() {
         densify_interval: 2,
         densify_max_gaussians: 2_000,
         densify_grad_threshold: -1.0, // force densify for smoke testing
+        densify_use_absgrad: false,
         prune_opacity_threshold: 0.0, // disable pruning for smoke testing
         split_sigma_threshold: 1e9,   // force CLONE (avoid scale changes)
         max_log_anisotropy: 0.0,

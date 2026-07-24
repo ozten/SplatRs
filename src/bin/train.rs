@@ -135,6 +135,12 @@ fn main() {
     let mut densify_interval: usize = 0;
     let mut densify_max_gaussians: usize = 0;
     let mut densify_grad_threshold: f32 = 0.1;
+    // Absgrad-style densification (gsplat/splatfacto): accumulate the ABSOLUTE per-pixel
+    // screen-space position gradient instead of the signed sum, which can cancel for
+    // symmetric/textured-but-balanced error patterns. Off by default (signed B1
+    // accumulator, unchanged behavior). gsplat convention: pair with ~2x
+    // --densify-grad-threshold (e.g. 0.0004 instead of 0.0002).
+    let mut densify_use_absgrad: bool = false;
     let mut prune_opacity_threshold: f32 = 0.025;
     let mut split_sigma_threshold: f32 = 0.05;
     let mut seed: Option<u64> = None;
@@ -611,6 +617,7 @@ fn main() {
             "--densify-interval" => densify_interval = args.next().unwrap().parse().unwrap(),
             "--densify-max-gaussians" => densify_max_gaussians = args.next().unwrap().parse().unwrap(),
             "--densify-grad-threshold" => densify_grad_threshold = args.next().unwrap().parse().unwrap(),
+            "--densify-absgrad" => densify_use_absgrad = true,
             "--prune-opacity-threshold" => prune_opacity_threshold = args.next().unwrap().parse().unwrap(),
             "--split-sigma-threshold" => split_sigma_threshold = args.next().unwrap().parse().unwrap(),
             "--seed" => seed = Some(args.next().unwrap().parse().unwrap()),
@@ -637,7 +644,7 @@ fn main() {
                 eprintln!("  sugar-train --scene <sparse/0> [--images <dir>] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--image-index I] [--log-interval N] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--learn-position] [--learn-scale] [--learn-rotation] [--learn-sh] [--seed U64] [--out-dir DIR]");
                 eprintln!();
                 eprintln!("  # M8 (multi-view)");
-                eprintln!("  sugar-train --multiview --scene <sparse/0> [--images <dir>] [--max-images N] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--train-fraction F] [--eval-interval N (0=seeded shuffle; N=every-Nth-by-filename test split, nerfstudio convention)] [--save-interval N (0=off; save model_<step>.gs every N iters for the iteration grid)] [--val-interval N] [--max-test-views N] [--log-interval N] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--learn-position] [--learn-scale] [--learn-rotation] [--learn-sh] [--densify-interval N] [--densify-max-gaussians N] [--densify-grad-threshold F] [--prune-opacity-threshold F (default 0.025)] [--split-sigma-threshold F] [--max-log-aniso F (default 3.0, 0=off)] [--settle-prune-interval N (default 500, 0=off)] [--opacity-reset-floor F (default 0.05)] [--opacity-reset-window-margin N] [--sh-rest-lr-div N] [--freeze-sh-after-window] [--freeze-bg-in-settle] [--settle-needle-prune-log-aniso F] [--tile-raster (GPU tile-binned rasterizer, docs/TILE_RASTER_PLAN.md; default off, env SUGAR_GPU_TILE_RASTER=1)] [--seed U64] [--out-dir DIR]");
+                eprintln!("  sugar-train --multiview --scene <sparse/0> [--images <dir>] [--max-images N] [--iters N] [--lr LR] [--downsample F] [--max-gaussians N] [--train-fraction F] [--eval-interval N (0=seeded shuffle; N=every-Nth-by-filename test split, nerfstudio convention)] [--save-interval N (0=off; save model_<step>.gs every N iters for the iteration grid)] [--val-interval N] [--max-test-views N] [--log-interval N] [--loss l2|l1-dssim] [--no-learn-bg] [--learn-opacity] [--learn-position] [--learn-scale] [--learn-rotation] [--learn-sh] [--densify-interval N] [--densify-max-gaussians N] [--densify-grad-threshold F] [--densify-absgrad (absgrad-style B1 accumulator, gsplat/splatfacto; pair with ~2x --densify-grad-threshold, e.g. 0.0004; GPU backward only)] [--prune-opacity-threshold F (default 0.025)] [--split-sigma-threshold F] [--max-log-aniso F (default 3.0, 0=off)] [--settle-prune-interval N (default 500, 0=off)] [--opacity-reset-floor F (default 0.05)] [--opacity-reset-window-margin N] [--sh-rest-lr-div N] [--freeze-sh-after-window] [--freeze-bg-in-settle] [--settle-needle-prune-log-aniso F] [--tile-raster (GPU tile-binned rasterizer, docs/TILE_RASTER_PLAN.md; default off, env SUGAR_GPU_TILE_RASTER=1)] [--seed U64] [--out-dir DIR]");
                 eprintln!();
                 eprintln!("  # Auto-detect paths");
                 eprintln!("  sugar-train [--multiview] --dataset-root <root> [--iters N] ...   (auto-detects sparse/0 + images/)");
@@ -788,6 +795,7 @@ fn main() {
             densify_interval,
             densify_max_gaussians,
             densify_grad_threshold,
+            densify_use_absgrad,
             prune_opacity_threshold,
             split_sigma_threshold,
             max_log_anisotropy: max_log_aniso,
