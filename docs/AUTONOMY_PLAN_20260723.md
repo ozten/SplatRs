@@ -169,3 +169,28 @@ applies; prefer the half-res showcase.
   lever stays flag-gated for future threshold sweeps. Tiled ctrl repeat launched to bound
   the 30k tiled-vs-naive variance question (first draw 16.86 vs naive family 17.51-peak;
   P3-v2 full-scale argues draw-not-bias).
+- 2026-07-24 19:26 repeat tiled control: **16.86 — identical to draw 1**. Tiled 30k
+  trajectories are repeatable; the 100-img tiled-vs-naive offset (−0.5) is config-specific
+  trajectory divergence, not noise/bias (full-scale tiled BEAT naive). A/B hygiene rule:
+  same-path controls always.
+
+## END-OF-RUN SUMMARY (2026-07-24 19:30 — plan completed ~1.5 days early)
+
+Everything planned, plus Stage 5 and beyond, landed on main (35+ commits):
+- **P0**: SSIM eval column + batch LPIPS — the harness is no longer PSNR-blind (this
+  immediately paid off: the loss re-test verdict inverted under SSIM/LPIPS/visual).
+- **P1**: DSSIM settle decay ROOT-CAUSED (needle-prune treadmill vs functional
+  edge-following anisotropy) and FIXED: `--settle-needle-prune-log-aniso 0` under
+  l1-dssim. Best 100-img model: 17.35/0.561/LPIPS 0.415. Refuted honestly: no-resets,
+  floor25, rg2500 stacking, absgrad@0.0004.
+- **P2+Stage 5**: tile-binned rasterizer, forward AND backward, bit-exact vs the oracle
+  at every gate, 500-iter training equivalence 0.0000 dB, no watchdog banding to 400k
+  full-res. Training speedup realized: 12.5h → 1.5h at showcase scale (8.4×).
+- **P3**: showcase 16.72 naive → re-run tiled 16.91 in 1.5h. Honest splatfacto gap
+  narrowed 6.45 → 5.30 dB (22.21 − 16.91) on the identical interval-8 protocol. First
+  fully coherent full-scene renders. LPIPS 0.240.
+- Three durable GPU gotchas documented (vec2 component-store race; 'active' reserved +
+  silently-eaten shader validation failures; rtk fake-pass on `--ignored` tests).
+- Open items for the user: default flips (needle-off under DSSIM? absgrad threshold
+  sweep?), full-res run (now ~6-8h, user-gated), splatfacto-gap next levers
+  (RECOVERY_PLAN §6).
