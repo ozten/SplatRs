@@ -165,3 +165,7 @@ applies; prefer the half-res showcase.
   (scripts/absgrad_ab_tiled.sh): fresh tiled control (also revalidates tiled at the
   100-img config vs naive 17.35) then absgrad arm @0.0004 — ~2h total, the last planned
   experiment of the AFK window.
+- 2026-07-24 18:17 absgrad A/B verdict: REFUTED at 0.0004/100-img (16.41 vs ctrl 16.86);
+  lever stays flag-gated for future threshold sweeps. Tiled ctrl repeat launched to bound
+  the 30k tiled-vs-naive variance question (first draw 16.86 vs naive family 17.51-peak;
+  P3-v2 full-scale argues draw-not-bias).

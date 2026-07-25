@@ -1328,6 +1328,18 @@ per-checkpoint PLY headers). Findings:
    Full-res training is now practically feasible (~4× pixels ⇒ est. 6-8h) but stays
    user-gated per the standing note. rg2500 does NOT stack with needle-off (17.19 vs
    17.35) — recipe unchanged.
+
+   **Absgrad densification (2026-07-24): REFUTED at this config.** Flag-gated
+   `--densify-absgrad` landed (abs |d_mean| atomic slots in both backward kernels,
+   gates green). Tiled A/B, 100-img/60k, threshold 0.0004 (2× convention):
+   control 16.86 (peak 16.88, settle flat 16.87) vs absgrad **16.41** (peak 16.75,
+   settle 16.39, count 47.9k) — −0.45. The lever stays available for threshold sweeps
+   but is deprioritized. **Open observation for follow-up:** naive DSSIM margin-0 runs
+   reproduce window peak 17.51 exactly across arms, while the first tiled draw at this
+   config peaked 16.88 — 30k trajectories diverge chaotically (atomic order feeds
+   densify decisions; 500-iter equivalence is exact). P3-v2 at FULL scale beat naive
+   (16.91 vs 16.72), arguing draw-not-bias; a repeat tiled control
+   (`runs/srt30k_tiled_ctrl_b`) is running to bound the variance.
 3. **Tile-binned GPU rasterization.** Still required for the capacity term (~2.5–3.5 dB) and the
    throughput ceiling (60k-cap training exists only because the current rasterizer is too slow at
    200k+), but it is no longer the sole road to quality — steps 1–2 are cheaper and come first.
